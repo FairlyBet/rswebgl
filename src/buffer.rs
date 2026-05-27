@@ -1,5 +1,7 @@
-use wasm_bindgen::prelude::wasm_bindgen;
+use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlBuffer};
+
+use crate::ref_count::{RefCount, ref_counted};
 
 #[wasm_bindgen]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,13 +42,16 @@ impl BufferUsage {
     }
 }
 
-#[wasm_bindgen]
-#[derive(Debug)]
-pub struct Buffer {
+#[derive(Debug, Clone)]
+struct BufferInner {
     gl: WebGl2RenderingContext,
     raw: WebGlBuffer,
     size: u32,
 }
+
+ref_counted!(Buffer wraps BufferInner; drop(self) {
+    self.inner.gl.delete_buffer(Some(&self.inner.raw));
+});
 
 impl Buffer {
     pub(crate) fn new(
@@ -60,9 +65,12 @@ impl Buffer {
         gl.buffer_data_with_u8_array(target.as_gl(), data, usage.as_gl());
         gl.bind_buffer(target.as_gl(), None);
         Ok(Self {
-            gl: gl.clone(),
-            raw,
-            size: data.len() as u32,
+            inner: BufferInner {
+                gl: gl.clone(),
+                raw,
+                size: data.len() as u32,
+            },
+            rc: RefCount::new(),
         })
     }
 
@@ -77,9 +85,12 @@ impl Buffer {
         gl.buffer_data_with_i32(target.as_gl(), size as i32, usage.as_gl());
         gl.bind_buffer(target.as_gl(), None);
         Ok(Self {
-            gl: gl.clone(),
-            raw,
-            size,
+            inner: BufferInner {
+                gl: gl.clone(),
+                raw,
+                size,
+            },
+            rc: RefCount::new(),
         })
     }
 }
@@ -87,19 +98,14 @@ impl Buffer {
 #[wasm_bindgen]
 impl Buffer {
     pub fn write(&self, target: BufferTarget, offset: i32, data: &[u8]) {
-        self.gl.bind_buffer(target.as_gl(), Some(&self.raw));
-        self.gl
+        self.inner.gl.bind_buffer(target.as_gl(), Some(&self.inner.raw));
+        self.inner
+            .gl
             .buffer_sub_data_with_i32_and_u8_array(target.as_gl(), offset, data);
-        self.gl.bind_buffer(target.as_gl(), None);
+        self.inner.gl.bind_buffer(target.as_gl(), None);
     }
 
     pub fn size(&self) -> u32 {
-        self.size
-    }
-}
-
-impl Drop for Buffer {
-    fn drop(&mut self) {
-        self.gl.delete_buffer(Some(&self.raw));
+        self.inner.size
     }
 }

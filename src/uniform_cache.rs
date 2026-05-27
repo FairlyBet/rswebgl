@@ -3,7 +3,7 @@ use web_sys::{WebGl2RenderingContext, WebGlProgram, WebGlUniformLocation};
 
 use crate::console;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UniformCache {
     locations: FxHashMap<Box<str>, WebGlUniformLocation>,
 }

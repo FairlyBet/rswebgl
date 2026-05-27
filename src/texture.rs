@@ -2,6 +2,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlTexture};
 
 use crate::console;
+use crate::ref_count::{RefCount, ref_counted};
 
 // ---------------------------------------------------------------------------
 // TextureTarget
@@ -79,7 +80,6 @@ pub enum TextureWrap {
 
 // ---------------------------------------------------------------------------
 // TextureFormat
-// Bundles internalformat + format + type for texImage calls.
 // ---------------------------------------------------------------------------
 
 #[wasm_bindgen]
@@ -152,13 +152,16 @@ impl TextureFormat {
 // Texture
 // ---------------------------------------------------------------------------
 
-#[wasm_bindgen]
-#[derive(Debug)]
-pub struct Texture {
+#[derive(Debug, Clone)]
+struct TextureInner {
     gl: WebGl2RenderingContext,
     raw: WebGlTexture,
     target: TextureTarget,
 }
+
+ref_counted!(Texture wraps TextureInner; drop(self) {
+    self.inner.gl.delete_texture(Some(&self.inner.raw));
+});
 
 impl Texture {
     pub(crate) fn new(
@@ -178,7 +181,10 @@ impl Texture {
         gl.tex_parameteri(t, WebGl2RenderingContext::TEXTURE_WRAP_R, TextureWrap::ClampToEdge as i32);
         gl.bind_texture(t, None);
 
-        Ok(Self { gl: gl.clone(), raw, target })
+        Ok(Self {
+            inner: TextureInner { gl: gl.clone(), raw, target },
+            rc: RefCount::new(),
+        })
     }
 }
 
@@ -192,39 +198,27 @@ impl Texture {
         height: i32,
         data: &[u8],
     ) {
-        self.gl.bind_texture(self.target.as_gl(), Some(&self.raw));
-        if let Err(e) = self.gl.tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
-            self.target.as_gl(),
-            level,
-            format.internal,
-            width,
-            height,
-            0,
-            format.format,
-            format.data_type,
-            Some(data),
+        let t = self.inner.target.as_gl();
+        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
+        if let Err(e) = self.inner.gl.tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
+            t, level, format.internal, width, height, 0,
+            format.format, format.data_type, Some(data),
         ) {
             console::error(&format!("[rswebgl] texImage2D failed: {:?}", e));
         }
-        self.gl.bind_texture(self.target.as_gl(), None);
+        self.inner.gl.bind_texture(t, None);
     }
 
     pub fn alloc_2d(&self, level: i32, format: &TextureFormat, width: i32, height: i32) {
-        self.gl.bind_texture(self.target.as_gl(), Some(&self.raw));
-        if let Err(e) = self.gl.tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
-            self.target.as_gl(),
-            level,
-            format.internal,
-            width,
-            height,
-            0,
-            format.format,
-            format.data_type,
-            None,
+        let t = self.inner.target.as_gl();
+        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
+        if let Err(e) = self.inner.gl.tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
+            t, level, format.internal, width, height, 0,
+            format.format, format.data_type, None,
         ) {
             console::error(&format!("[rswebgl] texImage2D alloc failed: {:?}", e));
         }
-        self.gl.bind_texture(self.target.as_gl(), None);
+        self.inner.gl.bind_texture(t, None);
     }
 
     pub fn upload_cube_face(
@@ -236,90 +230,64 @@ impl Texture {
         height: i32,
         data: &[u8],
     ) {
-        self.gl.bind_texture(self.target.as_gl(), Some(&self.raw));
-        if let Err(e) = self.gl.tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
-            face.as_gl(),
-            level,
-            format.internal,
-            width,
-            height,
-            0,
-            format.format,
-            format.data_type,
-            Some(data),
+        let t = self.inner.target.as_gl();
+        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
+        if let Err(e) = self.inner.gl.tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
+            face.as_gl(), level, format.internal, width, height, 0,
+            format.format, format.data_type, Some(data),
         ) {
             console::error(&format!("[rswebgl] texImage2D cube face failed: {:?}", e));
         }
-        self.gl.bind_texture(self.target.as_gl(), None);
+        self.inner.gl.bind_texture(t, None);
     }
 
     pub fn set_min_filter(&self, filter: TextureMinFilter) {
-        self.gl.bind_texture(self.target.as_gl(), Some(&self.raw));
-        self.gl.tex_parameteri(
-            self.target.as_gl(),
-            WebGl2RenderingContext::TEXTURE_MIN_FILTER,
-            filter as i32,
-        );
-        self.gl.bind_texture(self.target.as_gl(), None);
+        let t = self.inner.target.as_gl();
+        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
+        self.inner.gl.tex_parameteri(t, WebGl2RenderingContext::TEXTURE_MIN_FILTER, filter as i32);
+        self.inner.gl.bind_texture(t, None);
     }
 
     pub fn set_mag_filter(&self, filter: TextureMagFilter) {
-        self.gl.bind_texture(self.target.as_gl(), Some(&self.raw));
-        self.gl.tex_parameteri(
-            self.target.as_gl(),
-            WebGl2RenderingContext::TEXTURE_MAG_FILTER,
-            filter as i32,
-        );
-        self.gl.bind_texture(self.target.as_gl(), None);
+        let t = self.inner.target.as_gl();
+        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
+        self.inner.gl.tex_parameteri(t, WebGl2RenderingContext::TEXTURE_MAG_FILTER, filter as i32);
+        self.inner.gl.bind_texture(t, None);
     }
 
     pub fn set_wrap_s(&self, wrap: TextureWrap) {
-        self.gl.bind_texture(self.target.as_gl(), Some(&self.raw));
-        self.gl.tex_parameteri(
-            self.target.as_gl(),
-            WebGl2RenderingContext::TEXTURE_WRAP_S,
-            wrap as i32,
-        );
-        self.gl.bind_texture(self.target.as_gl(), None);
+        let t = self.inner.target.as_gl();
+        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
+        self.inner.gl.tex_parameteri(t, WebGl2RenderingContext::TEXTURE_WRAP_S, wrap as i32);
+        self.inner.gl.bind_texture(t, None);
     }
 
     pub fn set_wrap_t(&self, wrap: TextureWrap) {
-        self.gl.bind_texture(self.target.as_gl(), Some(&self.raw));
-        self.gl.tex_parameteri(
-            self.target.as_gl(),
-            WebGl2RenderingContext::TEXTURE_WRAP_T,
-            wrap as i32,
-        );
-        self.gl.bind_texture(self.target.as_gl(), None);
+        let t = self.inner.target.as_gl();
+        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
+        self.inner.gl.tex_parameteri(t, WebGl2RenderingContext::TEXTURE_WRAP_T, wrap as i32);
+        self.inner.gl.bind_texture(t, None);
     }
 
     pub fn set_wrap_r(&self, wrap: TextureWrap) {
-        self.gl.bind_texture(self.target.as_gl(), Some(&self.raw));
-        self.gl.tex_parameteri(
-            self.target.as_gl(),
-            WebGl2RenderingContext::TEXTURE_WRAP_R,
-            wrap as i32,
-        );
-        self.gl.bind_texture(self.target.as_gl(), None);
+        let t = self.inner.target.as_gl();
+        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
+        self.inner.gl.tex_parameteri(t, WebGl2RenderingContext::TEXTURE_WRAP_R, wrap as i32);
+        self.inner.gl.bind_texture(t, None);
     }
 
     pub fn generate_mipmaps(&self) {
-        self.gl.bind_texture(self.target.as_gl(), Some(&self.raw));
-        self.gl.generate_mipmap(self.target.as_gl());
-        self.gl.bind_texture(self.target.as_gl(), None);
+        let t = self.inner.target.as_gl();
+        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
+        self.inner.gl.generate_mipmap(t);
+        self.inner.gl.bind_texture(t, None);
     }
 
     pub fn raw(&self) -> WebGlTexture {
-        self.raw.clone()
+        self.inner.raw.clone()
     }
 
     pub fn target(&self) -> TextureTarget {
-        self.target.clone()
-    }
-}
-
-impl Drop for Texture {
-    fn drop(&mut self) {
-        self.gl.delete_texture(Some(&self.raw));
+        self.inner.target.clone()
     }
 }

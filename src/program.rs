@@ -1,24 +1,29 @@
 use wasm_bindgen::prelude::*;
-use web_sys::{WebGl2RenderingContext, WebGlProgram, WebGlShader};
+use web_sys::{WebGl2RenderingContext, WebGlProgram, WebGlShader, WebGlUniformLocation};
 
 use crate::console;
+use crate::ref_count::{RefCount, ref_counted};
 use crate::uniform_cache::UniformCache;
 
-// KHR_parallel_shader_compile — COMPLETION_STATUS_KHR
 const COMPLETION_STATUS_KHR: u32 = 0x91B1;
 
-#[wasm_bindgen]
-#[derive(Debug)]
-pub struct Program {
-    pub(crate) gl: WebGl2RenderingContext,
-    pub(crate) raw: WebGlProgram,
+#[derive(Debug, Clone)]
+struct ProgramInner {
+    gl: WebGl2RenderingContext,
+    raw: WebGlProgram,
     vert: Option<WebGlShader>,
     frag: Option<WebGlShader>,
     parallel: bool,
     ready: bool,
     valid: bool,
-    pub(crate) cache: UniformCache,
+    cache: UniformCache,
 }
+
+ref_counted!(Program wraps ProgramInner; drop(self) {
+    self.inner.gl.delete_shader(self.inner.vert.take().as_ref());
+    self.inner.gl.delete_shader(self.inner.frag.take().as_ref());
+    self.inner.gl.delete_program(Some(&self.inner.raw));
+});
 
 impl Program {
     pub(crate) fn new(
@@ -36,39 +41,57 @@ impl Program {
         gl.link_program(&raw);
 
         Ok(Program {
-            gl: gl.clone(),
-            raw,
-            vert: Some(vert),
-            frag: Some(frag),
-            parallel,
-            ready: false,
-            valid: false,
-            cache: UniformCache::new(),
+            inner: ProgramInner {
+                gl: gl.clone(),
+                raw,
+                vert: Some(vert),
+                frag: Some(frag),
+                parallel,
+                ready: false,
+                valid: false,
+                cache: UniformCache::new(),
+            },
+            rc: RefCount::new(),
         })
     }
 
+    pub(crate) fn gl(&self) -> &WebGl2RenderingContext {
+        &self.inner.gl
+    }
+
+    pub(crate) fn loc(&mut self, name: &str) -> Option<WebGlUniformLocation> {
+        self.inner
+            .cache
+            .get(&self.inner.gl, &self.inner.raw, name)
+            .cloned()
+    }
+
     fn finalize(&mut self) {
-        self.ready = true;
-        self.valid = self
+        self.inner.ready = true;
+        self.inner.valid = self
+            .inner
             .gl
-            .get_program_parameter(&self.raw, WebGl2RenderingContext::LINK_STATUS)
+            .get_program_parameter(&self.inner.raw, WebGl2RenderingContext::LINK_STATUS)
             .as_bool()
             .unwrap_or(false);
 
-        if !self.valid {
+        if !self.inner.valid {
             let prog_log = self
+                .inner
                 .gl
-                .get_program_info_log(&self.raw)
+                .get_program_info_log(&self.inner.raw)
                 .unwrap_or_else(|| "unknown error".into());
             let vert_log = self
+                .inner
                 .vert
                 .as_ref()
-                .and_then(|s| self.gl.get_shader_info_log(s))
+                .and_then(|s| self.inner.gl.get_shader_info_log(s))
                 .unwrap_or_default();
             let frag_log = self
+                .inner
                 .frag
                 .as_ref()
-                .and_then(|s| self.gl.get_shader_info_log(s))
+                .and_then(|s| self.inner.gl.get_shader_info_log(s))
                 .unwrap_or_default();
 
             console::error(&format!("[rswebgl] program link failed: {prog_log}"));
@@ -80,24 +103,22 @@ impl Program {
             }
         }
 
-        self.gl.delete_shader(self.vert.take().as_ref());
-        self.gl.delete_shader(self.frag.take().as_ref());
+        self.inner.gl.delete_shader(self.inner.vert.take().as_ref());
+        self.inner.gl.delete_shader(self.inner.frag.take().as_ref());
     }
 }
 
 #[wasm_bindgen]
 impl Program {
-    /// Returns true once compilation and linking are complete.
-    /// With KHR_parallel_shader_compile this is non-blocking — call
-    /// each frame until true, then check `is_valid()`.
     pub fn is_ready(&mut self) -> bool {
-        if self.ready {
+        if self.inner.ready {
             return true;
         }
 
-        let complete = if self.parallel {
-            self.gl
-                .get_program_parameter(&self.raw, COMPLETION_STATUS_KHR)
+        let complete = if self.inner.parallel {
+            self.inner
+                .gl
+                .get_program_parameter(&self.inner.raw, COMPLETION_STATUS_KHR)
                 .as_bool()
                 .unwrap_or(false)
         } else {
@@ -108,25 +129,15 @@ impl Program {
             self.finalize();
         }
 
-        self.ready
+        self.inner.ready
     }
 
-    /// Returns true if the program linked successfully.
-    /// Only meaningful after `is_ready()` returns true.
     pub fn is_valid(&self) -> bool {
-        self.valid
+        self.inner.valid
     }
 
     pub fn raw(&self) -> WebGlProgram {
-        self.raw.clone()
-    }
-}
-
-impl Drop for Program {
-    fn drop(&mut self) {
-        self.gl.delete_shader(self.vert.take().as_ref());
-        self.gl.delete_shader(self.frag.take().as_ref());
-        self.gl.delete_program(Some(&self.raw));
+        self.inner.raw.clone()
     }
 }
 
