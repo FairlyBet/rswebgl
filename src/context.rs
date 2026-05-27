@@ -102,3 +102,9 @@ impl Context {
         self.gl.clone()
     }
 }
+
+impl Context {
+    pub(crate) fn gl_ref(&self) -> &WebGl2RenderingContext {
+        &self.gl
+    }
+}

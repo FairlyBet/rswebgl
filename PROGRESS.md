@@ -46,26 +46,26 @@
 
 ## Pipeline State
 
-| Entity          | Status |
-|-----------------|--------|
-| Viewport        | ❌     |
-| Blending        | ❌     |
-| Depth test      | ❌     |
-| Stencil test    | ❌     |
-| Face culling    | ❌     |
-| Scissor test    | ❌     |
-| Color mask      | ❌     |
-| Polygon offset  | ❌     |
+| Entity          | Status | File                  |
+|-----------------|--------|-----------------------|
+| Viewport        | ✅     | `src/draw.rs`         |
+| Blending        | ✅     | `src/pipeline.rs`     |
+| Depth test      | ✅     | `src/pipeline.rs`     |
+| Stencil test    | ✅     | `src/pipeline.rs`     |
+| Face culling    | ✅     | `src/pipeline.rs`     |
+| Scissor test    | ✅     | `src/pipeline.rs`     |
+| Color mask      | ✅     | `src/pipeline.rs`     |
+| Polygon offset  | ✅     | `src/pipeline.rs`     |
 
 ## Draw Calls
 
-| Entity                   | Status |
-|--------------------------|--------|
-| drawArrays               | ❌     |
-| drawElements             | ❌     |
-| drawArraysInstanced      | ❌     |
-| drawElementsInstanced    | ❌     |
-| drawRangeElements        | ❌     |
+| Entity                   | Status | File                  |
+|--------------------------|--------|-----------------------|
+| drawArrays               | ✅     | `src/draw.rs`         |
+| drawElements             | ✅     | `src/draw.rs`         |
+| drawArraysInstanced      | ✅     | `src/draw.rs`         |
+| drawElementsInstanced    | ✅     | `src/draw.rs`         |
+| drawRangeElements        | ✅     | `src/draw.rs`         |
 
 ## Misc
 

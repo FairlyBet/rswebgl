@@ -1,7 +1,9 @@
 pub mod buffer;
 pub mod console;
 pub mod context;
+pub mod draw;
 pub mod extension;
+pub mod pipeline;
 pub mod program;
 pub(crate) mod ref_count;
 pub(crate) mod uniform_cache;
