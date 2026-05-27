@@ -1,17 +1,16 @@
-use rustc_hash::FxHashMap;
 use web_sys::{WebGl2RenderingContext, WebGlProgram, WebGlUniformLocation};
 
 use crate::console;
 
 #[derive(Debug, Clone)]
 pub struct UniformCache {
-    locations: FxHashMap<Box<str>, WebGlUniformLocation>,
+    entries: Vec<(Box<str>, WebGlUniformLocation)>,
 }
 
 impl UniformCache {
     pub fn new() -> Self {
         Self {
-            locations: FxHashMap::default(),
+            entries: Vec::new(),
         }
     }
 
@@ -21,17 +20,18 @@ impl UniformCache {
         program: &WebGlProgram,
         name: &str,
     ) -> Option<&WebGlUniformLocation> {
-        if !self.locations.contains_key(name) {
-            match gl.get_uniform_location(program, name) {
+        match self.entries.binary_search_by(|(k, _)| k.as_ref().cmp(name)) {
+            Ok(idx) => Some(&self.entries[idx].1),
+            Err(idx) => match gl.get_uniform_location(program, name) {
                 Some(loc) => {
-                    self.locations.insert(name.into(), loc);
+                    self.entries.insert(idx, (name.into(), loc));
+                    Some(&self.entries[idx].1)
                 }
                 None => {
                     console::warn(&format!("[rswebgl] uniform not found: \"{name}\""));
-                    return None;
+                    None
                 }
-            }
+            },
         }
-        self.locations.get(name)
     }
 }

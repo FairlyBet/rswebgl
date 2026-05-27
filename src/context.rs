@@ -7,6 +7,7 @@ use crate::console;
 use crate::extension::Extension;
 use crate::program::Program;
 use crate::texture::{Texture, TextureMagFilter, TextureMinFilter, TextureTarget};
+use crate::vao::VertexArray;
 
 #[wasm_bindgen]
 #[derive(Debug)]
@@ -86,6 +87,10 @@ impl Context {
         mag_filter: TextureMagFilter,
     ) -> Result<Texture, String> {
         Texture::new(&self.gl, target, min_filter, mag_filter)
+    }
+
+    pub fn create_vertex_array(&self) -> Result<VertexArray, String> {
+        VertexArray::new(&self.gl)
     }
 
     pub fn create_program(&self, vert_src: &str, frag_src: &str) -> Result<Program, String> {

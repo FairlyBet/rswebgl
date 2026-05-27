@@ -6,5 +6,6 @@ pub mod program;
 pub(crate) mod ref_count;
 pub(crate) mod uniform_cache;
 pub mod texture;
+pub mod vao;
 pub mod uniform_value;
 pub mod uniforms;

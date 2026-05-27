@@ -54,6 +54,10 @@ ref_counted!(Buffer wraps BufferInner; drop(self) {
 });
 
 impl Buffer {
+    pub(crate) fn raw_gl(&self) -> &WebGlBuffer {
+        &self.inner.raw
+    }
+
     pub(crate) fn new(
         gl: &WebGl2RenderingContext,
         target: BufferTarget,

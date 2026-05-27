@@ -13,7 +13,7 @@
 | Buffer                      | ✅     | `src/buffer.rs`       |
 | Shader (vertex / fragment)  | ✅     | `src/program.rs`      |
 | Program                     | ✅     | `src/program.rs`      |
-| Vertex Array Object (VAO)   | ❌     | —                     |
+| Vertex Array Object (VAO)   | ✅     | `src/vao.rs`          |
 | Texture 2D                  | ✅     | `src/texture.rs`      |
 | Texture 3D                  | 🔶     | `src/texture.rs`      |
 | Texture Cube Map            | ✅     | `src/texture.rs`      |
@@ -38,11 +38,11 @@
 
 ## Vertex Attributes
 
-| Entity                           | Status |
-|----------------------------------|--------|
-| vertexAttribPointer              | ❌     |
-| vertexAttribIPointer (integer)   | ❌     |
-| vertexAttribDivisor (instancing) | ❌     |
+| Entity                           | Status | File                  |
+|----------------------------------|--------|-----------------------|
+| vertexAttribPointer              | ✅     | `src/vao.rs`          |
+| vertexAttribIPointer (integer)   | ✅     | `src/vao.rs`          |
+| vertexAttribDivisor (instancing) | ✅     | `src/vao.rs`          |
 
 ## Pipeline State
 
@@ -74,6 +74,7 @@
 | Context                | ✅     | `src/context.rs`      |
 | Extension registry     | ✅     | `src/extension.rs`    |
 | KHR_parallel_compile   | ✅     | `src/program.rs`      |
+| RefCount (GL lifecycle) | ✅     | `src/ref_count.rs`    |
 | Pixel pack / unpack    | ❌     | —                     |
 | Blit framebuffer       | ❌     | —                     |
 | Invalidate framebuffer | ❌     | —                     |
