@@ -21,6 +21,7 @@
 | Sampler                     | ❌     | —                     |
 | Framebuffer                 | ❌     | —                     |
 | Renderbuffer                | ❌     | —                     |
+| Renderbuffer multisample    | ❌     | —                     |
 | Transform Feedback          | ❌     | —                     |
 | Query                       | ❌     | —                     |
 | Sync                        | ❌     | —                     |
@@ -67,6 +68,58 @@
 | drawElementsInstanced    | ✅     | `src/draw.rs`         |
 | drawRangeElements        | ✅     | `src/draw.rs`         |
 
+## Framebuffer Operations
+
+| Entity                      | Status | File |
+|-----------------------------|--------|------|
+| readPixels                  | ❌     | —    |
+| readBuffer                  | ❌     | —    |
+| blitFramebuffer             | ❌     | —    |
+| invalidateFramebuffer       | ❌     | —    |
+| invalidateSubFramebuffer    | ❌     | —    |
+| drawBuffers (MRT)           | ❌     | —    |
+
+## Buffer Operations
+
+| Entity                      | Status | File |
+|-----------------------------|--------|------|
+| copyBufferSubData           | ❌     | —    |
+| getBufferSubData            | ❌     | —    |
+
+## Texture Operations
+
+| Entity                      | Status | File |
+|-----------------------------|--------|------|
+| texSubImage2D               | ❌     | —    |
+| texSubImage3D               | ❌     | —    |
+| copyTexImage2D              | ❌     | —    |
+| copyTexSubImage2D           | ❌     | —    |
+| copyTexSubImage3D           | ❌     | —    |
+| texStorage2D                | ❌     | —    |
+| texStorage3D                | ❌     | —    |
+| compressedTexImage2D        | ❌     | —    |
+| compressedTexImage3D        | ❌     | —    |
+| Texture LOD params          | ❌     | —    |
+| Pixel pack / unpack params  | ❌     | —    |
+
+## Clear
+
+| Entity                      | Status | File |
+|-----------------------------|--------|------|
+| clear / clearColor          | ❌     | —    |
+| clearDepth / clearStencil   | ❌     | —    |
+| clearBuffer (fv/iv/uiv/fi)  | ❌     | —    |
+
+## Program Introspection
+
+| Entity                      | Status | File |
+|-----------------------------|--------|------|
+| getActiveAttrib             | ❌     | —    |
+| getActiveUniform            | ❌     | —    |
+| getAttribLocation           | ❌     | —    |
+| getUniformBlockIndex        | ❌     | —    |
+| uniformBlockBinding         | ❌     | —    |
+
 ## Misc
 
 | Entity                 | Status | File                  |
@@ -75,6 +128,3 @@
 | Extension registry     | ✅     | `src/extension.rs`    |
 | KHR_parallel_compile   | ✅     | `src/program.rs`      |
 | RefCount (GL lifecycle) | ✅     | `src/ref_count.rs`    |
-| Pixel pack / unpack    | ❌     | —                     |
-| Blit framebuffer       | ❌     | —                     |
-| Invalidate framebuffer | ❌     | —                     |
