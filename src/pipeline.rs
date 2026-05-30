@@ -8,18 +8,20 @@ use web_sys::WebGl2RenderingContext;
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DepthFunc {
-    Never        = 0x0200,
-    Less         = 0x0201,
-    Equal        = 0x0202,
-    LessEqual    = 0x0203,
-    Greater      = 0x0204,
-    NotEqual     = 0x0205,
+    Never = 0x0200,
+    Less = 0x0201,
+    Equal = 0x0202,
+    LessEqual = 0x0203,
+    Greater = 0x0204,
+    NotEqual = 0x0205,
     GreaterEqual = 0x0206,
-    Always       = 0x0207,
+    Always = 0x0207,
 }
 
 impl DepthFunc {
-    fn as_gl(&self) -> u32 { self.clone() as u32 }
+    fn as_gl(&self) -> u32 {
+        self.clone() as u32
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -29,25 +31,27 @@ impl DepthFunc {
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlendFactor {
-    Zero                  = 0,
-    One                   = 1,
-    SrcColor              = 0x0300,
-    OneMinusSrcColor      = 0x0301,
-    SrcAlpha              = 0x0302,
-    OneMinusSrcAlpha      = 0x0303,
-    DstAlpha              = 0x0304,
-    OneMinusDstAlpha      = 0x0305,
-    DstColor              = 0x0306,
-    OneMinusDstColor      = 0x0307,
-    SrcAlphaSaturate      = 0x0308,
-    ConstantColor         = 0x8001,
+    Zero = 0,
+    One = 1,
+    SrcColor = 0x0300,
+    OneMinusSrcColor = 0x0301,
+    SrcAlpha = 0x0302,
+    OneMinusSrcAlpha = 0x0303,
+    DstAlpha = 0x0304,
+    OneMinusDstAlpha = 0x0305,
+    DstColor = 0x0306,
+    OneMinusDstColor = 0x0307,
+    SrcAlphaSaturate = 0x0308,
+    ConstantColor = 0x8001,
     OneMinusConstantColor = 0x8002,
-    ConstantAlpha         = 0x8003,
+    ConstantAlpha = 0x8003,
     OneMinusConstantAlpha = 0x8004,
 }
 
 impl BlendFactor {
-    fn as_gl(&self) -> u32 { self.clone() as u32 }
+    fn as_gl(&self) -> u32 {
+        self.clone() as u32
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -57,15 +61,17 @@ impl BlendFactor {
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlendEquation {
-    Add             = 0x8006,
-    Subtract        = 0x800A,
+    Add = 0x8006,
+    Subtract = 0x800A,
     ReverseSubtract = 0x800B,
-    Min             = 0x8007,
-    Max             = 0x8008,
+    Min = 0x8007,
+    Max = 0x8008,
 }
 
 impl BlendEquation {
-    fn as_gl(&self) -> u32 { self.clone() as u32 }
+    fn as_gl(&self) -> u32 {
+        self.clone() as u32
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -75,13 +81,15 @@ impl BlendEquation {
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CullFace {
-    Front        = 0x0404,
-    Back         = 0x0405,
+    Front = 0x0404,
+    Back = 0x0405,
     FrontAndBack = 0x0408,
 }
 
 impl CullFace {
-    fn as_gl(&self) -> u32 { self.clone() as u32 }
+    fn as_gl(&self) -> u32 {
+        self.clone() as u32
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -91,12 +99,14 @@ impl CullFace {
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrontFace {
-    Cw  = 0x0900,
+    Cw = 0x0900,
     Ccw = 0x0901,
 }
 
 impl FrontFace {
-    fn as_gl(&self) -> u32 { self.clone() as u32 }
+    fn as_gl(&self) -> u32 {
+        self.clone() as u32
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -106,35 +116,39 @@ impl FrontFace {
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StencilFunc {
-    Never        = 0x0200,
-    Less         = 0x0201,
-    Equal        = 0x0202,
-    LessEqual    = 0x0203,
-    Greater      = 0x0204,
-    NotEqual     = 0x0205,
+    Never = 0x0200,
+    Less = 0x0201,
+    Equal = 0x0202,
+    LessEqual = 0x0203,
+    Greater = 0x0204,
+    NotEqual = 0x0205,
     GreaterEqual = 0x0206,
-    Always       = 0x0207,
+    Always = 0x0207,
 }
 
 impl StencilFunc {
-    fn as_gl(&self) -> u32 { self.clone() as u32 }
+    fn as_gl(&self) -> u32 {
+        self.clone() as u32
+    }
 }
 
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StencilOp {
-    Keep     = 0x1E00,
-    Zero     = 0,
-    Replace  = 0x1E01,
-    Incr     = 0x1E02,
+    Keep = 0x1E00,
+    Zero = 0,
+    Replace = 0x1E01,
+    Incr = 0x1E02,
     IncrWrap = 0x8507,
-    Decr     = 0x1E03,
+    Decr = 0x1E03,
     DecrWrap = 0x8508,
-    Invert   = 0x150A,
+    Invert = 0x150A,
 }
 
 impl StencilOp {
-    fn as_gl(&self) -> u32 { self.clone() as u32 }
+    fn as_gl(&self) -> u32 {
+        self.clone() as u32
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -258,10 +272,7 @@ impl PipelineState {
                 self.blend_src_alpha.as_gl(),
                 self.blend_dst_alpha.as_gl(),
             );
-            gl.blend_equation_separate(
-                self.blend_eq_rgb.as_gl(),
-                self.blend_eq_alpha.as_gl(),
-            );
+            gl.blend_equation_separate(self.blend_eq_rgb.as_gl(), self.blend_eq_alpha.as_gl());
         } else {
             gl.disable(WebGl2RenderingContext::BLEND);
         }
@@ -278,7 +289,11 @@ impl PipelineState {
         // Stencil
         if self.stencil_test {
             gl.enable(WebGl2RenderingContext::STENCIL_TEST);
-            gl.stencil_func(self.stencil_func.as_gl(), self.stencil_ref, self.stencil_mask);
+            gl.stencil_func(
+                self.stencil_func.as_gl(),
+                self.stencil_ref,
+                self.stencil_mask,
+            );
             gl.stencil_op(
                 self.stencil_fail.as_gl(),
                 self.stencil_depth_fail.as_gl(),
@@ -292,13 +307,23 @@ impl PipelineState {
         // Scissor
         if self.scissor_test {
             gl.enable(WebGl2RenderingContext::SCISSOR_TEST);
-            gl.scissor(self.scissor_x, self.scissor_y, self.scissor_width, self.scissor_height);
+            gl.scissor(
+                self.scissor_x,
+                self.scissor_y,
+                self.scissor_width,
+                self.scissor_height,
+            );
         } else {
             gl.disable(WebGl2RenderingContext::SCISSOR_TEST);
         }
 
         // Color mask
-        gl.color_mask(self.color_mask_r, self.color_mask_g, self.color_mask_b, self.color_mask_a);
+        gl.color_mask(
+            self.color_mask_r,
+            self.color_mask_g,
+            self.color_mask_b,
+            self.color_mask_a,
+        );
 
         // Polygon offset
         if self.polygon_offset_fill {
@@ -306,6 +331,143 @@ impl PipelineState {
             gl.polygon_offset(self.polygon_offset_factor, self.polygon_offset_units);
         } else {
             gl.disable(WebGl2RenderingContext::POLYGON_OFFSET_FILL);
+        }
+    }
+
+    pub(crate) fn apply_diff(&self, prev: &Self, gl: &WebGl2RenderingContext) {
+        // Depth
+        if self.depth_test != prev.depth_test {
+            if self.depth_test {
+                gl.enable(WebGl2RenderingContext::DEPTH_TEST);
+            } else {
+                gl.disable(WebGl2RenderingContext::DEPTH_TEST);
+            }
+        }
+        if self.depth_func != prev.depth_func {
+            gl.depth_func(self.depth_func.as_gl());
+        }
+        if self.depth_mask != prev.depth_mask {
+            gl.depth_mask(self.depth_mask);
+        }
+
+        // Blend
+        if self.blend != prev.blend {
+            if self.blend {
+                gl.enable(WebGl2RenderingContext::BLEND);
+            } else {
+                gl.disable(WebGl2RenderingContext::BLEND);
+            }
+        }
+        if self.blend_src_rgb != prev.blend_src_rgb
+            || self.blend_dst_rgb != prev.blend_dst_rgb
+            || self.blend_src_alpha != prev.blend_src_alpha
+            || self.blend_dst_alpha != prev.blend_dst_alpha
+        {
+            gl.blend_func_separate(
+                self.blend_src_rgb.as_gl(),
+                self.blend_dst_rgb.as_gl(),
+                self.blend_src_alpha.as_gl(),
+                self.blend_dst_alpha.as_gl(),
+            );
+        }
+        if self.blend_eq_rgb != prev.blend_eq_rgb || self.blend_eq_alpha != prev.blend_eq_alpha {
+            gl.blend_equation_separate(self.blend_eq_rgb.as_gl(), self.blend_eq_alpha.as_gl());
+        }
+
+        // Cull face
+        if self.cull_face != prev.cull_face {
+            if self.cull_face {
+                gl.enable(WebGl2RenderingContext::CULL_FACE);
+            } else {
+                gl.disable(WebGl2RenderingContext::CULL_FACE);
+            }
+        }
+        if self.cull_mode != prev.cull_mode {
+            gl.cull_face(self.cull_mode.as_gl());
+        }
+        if self.front_face != prev.front_face {
+            gl.front_face(self.front_face.as_gl());
+        }
+
+        // Stencil
+        if self.stencil_test != prev.stencil_test {
+            if self.stencil_test {
+                gl.enable(WebGl2RenderingContext::STENCIL_TEST);
+            } else {
+                gl.disable(WebGl2RenderingContext::STENCIL_TEST);
+            }
+        }
+        if self.stencil_func != prev.stencil_func
+            || self.stencil_ref != prev.stencil_ref
+            || self.stencil_mask != prev.stencil_mask
+        {
+            gl.stencil_func(
+                self.stencil_func.as_gl(),
+                self.stencil_ref,
+                self.stencil_mask,
+            );
+        }
+        if self.stencil_fail != prev.stencil_fail
+            || self.stencil_depth_fail != prev.stencil_depth_fail
+            || self.stencil_pass != prev.stencil_pass
+        {
+            gl.stencil_op(
+                self.stencil_fail.as_gl(),
+                self.stencil_depth_fail.as_gl(),
+                self.stencil_pass.as_gl(),
+            );
+        }
+        if self.stencil_write_mask != prev.stencil_write_mask {
+            gl.stencil_mask(self.stencil_write_mask);
+        }
+
+        // Scissor
+        if self.scissor_test != prev.scissor_test {
+            if self.scissor_test {
+                gl.enable(WebGl2RenderingContext::SCISSOR_TEST);
+            } else {
+                gl.disable(WebGl2RenderingContext::SCISSOR_TEST);
+            }
+        }
+        if self.scissor_x != prev.scissor_x
+            || self.scissor_y != prev.scissor_y
+            || self.scissor_width != prev.scissor_width
+            || self.scissor_height != prev.scissor_height
+        {
+            gl.scissor(
+                self.scissor_x,
+                self.scissor_y,
+                self.scissor_width,
+                self.scissor_height,
+            );
+        }
+
+        // Color mask
+        if self.color_mask_r != prev.color_mask_r
+            || self.color_mask_g != prev.color_mask_g
+            || self.color_mask_b != prev.color_mask_b
+            || self.color_mask_a != prev.color_mask_a
+        {
+            gl.color_mask(
+                self.color_mask_r,
+                self.color_mask_g,
+                self.color_mask_b,
+                self.color_mask_a,
+            );
+        }
+
+        // Polygon offset
+        if self.polygon_offset_fill != prev.polygon_offset_fill {
+            if self.polygon_offset_fill {
+                gl.enable(WebGl2RenderingContext::POLYGON_OFFSET_FILL);
+            } else {
+                gl.disable(WebGl2RenderingContext::POLYGON_OFFSET_FILL);
+            }
+        }
+        if self.polygon_offset_factor != prev.polygon_offset_factor
+            || self.polygon_offset_units != prev.polygon_offset_units
+        {
+            gl.polygon_offset(self.polygon_offset_factor, self.polygon_offset_units);
         }
     }
 }
