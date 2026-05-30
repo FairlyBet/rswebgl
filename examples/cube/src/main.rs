@@ -4,14 +4,14 @@ use std::rc::Rc;
 use glam::{Mat4, Vec3};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
+use web_sys::HtmlCanvasElement;
 
-use rswebgl::buffer::{BufferTarget, BufferUsage};
 use rswebgl::context::Context;
-use rswebgl::draw::{DrawCommand, DrawMode, IndexType, Viewport};
+use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
+use rswebgl::framebuffer::ClearMask;
 use rswebgl::render_state::{DepthFunc, RenderState};
 use rswebgl::uniform_values::UniformValues;
-use rswebgl::vao::VertexAttr;
+use rswebgl::vao_builder::{AttrKind, VaoBuilder};
 
 const VERT: &str = r#"#version 300 es
 precision highp float;
@@ -34,15 +34,6 @@ void main() {
 }
 "#;
 
-fn bytes<T>(slice: &[T]) -> &[u8] {
-    unsafe {
-        std::slice::from_raw_parts(
-            slice.as_ptr() as *const u8,
-            std::mem::size_of_val(slice),
-        )
-    }
-}
-
 fn main() {
     let window = web_sys::window().expect("no window");
     let document = window.document().expect("no document");
@@ -59,16 +50,27 @@ fn main() {
     let mut program = ctx.create_program(VERT, FRAG).expect("program");
 
     #[rustfmt::skip]
-    let verts: [f32; 48] = [
-        // pos              // color
-        -0.5, -0.5, -0.5,   0.0, 0.0, 0.0,
-         0.5, -0.5, -0.5,   1.0, 0.0, 0.0,
-         0.5,  0.5, -0.5,   1.0, 1.0, 0.0,
-        -0.5,  0.5, -0.5,   0.0, 1.0, 0.0,
-        -0.5, -0.5,  0.5,   0.0, 0.0, 1.0,
-         0.5, -0.5,  0.5,   1.0, 0.0, 1.0,
-         0.5,  0.5,  0.5,   1.0, 1.0, 1.0,
-        -0.5,  0.5,  0.5,   0.0, 1.0, 1.0,
+    let positions: [f32; 24] = [
+        -0.5, -0.5, -0.5,
+         0.5, -0.5, -0.5,
+         0.5,  0.5, -0.5,
+        -0.5,  0.5, -0.5,
+        -0.5, -0.5,  0.5,
+         0.5, -0.5,  0.5,
+         0.5,  0.5,  0.5,
+        -0.5,  0.5,  0.5,
+    ];
+
+    #[rustfmt::skip]
+    let colors: [f32; 24] = [
+        0.0, 0.0, 0.0,
+        1.0, 0.0, 0.0,
+        1.0, 1.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0,
+        1.0, 0.0, 1.0,
+        1.0, 1.0, 1.0,
+        0.0, 1.0, 1.0,
     ];
 
     #[rustfmt::skip]
@@ -81,37 +83,19 @@ fn main() {
         3,7,6, 3,6,2, // top   (+y)
     ];
 
-    let vbo = ctx
-        .create_buffer(BufferTarget::Array, BufferUsage::StaticDraw, bytes(&verts))
-        .expect("vbo");
-    let ibo = ctx
-        .create_buffer(
-            BufferTarget::ElementArray,
-            BufferUsage::StaticDraw,
-            bytes(&indices),
-        )
-        .expect("ibo");
-
-    let mut vao = ctx.create_vertex_array().expect("vao");
-    let stride = (6 * std::mem::size_of::<f32>()) as i32;
-
-    let mut pos = VertexAttr::float(3);
-    pos.stride = stride;
-    pos.offset = 0;
-    let mut col = VertexAttr::float(3);
-    col.stride = stride;
-    col.offset = (3 * std::mem::size_of::<f32>()) as i32;
-
-    vao.attr(0, &vbo, &pos);
-    vao.attr(1, &vbo, &col);
-    vao.set_index_buffer(&ibo);
+    let mut vao_builder = VaoBuilder::new(&ctx);
+    vao_builder.add_f32(0, AttrKind::F32x3, &positions);
+    vao_builder.add_f32(1, AttrKind::F32x3, &colors);
+    vao_builder.add_indices_u16(&indices);
+    let vao = vao_builder.build().expect("vao");
 
     let mut render_state = RenderState::new();
     render_state.depth_test = true;
     render_state.depth_func = DepthFunc::Less;
 
     let renderer = ctx.renderer();
-    renderer.set_default_viewport(Viewport::new(0, 0, w, h));
+    ctx.default_framebuffer()
+        .set_clear_color(0.05, 0.05, 0.08, 1.0);
 
     let aspect = w as f32 / h as f32;
     let proj = Mat4::perspective_rh_gl(60f32.to_radians(), aspect, 0.1, 100.0);
@@ -119,7 +103,6 @@ fn main() {
 
     let draw_cmd = DrawCommand::elements(DrawMode::Triangles, 36, IndexType::UnsignedShort, 0);
 
-    let gl = ctx.gl();
     let mut uniforms = UniformValues::new();
 
     // requestAnimationFrame loop with self-reference via Rc<RefCell<Option<Closure>>>.
@@ -133,10 +116,7 @@ fn main() {
         let mvp = proj * view * model;
         uniforms.set_mat4("u_mvp", false, &mvp.to_cols_array());
 
-        gl.clear_color(0.05, 0.05, 0.08, 1.0);
-        gl.clear(
-            WebGl2RenderingContext::COLOR_BUFFER_BIT | WebGl2RenderingContext::DEPTH_BUFFER_BIT,
-        );
+        renderer.clear(ClearMask::color_depth());
 
         renderer.draw(
             &render_state,
@@ -147,11 +127,8 @@ fn main() {
             None,
         );
 
-        let _ = win.request_animation_frame(
-            f.borrow().as_ref().unwrap().as_ref().unchecked_ref(),
-        );
+        let _ = win.request_animation_frame(f.borrow().as_ref().unwrap().as_ref().unchecked_ref());
     }));
 
-    let _ = window
-        .request_animation_frame(g.borrow().as_ref().unwrap().as_ref().unchecked_ref());
+    let _ = window.request_animation_frame(g.borrow().as_ref().unwrap().as_ref().unchecked_ref());
 }

@@ -6,6 +6,7 @@ use crate::buffer::{Buffer, BufferTarget, BufferUsage};
 use crate::console;
 use crate::draw::Viewport;
 use crate::extension::Extension;
+use crate::framebuffer::DefaultFramebuffer;
 use crate::limits;
 use crate::program::Program;
 use crate::renderer::Renderer;
@@ -17,17 +18,20 @@ pub struct Context {
     gl: WebGl2RenderingContext,
     extensions: Vec<Extension>,
     renderer: Renderer,
+    default_fb: DefaultFramebuffer,
 }
 
 #[wasm_bindgen]
 impl Context {
     pub fn from_gl(gl: WebGl2RenderingContext) -> Context {
         limits::init(&gl);
-        let renderer = Renderer::new(gl.clone(), Viewport::new(0, 0, 0, 0));
+        let default_fb = DefaultFramebuffer::new(Viewport::new(0, 0, 0, 0));
+        let renderer = Renderer::new(gl.clone(), default_fb.handle());
         Context {
             gl,
             extensions: Vec::new(),
             renderer,
+            default_fb,
         }
     }
 
@@ -40,16 +44,22 @@ impl Context {
             .map_err(|_| "cast to WebGl2RenderingContext failed")?;
         limits::init(&gl);
         let viewport = Viewport::new(0, 0, canvas.width() as i32, canvas.height() as i32);
-        let renderer = Renderer::new(gl.clone(), viewport);
+        let default_fb = DefaultFramebuffer::new(viewport);
+        let renderer = Renderer::new(gl.clone(), default_fb.handle());
         Ok(Context {
             gl,
             extensions: Vec::new(),
             renderer,
+            default_fb,
         })
     }
 
     pub fn renderer(&self) -> Renderer {
         self.renderer.handle()
+    }
+
+    pub fn default_framebuffer(&self) -> DefaultFramebuffer {
+        self.default_fb.handle()
     }
 
     pub fn enable_extension(&mut self, ext: Extension) -> bool {
@@ -116,4 +126,3 @@ impl Context {
         self.gl.clone()
     }
 }
-

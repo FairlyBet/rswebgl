@@ -11,6 +11,5 @@ web-sys = { workspace = true, features = [
     "Document",
     "Element",
     "HtmlCanvasElement",
-    "WebGl2RenderingContext",
     "Window",
 ] }

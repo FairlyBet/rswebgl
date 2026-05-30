@@ -5,6 +5,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::WebGl2RenderingContext;
 
 use crate::draw::{DrawCommand, Viewport};
+use crate::framebuffer::{ClearMask, DefaultFramebuffer};
 use crate::program::Program;
 use crate::render_state::RenderState;
 use crate::uniform_values::UniformValues;
@@ -12,7 +13,7 @@ use crate::vao::VertexArray;
 
 struct RendererInner {
     gl: WebGl2RenderingContext,
-    default_viewport: Viewport,
+    default_fb: DefaultFramebuffer,
     prev_program: Option<Program>,
     prev_render_state: Option<RenderState>,
     prev_vao: Option<Option<VertexArray>>,
@@ -26,11 +27,11 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub(crate) fn new(gl: WebGl2RenderingContext, default_viewport: Viewport) -> Self {
+    pub(crate) fn new(gl: WebGl2RenderingContext, default_fb: DefaultFramebuffer) -> Self {
         Self {
             inner: Rc::new(RefCell::new(RendererInner {
                 gl,
-                default_viewport,
+                default_fb,
                 prev_program: None,
                 prev_render_state: None,
                 prev_vao: None,
@@ -49,8 +50,22 @@ impl Renderer {
 
 #[wasm_bindgen]
 impl Renderer {
-    pub fn set_default_viewport(&self, v: Viewport) {
-        self.inner.borrow_mut().default_viewport = v;
+    pub fn clear(&self, mask: ClearMask) {
+        let s = self.inner.borrow();
+        let gl = &s.gl;
+        let fb = &s.default_fb;
+
+        if mask.color {
+            let c = fb.clear_color_rgba();
+            gl.clear_color(c[0], c[1], c[2], c[3]);
+        }
+        if mask.depth {
+            gl.clear_depth(fb.clear_depth_value());
+        }
+        if mask.stencil {
+            gl.clear_stencil(fb.clear_stencil_value());
+        }
+        gl.clear(mask.as_gl());
     }
 
     pub fn draw(
@@ -66,7 +81,7 @@ impl Renderer {
         let gl = s.gl.clone();
 
         // 1. Viewport
-        let vp = viewport.unwrap_or(s.default_viewport);
+        let vp = viewport.unwrap_or_else(|| s.default_fb.viewport());
         if s.prev_viewport != Some(vp) {
             gl.viewport(vp.x, vp.y, vp.width, vp.height);
             s.prev_viewport = Some(vp);
