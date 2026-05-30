@@ -279,7 +279,14 @@ impl UniformValues {
                     if !tex_changed && !unit_changed {
                         continue;
                     }
-                    apply_sampler(program, name, *unit, texture, unit_changed, &mut current_active);
+                    apply_sampler(
+                        program,
+                        name,
+                        *unit,
+                        texture,
+                        unit_changed,
+                        &mut current_active,
+                    );
                 }
                 _ => {
                     let changed = match prev_v {
@@ -345,7 +352,10 @@ impl UniformValues {
         self.put(name, Uniform::IVec2(smallvec![x as i32, y as i32]));
     }
     pub fn set_bvec3(&mut self, name: &str, x: bool, y: bool, z: bool) {
-        self.put(name, Uniform::IVec3(smallvec![x as i32, y as i32, z as i32]));
+        self.put(
+            name,
+            Uniform::IVec3(smallvec![x as i32, y as i32, z as i32]),
+        );
     }
     pub fn set_bvec4(&mut self, name: &str, x: bool, y: bool, z: bool, w: bool) {
         self.put(
