@@ -11,14 +11,14 @@ use crate::ref_count::{RefCount, ref_counted};
 #[wasm_bindgen]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AttrType {
-    Byte          = 0x1400, // BYTE
-    UnsignedByte  = 0x1401, // UNSIGNED_BYTE
-    Short         = 0x1402, // SHORT
+    Byte = 0x1400,          // BYTE
+    UnsignedByte = 0x1401,  // UNSIGNED_BYTE
+    Short = 0x1402,         // SHORT
     UnsignedShort = 0x1403, // UNSIGNED_SHORT
-    Int           = 0x1404, // INT
-    UnsignedInt   = 0x1405, // UNSIGNED_INT
-    Float         = 0x1406, // FLOAT
-    HalfFloat     = 0x140B, // HALF_FLOAT
+    Int = 0x1404,           // INT
+    UnsignedInt = 0x1405,   // UNSIGNED_INT
+    Float = 0x1406,         // FLOAT
+    HalfFloat = 0x140B,     // HALF_FLOAT
 }
 
 impl AttrType {
@@ -61,21 +61,45 @@ impl VertexAttr {
 impl VertexAttr {
     // --- float pointer (vertexAttribPointer) ---
 
-    pub fn float(size: u8) -> Self { Self::new(size, AttrType::Float, false, false) }
-    pub fn half_float(size: u8) -> Self { Self::new(size, AttrType::HalfFloat, false, false) }
-    pub fn normalized_byte(size: u8) -> Self { Self::new(size, AttrType::Byte, true, false) }
-    pub fn normalized_ubyte(size: u8) -> Self { Self::new(size, AttrType::UnsignedByte, true, false) }
-    pub fn normalized_short(size: u8) -> Self { Self::new(size, AttrType::Short, true, false) }
-    pub fn normalized_ushort(size: u8) -> Self { Self::new(size, AttrType::UnsignedShort, true, false) }
+    pub fn float(size: u8) -> Self {
+        Self::new(size, AttrType::Float, false, false)
+    }
+    pub fn half_float(size: u8) -> Self {
+        Self::new(size, AttrType::HalfFloat, false, false)
+    }
+    pub fn normalized_byte(size: u8) -> Self {
+        Self::new(size, AttrType::Byte, true, false)
+    }
+    pub fn normalized_ubyte(size: u8) -> Self {
+        Self::new(size, AttrType::UnsignedByte, true, false)
+    }
+    pub fn normalized_short(size: u8) -> Self {
+        Self::new(size, AttrType::Short, true, false)
+    }
+    pub fn normalized_ushort(size: u8) -> Self {
+        Self::new(size, AttrType::UnsignedShort, true, false)
+    }
 
     // --- integer pointer (vertexAttribIPointer) ---
 
-    pub fn int(size: u8) -> Self { Self::new(size, AttrType::Int, false, true) }
-    pub fn uint(size: u8) -> Self { Self::new(size, AttrType::UnsignedInt, false, true) }
-    pub fn ibyte(size: u8) -> Self { Self::new(size, AttrType::Byte, false, true) }
-    pub fn iubyte(size: u8) -> Self { Self::new(size, AttrType::UnsignedByte, false, true) }
-    pub fn ishort(size: u8) -> Self { Self::new(size, AttrType::Short, false, true) }
-    pub fn iushort(size: u8) -> Self { Self::new(size, AttrType::UnsignedShort, false, true) }
+    pub fn int(size: u8) -> Self {
+        Self::new(size, AttrType::Int, false, true)
+    }
+    pub fn uint(size: u8) -> Self {
+        Self::new(size, AttrType::UnsignedInt, false, true)
+    }
+    pub fn ibyte(size: u8) -> Self {
+        Self::new(size, AttrType::Byte, false, true)
+    }
+    pub fn iubyte(size: u8) -> Self {
+        Self::new(size, AttrType::UnsignedByte, false, true)
+    }
+    pub fn ishort(size: u8) -> Self {
+        Self::new(size, AttrType::Short, false, true)
+    }
+    pub fn iushort(size: u8) -> Self {
+        Self::new(size, AttrType::UnsignedShort, false, true)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -114,10 +138,7 @@ impl VertexArray {
     pub fn attr(&mut self, index: u32, buffer: &Buffer, attr: &VertexAttr) {
         let gl = &self.inner.gl;
         gl.bind_vertex_array(Some(&self.inner.raw));
-        gl.bind_buffer(
-            WebGl2RenderingContext::ARRAY_BUFFER,
-            Some(buffer.raw_gl()),
-        );
+        gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER, Some(buffer.raw_gl()));
 
         if attr.integer {
             gl.vertex_attrib_i_pointer_with_i32(

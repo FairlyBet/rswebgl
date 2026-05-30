@@ -102,7 +102,9 @@ impl Buffer {
 #[wasm_bindgen]
 impl Buffer {
     pub fn write(&self, target: BufferTarget, offset: i32, data: &[u8]) {
-        self.inner.gl.bind_buffer(target.as_gl(), Some(&self.inner.raw));
+        self.inner
+            .gl
+            .bind_buffer(target.as_gl(), Some(&self.inner.raw));
         self.inner
             .gl
             .buffer_sub_data_with_i32_and_u8_array(target.as_gl(), offset, data);

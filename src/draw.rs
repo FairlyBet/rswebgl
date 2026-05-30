@@ -8,17 +8,19 @@ use web_sys::WebGl2RenderingContext;
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DrawMode {
-    Points        = 0x0000,
-    Lines         = 0x0001,
-    LineLoop      = 0x0002,
-    LineStrip     = 0x0003,
-    Triangles     = 0x0004,
+    Points = 0x0000,
+    Lines = 0x0001,
+    LineLoop = 0x0002,
+    LineStrip = 0x0003,
+    Triangles = 0x0004,
     TriangleStrip = 0x0005,
-    TriangleFan   = 0x0006,
+    TriangleFan = 0x0006,
 }
 
 impl DrawMode {
-    fn as_gl(&self) -> u32 { *self as u32 }
+    fn as_gl(&self) -> u32 {
+        *self as u32
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -28,13 +30,15 @@ impl DrawMode {
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IndexType {
-    UnsignedByte  = 0x1401,
+    UnsignedByte = 0x1401,
     UnsignedShort = 0x1403,
-    UnsignedInt   = 0x1405,
+    UnsignedInt = 0x1405,
 }
 
 impl IndexType {
-    fn as_gl(&self) -> u32 { *self as u32 }
+    fn as_gl(&self) -> u32 {
+        *self as u32
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -53,7 +57,12 @@ pub struct Viewport {
 #[wasm_bindgen]
 impl Viewport {
     pub fn new(x: i32, y: i32, width: i32, height: i32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 }
 
@@ -83,33 +92,49 @@ pub struct DrawCommand {
 impl DrawCommand {
     pub fn arrays(mode: DrawMode, first: i32, count: i32) -> Self {
         Self {
-            mode, count, first,
+            mode,
+            count,
+            first,
             index_type: IndexType::UnsignedShort,
-            offset: 0, instance_count: 1,
-            range_start: 0, range_end: 0,
+            offset: 0,
+            instance_count: 1,
+            range_start: 0,
+            range_end: 0,
             kind: ARRAYS,
         }
     }
 
     pub fn elements(mode: DrawMode, count: i32, index_type: IndexType, offset: i32) -> Self {
         Self {
-            mode, count, first: 0,
-            index_type, offset,
+            mode,
+            count,
+            first: 0,
+            index_type,
+            offset,
             instance_count: 1,
-            range_start: 0, range_end: 0,
+            range_start: 0,
+            range_end: 0,
             kind: ELEMENTS,
         }
     }
 
     pub fn range_elements(
-        mode: DrawMode, start: u32, end: u32,
-        count: i32, index_type: IndexType, offset: i32,
+        mode: DrawMode,
+        start: u32,
+        end: u32,
+        count: i32,
+        index_type: IndexType,
+        offset: i32,
     ) -> Self {
         Self {
-            mode, count, first: 0,
-            index_type, offset,
+            mode,
+            count,
+            first: 0,
+            index_type,
+            offset,
             instance_count: 1,
-            range_start: start, range_end: end,
+            range_start: start,
+            range_end: end,
             kind: RANGE_ELEMENTS,
         }
     }
@@ -124,13 +149,21 @@ impl DrawCommand {
             }
             ELEMENTS => {
                 gl.draw_elements_instanced_with_i32(
-                    m, self.count, self.index_type.as_gl(), self.offset, self.instance_count,
+                    m,
+                    self.count,
+                    self.index_type.as_gl(),
+                    self.offset,
+                    self.instance_count,
                 );
             }
             RANGE_ELEMENTS => {
                 gl.draw_range_elements_with_i32(
-                    m, self.range_start, self.range_end,
-                    self.count, self.index_type.as_gl(), self.offset,
+                    m,
+                    self.range_start,
+                    self.range_end,
+                    self.count,
+                    self.index_type.as_gl(),
+                    self.offset,
                 );
             }
             _ => {}
