@@ -21,6 +21,5 @@ target
 #.idea/
 
 
-# Added by cargo
-
-/target
+# Added by Trunk
+dist
