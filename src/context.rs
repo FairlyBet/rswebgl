@@ -5,6 +5,7 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 use crate::buffer::{Buffer, BufferTarget, BufferUsage};
 use crate::console;
 use crate::extension::Extension;
+use crate::limits;
 use crate::program::Program;
 use crate::texture::{Texture, TextureMagFilter, TextureMinFilter, TextureTarget};
 use crate::vao::VertexArray;
@@ -19,6 +20,7 @@ pub struct Context {
 #[wasm_bindgen]
 impl Context {
     pub fn from_gl(gl: WebGl2RenderingContext) -> Context {
+        limits::init(&gl);
         Context {
             gl,
             extensions: Vec::new(),
@@ -32,6 +34,7 @@ impl Context {
             .ok_or("WebGL2 not supported")?
             .dyn_into::<WebGl2RenderingContext>()
             .map_err(|_| "cast to WebGl2RenderingContext failed")?;
+        limits::init(&gl);
         Ok(Context {
             gl,
             extensions: Vec::new(),
@@ -103,8 +106,3 @@ impl Context {
     }
 }
 
-impl Context {
-    pub(crate) fn gl_ref(&self) -> &WebGl2RenderingContext {
-        &self.gl
-    }
-}

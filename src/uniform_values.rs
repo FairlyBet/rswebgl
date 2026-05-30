@@ -3,6 +3,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::WebGl2RenderingContext;
 
 use crate::console;
+use crate::limits;
 use crate::program::Program;
 use crate::texture::Texture;
 use crate::uniform_value::{self as uv, UniformValue};
@@ -81,6 +82,31 @@ impl UniformValues {
         match self.entries.binary_search_by(|(k, _)| k.as_ref().cmp(name)) {
             Ok(idx) => Some(&self.entries[idx].1),
             Err(_) => None,
+        }
+    }
+
+    fn assign_unit(&self, name: &str) -> u32 {
+        let max = limits::max_combined_texture_units() as usize;
+        let mut used: SmallVec<[bool; 32]> = SmallVec::from_elem(false, max);
+        for (k, v) in &self.entries {
+            if let Uniform::Sampler { unit, .. } = v {
+                if k.as_ref() == name {
+                    return *unit;
+                }
+                let idx = *unit as usize;
+                if idx < max {
+                    used[idx] = true;
+                }
+            }
+        }
+        match used.iter().position(|b| !b) {
+            Some(i) => i as u32,
+            None => {
+                console::warn(&format!(
+                    "[rswebgl] sampler \"{name}\": all {max} texture units occupied"
+                ));
+                0
+            }
         }
     }
 
@@ -334,7 +360,8 @@ impl UniformValues {
 
     // --- sampler ---
 
-    pub fn set_sampler(&mut self, name: &str, unit: u32, texture: &Texture) {
+    pub fn set_sampler(&mut self, name: &str, texture: &Texture) {
+        let unit = self.assign_unit(name);
         self.put(
             name,
             Uniform::Sampler {
