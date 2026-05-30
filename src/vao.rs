@@ -131,7 +131,19 @@ impl VertexArray {
             rc: RefCount::new(),
         })
     }
+
+    pub(crate) fn raw_gl(&self) -> &WebGlVertexArrayObject {
+        &self.inner.raw
+    }
 }
+
+impl PartialEq for VertexArray {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.raw == other.inner.raw
+    }
+}
+
+impl Eq for VertexArray {}
 
 #[wasm_bindgen]
 impl VertexArray {

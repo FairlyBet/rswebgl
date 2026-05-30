@@ -59,6 +59,10 @@ impl Program {
         &self.inner.gl
     }
 
+    pub(crate) fn raw_gl(&self) -> &WebGlProgram {
+        &self.inner.raw
+    }
+
     pub(crate) fn loc(&mut self, name: &str) -> Option<WebGlUniformLocation> {
         self.inner
             .cache
@@ -140,6 +144,14 @@ impl Program {
         self.inner.raw.clone()
     }
 }
+
+impl PartialEq for Program {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.raw == other.inner.raw
+    }
+}
+
+impl Eq for Program {}
 
 fn create_shader(
     gl: &WebGl2RenderingContext,

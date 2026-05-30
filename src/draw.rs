@@ -46,7 +46,7 @@ impl IndexType {
 // ---------------------------------------------------------------------------
 
 #[wasm_bindgen]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Viewport {
     pub x: i32,
     pub y: i32,

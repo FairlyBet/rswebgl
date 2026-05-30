@@ -1,61 +1,61 @@
 use web_sys::{WebGl2RenderingContext, WebGlUniformLocation};
 
-pub trait UniformValue {
+pub(crate) trait UniformValue {
     fn upload(&self, gl: &WebGl2RenderingContext, loc: &WebGlUniformLocation);
 }
 
 // --- scalar / vector slice wrappers ---
 
-pub struct Floats<'a>(pub &'a [f32]);
-pub struct Vec2s<'a>(pub &'a [f32]);
-pub struct Vec3s<'a>(pub &'a [f32]);
-pub struct Vec4s<'a>(pub &'a [f32]);
+pub(crate) struct Floats<'a>(pub &'a [f32]);
+pub(crate) struct Vec2s<'a>(pub &'a [f32]);
+pub(crate) struct Vec3s<'a>(pub &'a [f32]);
+pub(crate) struct Vec4s<'a>(pub &'a [f32]);
 
-pub struct Ints<'a>(pub &'a [i32]);
-pub struct IVec2s<'a>(pub &'a [i32]);
-pub struct IVec3s<'a>(pub &'a [i32]);
-pub struct IVec4s<'a>(pub &'a [i32]);
+pub(crate) struct Ints<'a>(pub &'a [i32]);
+pub(crate) struct IVec2s<'a>(pub &'a [i32]);
+pub(crate) struct IVec3s<'a>(pub &'a [i32]);
+pub(crate) struct IVec4s<'a>(pub &'a [i32]);
 
-pub struct UInts<'a>(pub &'a [u32]);
-pub struct UVec2s<'a>(pub &'a [u32]);
-pub struct UVec3s<'a>(pub &'a [u32]);
-pub struct UVec4s<'a>(pub &'a [u32]);
+pub(crate) struct UInts<'a>(pub &'a [u32]);
+pub(crate) struct UVec2s<'a>(pub &'a [u32]);
+pub(crate) struct UVec3s<'a>(pub &'a [u32]);
+pub(crate) struct UVec4s<'a>(pub &'a [u32]);
 
 // --- matrix slice wrappers ---
 
-pub struct Mat2<'a> {
+pub(crate) struct Mat2<'a> {
     pub transpose: bool,
     pub data: &'a [f32],
 }
-pub struct Mat3<'a> {
+pub(crate) struct Mat3<'a> {
     pub transpose: bool,
     pub data: &'a [f32],
 }
-pub struct Mat4<'a> {
+pub(crate) struct Mat4<'a> {
     pub transpose: bool,
     pub data: &'a [f32],
 }
-pub struct Mat2x3<'a> {
+pub(crate) struct Mat2x3<'a> {
     pub transpose: bool,
     pub data: &'a [f32],
 }
-pub struct Mat2x4<'a> {
+pub(crate) struct Mat2x4<'a> {
     pub transpose: bool,
     pub data: &'a [f32],
 }
-pub struct Mat3x2<'a> {
+pub(crate) struct Mat3x2<'a> {
     pub transpose: bool,
     pub data: &'a [f32],
 }
-pub struct Mat3x4<'a> {
+pub(crate) struct Mat3x4<'a> {
     pub transpose: bool,
     pub data: &'a [f32],
 }
-pub struct Mat4x2<'a> {
+pub(crate) struct Mat4x2<'a> {
     pub transpose: bool,
     pub data: &'a [f32],
 }
-pub struct Mat4x3<'a> {
+pub(crate) struct Mat4x3<'a> {
     pub transpose: bool,
     pub data: &'a [f32],
 }
