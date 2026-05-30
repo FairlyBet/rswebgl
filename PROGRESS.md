@@ -45,18 +45,18 @@
 | vertexAttribIPointer (integer)   | ✅     | `src/vao.rs`          |
 | vertexAttribDivisor (instancing) | ✅     | `src/vao.rs`          |
 
-## Pipeline State
+## Render State
 
 | Entity          | Status | File                  |
 |-----------------|--------|-----------------------|
 | Viewport        | ✅     | `src/draw.rs`         |
-| Blending        | ✅     | `src/pipeline.rs`     |
-| Depth test      | ✅     | `src/pipeline.rs`     |
-| Stencil test    | ✅     | `src/pipeline.rs`     |
-| Face culling    | ✅     | `src/pipeline.rs`     |
-| Scissor test    | ✅     | `src/pipeline.rs`     |
-| Color mask      | ✅     | `src/pipeline.rs`     |
-| Polygon offset  | ✅     | `src/pipeline.rs`     |
+| Blending        | ✅     | `src/render_state.rs`     |
+| Depth test      | ✅     | `src/render_state.rs`     |
+| Stencil test    | ✅     | `src/render_state.rs`     |
+| Face culling    | ✅     | `src/render_state.rs`     |
+| Scissor test    | ✅     | `src/render_state.rs`     |
+| Color mask      | ✅     | `src/render_state.rs`     |
+| Polygon offset  | ✅     | `src/render_state.rs`     |
 
 ## Draw Calls
 

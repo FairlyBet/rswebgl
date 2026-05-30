@@ -152,12 +152,12 @@ impl StencilOp {
 }
 
 // ---------------------------------------------------------------------------
-// PipelineState
+// RenderState — fixed-function GL pipeline state (no shaders).
 // ---------------------------------------------------------------------------
 
 #[wasm_bindgen]
 #[derive(Clone, Debug)]
-pub struct PipelineState {
+pub struct RenderState {
     pub depth_test: bool,
     pub depth_func: DepthFunc,
     pub depth_mask: bool,
@@ -200,13 +200,13 @@ pub struct PipelineState {
 }
 
 #[wasm_bindgen]
-impl PipelineState {
+impl RenderState {
     pub fn new() -> Self {
         Self::default()
     }
 }
 
-impl Default for PipelineState {
+impl Default for RenderState {
     fn default() -> Self {
         Self {
             depth_test: false,
@@ -252,7 +252,7 @@ impl Default for PipelineState {
     }
 }
 
-impl PipelineState {
+impl RenderState {
     pub(crate) fn apply(&self, gl: &WebGl2RenderingContext) {
         // Depth
         if self.depth_test {

@@ -3,7 +3,7 @@ pub mod console;
 pub mod context;
 pub mod draw;
 pub mod extension;
-pub mod pipeline;
+pub mod render_state;
 pub mod program;
 pub(crate) mod ref_count;
 pub mod texture;
