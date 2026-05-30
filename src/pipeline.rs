@@ -20,7 +20,7 @@ pub enum DepthFunc {
 
 impl DepthFunc {
     fn as_gl(&self) -> u32 {
-        self.clone() as u32
+        *self as u32
     }
 }
 
@@ -50,7 +50,7 @@ pub enum BlendFactor {
 
 impl BlendFactor {
     fn as_gl(&self) -> u32 {
-        self.clone() as u32
+        *self as u32
     }
 }
 
@@ -70,7 +70,7 @@ pub enum BlendEquation {
 
 impl BlendEquation {
     fn as_gl(&self) -> u32 {
-        self.clone() as u32
+        *self as u32
     }
 }
 
@@ -88,7 +88,7 @@ pub enum CullFace {
 
 impl CullFace {
     fn as_gl(&self) -> u32 {
-        self.clone() as u32
+        *self as u32
     }
 }
 
@@ -105,7 +105,7 @@ pub enum FrontFace {
 
 impl FrontFace {
     fn as_gl(&self) -> u32 {
-        self.clone() as u32
+        *self as u32
     }
 }
 
@@ -128,7 +128,7 @@ pub enum StencilFunc {
 
 impl StencilFunc {
     fn as_gl(&self) -> u32 {
-        self.clone() as u32
+        *self as u32
     }
 }
 
@@ -147,7 +147,7 @@ pub enum StencilOp {
 
 impl StencilOp {
     fn as_gl(&self) -> u32 {
-        self.clone() as u32
+        *self as u32
     }
 }
 

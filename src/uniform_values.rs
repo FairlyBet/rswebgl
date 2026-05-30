@@ -79,7 +79,7 @@ impl UniformValues {
     }
 
     fn check_stride(name: &str, len: usize, stride: usize) -> bool {
-        if len == 0 || len % stride != 0 {
+        if len == 0 || !len.is_multiple_of(stride) {
             console::warn(&format!(
                 "[rswebgl] uniform \"{name}\": length must be a non-zero multiple of {stride}, got {len}"
             ));
@@ -88,9 +88,11 @@ impl UniformValues {
             true
         }
     }
+}
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &Uniform)> {
-        self.entries.iter().map(|(k, v)| (k.as_ref(), v))
+impl Default for UniformValues {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -174,6 +176,10 @@ impl UniformValues {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     pub fn has(&self, name: &str) -> bool {
