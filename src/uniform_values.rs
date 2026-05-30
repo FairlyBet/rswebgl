@@ -1,8 +1,10 @@
 use smallvec::{SmallVec, smallvec};
 use wasm_bindgen::prelude::*;
+use web_sys::WebGl2RenderingContext;
 
 use crate::console;
 use crate::program::Program;
+use crate::texture::Texture;
 use crate::uniform_value::{self as uv, UniformValue};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -55,6 +57,10 @@ pub enum Uniform {
         transpose: bool,
         data: SmallVec<[f32; 12]>,
     },
+    Sampler {
+        unit: u32,
+        texture: Texture,
+    },
 }
 
 #[wasm_bindgen]
@@ -96,7 +102,7 @@ impl Default for UniformValues {
     }
 }
 
-fn apply_one(program: &mut Program, name: &str, value: &Uniform) {
+fn apply_value(program: &mut Program, name: &str, value: &Uniform) {
     let Some(loc) = program.loc(name) else { return };
     let gl = program.gl();
     let loc = &loc;
@@ -158,6 +164,29 @@ fn apply_one(program: &mut Program, name: &str, value: &Uniform) {
             data,
         }
         .upload(gl, loc),
+        Uniform::Sampler { .. } => {
+            // Samplers are handled in upload/upload_diff to share activeTexture tracking
+        }
+    }
+}
+
+fn apply_sampler(
+    program: &mut Program,
+    name: &str,
+    unit: u32,
+    texture: &Texture,
+    write_uniform: bool,
+    current_active: &mut Option<u32>,
+) {
+    let Some(loc) = program.loc(name) else { return };
+    let gl = program.gl();
+    if *current_active != Some(unit) {
+        gl.active_texture(WebGl2RenderingContext::TEXTURE0 + unit);
+        *current_active = Some(unit);
+    }
+    gl.bind_texture(texture.target_gl(), Some(texture.raw_gl()));
+    if write_uniform {
+        gl.uniform1i(Some(&loc), unit as i32);
     }
 }
 
@@ -197,19 +226,44 @@ impl UniformValues {
     }
 
     pub fn upload(&self, program: &mut Program) {
+        let mut current_active: Option<u32> = None;
         for (name, value) in &self.entries {
-            apply_one(program, name, value);
+            match value {
+                Uniform::Sampler { unit, texture } => {
+                    apply_sampler(program, name, *unit, texture, true, &mut current_active);
+                }
+                _ => apply_value(program, name, value),
+            }
         }
     }
 
     pub fn upload_diff(&self, prev: &UniformValues, program: &mut Program) {
+        let mut current_active: Option<u32> = None;
         for (name, value) in &self.entries {
-            let changed = match prev.find(name) {
-                Some(p) => p != value,
-                None => true,
-            };
-            if changed {
-                apply_one(program, name, value);
+            let prev_v = prev.find(name);
+            match value {
+                Uniform::Sampler { unit, texture } => {
+                    let (tex_changed, unit_changed) = match prev_v {
+                        Some(Uniform::Sampler {
+                            unit: pu,
+                            texture: pt,
+                        }) => (pt != texture, pu != unit),
+                        _ => (true, true),
+                    };
+                    if !tex_changed && !unit_changed {
+                        continue;
+                    }
+                    apply_sampler(program, name, *unit, texture, unit_changed, &mut current_active);
+                }
+                _ => {
+                    let changed = match prev_v {
+                        Some(p) => p != value,
+                        None => true,
+                    };
+                    if changed {
+                        apply_value(program, name, value);
+                    }
+                }
             }
         }
     }
@@ -254,6 +308,54 @@ impl UniformValues {
     }
     pub fn set_uvec4(&mut self, name: &str, x: u32, y: u32, z: u32, w: u32) {
         self.put(name, Uniform::UVec4(smallvec![x, y, z, w]));
+    }
+
+    // --- bool ergonomics (uploaded as int) ---
+
+    pub fn set_bool(&mut self, name: &str, x: bool) {
+        self.put(name, Uniform::Int(smallvec![x as i32]));
+    }
+    pub fn set_bvec2(&mut self, name: &str, x: bool, y: bool) {
+        self.put(name, Uniform::IVec2(smallvec![x as i32, y as i32]));
+    }
+    pub fn set_bvec3(&mut self, name: &str, x: bool, y: bool, z: bool) {
+        self.put(name, Uniform::IVec3(smallvec![x as i32, y as i32, z as i32]));
+    }
+    pub fn set_bvec4(&mut self, name: &str, x: bool, y: bool, z: bool, w: bool) {
+        self.put(
+            name,
+            Uniform::IVec4(smallvec![x as i32, y as i32, z as i32, w as i32]),
+        );
+    }
+
+    pub fn get_bool(&self, name: &str) -> Option<bool> {
+        self.get_int(name).map(|x| x != 0)
+    }
+
+    // --- sampler ---
+
+    pub fn set_sampler(&mut self, name: &str, unit: u32, texture: &Texture) {
+        self.put(
+            name,
+            Uniform::Sampler {
+                unit,
+                texture: texture.clone(),
+            },
+        );
+    }
+
+    pub fn get_sampler_unit(&self, name: &str) -> Option<u32> {
+        match self.find(name) {
+            Some(Uniform::Sampler { unit, .. }) => Some(*unit),
+            _ => None,
+        }
+    }
+
+    pub fn get_sampler_texture(&self, name: &str) -> Option<Texture> {
+        match self.find(name) {
+            Some(Uniform::Sampler { texture, .. }) => Some(texture.clone()),
+            _ => None,
+        }
     }
 
     // --- array setters (length must be non-zero multiple of stride) ---

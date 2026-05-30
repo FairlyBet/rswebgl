@@ -330,7 +330,23 @@ impl Texture {
             rc: RefCount::new(),
         })
     }
+
+    pub(crate) fn raw_gl(&self) -> &WebGlTexture {
+        &self.inner.raw
+    }
+
+    pub(crate) fn target_gl(&self) -> u32 {
+        self.inner.target.as_gl()
+    }
 }
+
+impl PartialEq for Texture {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.raw == other.inner.raw
+    }
+}
+
+impl Eq for Texture {}
 
 #[wasm_bindgen]
 impl Texture {
