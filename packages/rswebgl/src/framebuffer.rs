@@ -1,8 +1,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use web_sys::{WebGl2RenderingContext, WebGlFramebuffer};
+use web_sys::{HtmlCanvasElement, ResizeObserver, WebGl2RenderingContext, WebGlFramebuffer};
 
 use crate::draw::Viewport;
 use crate::renderbuffer::Renderbuffer;
@@ -160,6 +161,34 @@ struct DefaultFramebufferInner {
     clear_color: [f32; 4],
     clear_depth: f32,
     clear_stencil: i32,
+    // Present only when the context was created from a canvas — needed to size
+    // the drawing buffer on auto-resize.
+    canvas: Option<HtmlCanvasElement>,
+    observer: Option<ResizeObserver>,
+    // Kept alive so the ResizeObserver callback stays valid; dropped on disable.
+    #[allow(dead_code)]
+    resize_closure: Option<Closure<dyn FnMut()>>,
+}
+
+// Resizes the drawing buffer to the canvas's CSS size × devicePixelRatio and
+// updates the viewport. Only touches the backing store when it actually changed
+// (setting width/height clears the canvas).
+fn resize_to_display(inner: &Rc<RefCell<DefaultFramebufferInner>>, canvas: &HtmlCanvasElement) {
+    let dpr = web_sys::window()
+        .map(|w| w.device_pixel_ratio())
+        .unwrap_or(1.0);
+    let w = (canvas.client_width().max(0) as f64 * dpr).round() as i32;
+    let h = (canvas.client_height().max(0) as f64 * dpr).round() as i32;
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    if canvas.width() != w as u32 {
+        canvas.set_width(w as u32);
+    }
+    if canvas.height() != h as u32 {
+        canvas.set_height(h as u32);
+    }
+    inner.borrow_mut().viewport = Viewport::new(0, 0, w, h);
 }
 
 #[wasm_bindgen]
@@ -168,13 +197,16 @@ pub struct DefaultFramebuffer {
 }
 
 impl DefaultFramebuffer {
-    pub(crate) fn new(viewport: Viewport) -> Self {
+    pub(crate) fn new(viewport: Viewport, canvas: Option<HtmlCanvasElement>) -> Self {
         Self {
             inner: Rc::new(RefCell::new(DefaultFramebufferInner {
                 viewport,
                 clear_color: [0.0, 0.0, 0.0, 1.0],
                 clear_depth: 1.0,
                 clear_stencil: 0,
+                canvas,
+                observer: None,
+                resize_closure: None,
             })),
         }
     }
@@ -218,6 +250,49 @@ impl DefaultFramebuffer {
 
     pub fn set_clear_stencil(&self, s: i32) {
         self.inner.borrow_mut().clear_stencil = s;
+    }
+
+    /// Starts observing the canvas and keeps the drawing buffer sized to its CSS
+    /// size × devicePixelRatio, updating the viewport. Fires once immediately for
+    /// the current size. No-op if already enabled; errors if there is no canvas
+    /// (context created from a raw gl). Opt-in — call `disable_auto_resize` to stop.
+    pub fn enable_auto_resize(&self) -> Result<(), String> {
+        let mut s = self.inner.borrow_mut();
+        if s.observer.is_some() {
+            return Ok(());
+        }
+        let canvas = s
+            .canvas
+            .clone()
+            .ok_or("auto-resize needs a canvas (context was created from a raw gl)")?;
+
+        // Weak so the closure (owned by the inner) doesn't keep the inner alive.
+        let weak = Rc::downgrade(&self.inner);
+        let cb_canvas = canvas.clone();
+        let closure = Closure::<dyn FnMut()>::new(move || {
+            if let Some(inner) = weak.upgrade() {
+                resize_to_display(&inner, &cb_canvas);
+            }
+        });
+        let observer = ResizeObserver::new(closure.as_ref().unchecked_ref())
+            .map_err(|_| "ResizeObserver is not supported")?;
+        observer.observe(&canvas);
+
+        s.observer = Some(observer);
+        s.resize_closure = Some(closure);
+        Ok(())
+    }
+
+    pub fn disable_auto_resize(&self) {
+        let mut s = self.inner.borrow_mut();
+        if let Some(observer) = s.observer.take() {
+            observer.disconnect();
+        }
+        s.resize_closure = None;
+    }
+
+    pub fn is_auto_resize_enabled(&self) -> bool {
+        self.inner.borrow().observer.is_some()
     }
 }
 

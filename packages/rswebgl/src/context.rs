@@ -110,7 +110,7 @@ pub struct Context {
 impl Context {
     pub fn from_gl(gl: WebGl2RenderingContext) -> Context {
         limits::init(&gl);
-        let default_fb = DefaultFramebuffer::new(Viewport::new(0, 0, 0, 0));
+        let default_fb = DefaultFramebuffer::new(Viewport::new(0, 0, 0, 0), None);
         let renderer = Renderer::new(gl.clone(), default_fb.handle());
         Context {
             gl,
@@ -132,7 +132,7 @@ impl Context {
             .map_err(|_| "cast to WebGl2RenderingContext failed")?;
         limits::init(&gl);
         let viewport = Viewport::new(0, 0, canvas.width() as i32, canvas.height() as i32);
-        let default_fb = DefaultFramebuffer::new(viewport);
+        let default_fb = DefaultFramebuffer::new(viewport, Some(canvas.clone()));
         let renderer = Renderer::new(gl.clone(), default_fb.handle());
         Ok(Context {
             gl,

@@ -12,7 +12,10 @@ wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 web-sys = { workspace = true, features = [
     "console",
+    "Element",
     "HtmlCanvasElement",
+    "ResizeObserver",
+    "Window",
     "WebGl2RenderingContext",
     "WebGlBuffer",
     "WebGlFramebuffer",
