@@ -6,7 +6,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
-use rswebgl::context::Context;
+use rswebgl::context::{Context, ContextOptions};
 use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
 use rswebgl::framebuffer::ClearMask;
 use rswebgl::render_state::{DepthFunc, RenderState};
@@ -46,7 +46,10 @@ fn main() {
     let w = canvas.width() as i32;
     let h = canvas.height() as i32;
 
-    let ctx = Context::from_canvas(&canvas).expect("ctx");
+    let mut options = ContextOptions::new();
+    options.antialias = true;
+    options.depth = true;
+    let ctx = Context::from_canvas(&canvas, &options).expect("ctx");
     let mut program = ctx.create_program(VERT, FRAG).expect("program");
 
     #[rustfmt::skip]

@@ -14,6 +14,90 @@ use crate::renderer::Renderer;
 use crate::texture::{Texture, TextureMagFilter, TextureMinFilter, TextureTarget};
 use crate::vao::VertexArray;
 
+// ---------------------------------------------------------------------------
+// Context creation options (WebGLContextAttributes)
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PowerPreference {
+    Default,
+    HighPerformance,
+    LowPower,
+}
+
+impl PowerPreference {
+    fn as_str(&self) -> &'static str {
+        match self {
+            PowerPreference::Default => "default",
+            PowerPreference::HighPerformance => "high-performance",
+            PowerPreference::LowPower => "low-power",
+        }
+    }
+}
+
+/// Attributes passed to `getContext("webgl2", ...)`. Fields default to the WebGL
+/// spec defaults; construct with `new()` and override what you need.
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug)]
+pub struct ContextOptions {
+    pub alpha: bool,
+    pub depth: bool,
+    pub stencil: bool,
+    pub antialias: bool,
+    pub premultiplied_alpha: bool,
+    pub preserve_drawing_buffer: bool,
+    pub power_preference: PowerPreference,
+    pub fail_if_major_performance_caveat: bool,
+    pub desynchronized: bool,
+}
+
+impl Default for ContextOptions {
+    fn default() -> Self {
+        Self {
+            alpha: true,
+            depth: true,
+            stencil: false,
+            antialias: true,
+            premultiplied_alpha: true,
+            preserve_drawing_buffer: false,
+            power_preference: PowerPreference::Default,
+            fail_if_major_performance_caveat: false,
+            desynchronized: false,
+        }
+    }
+}
+
+#[wasm_bindgen]
+impl ContextOptions {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl ContextOptions {
+    fn to_js(&self) -> js_sys::Object {
+        let o = js_sys::Object::new();
+        let set = |k: &str, v: JsValue| {
+            let _ = js_sys::Reflect::set(&o, &JsValue::from_str(k), &v);
+        };
+        set("alpha", self.alpha.into());
+        set("depth", self.depth.into());
+        set("stencil", self.stencil.into());
+        set("antialias", self.antialias.into());
+        set("premultipliedAlpha", self.premultiplied_alpha.into());
+        set("preserveDrawingBuffer", self.preserve_drawing_buffer.into());
+        set("powerPreference", self.power_preference.as_str().into());
+        set(
+            "failIfMajorPerformanceCaveat",
+            self.fail_if_major_performance_caveat.into(),
+        );
+        set("desynchronized", self.desynchronized.into());
+        o
+    }
+}
+
 #[wasm_bindgen]
 pub struct Context {
     gl: WebGl2RenderingContext,
@@ -36,9 +120,12 @@ impl Context {
         }
     }
 
-    pub fn from_canvas(canvas: &HtmlCanvasElement) -> Result<Context, String> {
+    pub fn from_canvas(
+        canvas: &HtmlCanvasElement,
+        options: &ContextOptions,
+    ) -> Result<Context, String> {
         let gl = canvas
-            .get_context("webgl2")
+            .get_context_with_context_options("webgl2", &options.to_js())
             .map_err(|_| "get_context failed")?
             .ok_or("WebGL2 not supported")?
             .dyn_into::<WebGl2RenderingContext>()
