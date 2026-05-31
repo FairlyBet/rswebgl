@@ -6,9 +6,10 @@ use crate::buffer::{Buffer, BufferTarget, BufferUsage};
 use crate::console;
 use crate::draw::Viewport;
 use crate::extension::Extension;
-use crate::framebuffer::DefaultFramebuffer;
+use crate::framebuffer::{DefaultFramebuffer, Framebuffer};
 use crate::limits;
 use crate::program::Program;
+use crate::renderbuffer::{Renderbuffer, RenderbufferFormat};
 use crate::renderer::Renderer;
 use crate::texture::{Texture, TextureMagFilter, TextureMinFilter, TextureTarget};
 use crate::vao::VertexArray;
@@ -115,6 +116,29 @@ impl Context {
 
     pub fn create_vertex_array(&self) -> Result<VertexArray, String> {
         VertexArray::new(&self.gl)
+    }
+
+    pub fn create_framebuffer(&self, width: i32, height: i32) -> Result<Framebuffer, String> {
+        Framebuffer::new(&self.gl, width, height)
+    }
+
+    pub fn create_renderbuffer(
+        &self,
+        format: RenderbufferFormat,
+        width: i32,
+        height: i32,
+    ) -> Result<Renderbuffer, String> {
+        Renderbuffer::new(&self.gl, format, width, height)
+    }
+
+    pub fn create_renderbuffer_multisample(
+        &self,
+        format: RenderbufferFormat,
+        samples: i32,
+        width: i32,
+        height: i32,
+    ) -> Result<Renderbuffer, String> {
+        Renderbuffer::new_multisample(&self.gl, format, samples, width, height)
     }
 
     pub fn create_program(&self, vert_src: &str, frag_src: &str) -> Result<Program, String> {

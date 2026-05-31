@@ -9,12 +9,15 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 smallvec = { workspace = true }
 wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
 web-sys = { workspace = true, features = [
     "console",
     "HtmlCanvasElement",
     "WebGl2RenderingContext",
     "WebGlBuffer",
+    "WebGlFramebuffer",
     "WebGlProgram",
+    "WebGlRenderbuffer",
     "WebGlShader",
     "WebGlTexture",
     "WebGlUniformLocation",

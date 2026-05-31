@@ -8,6 +8,7 @@ pub mod limits;
 pub mod program;
 pub(crate) mod ref_count;
 pub mod render_state;
+pub mod renderbuffer;
 pub mod renderer;
 pub mod texture;
 pub(crate) mod uniform_cache;

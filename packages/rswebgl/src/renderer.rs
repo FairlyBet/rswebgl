@@ -5,7 +5,9 @@ use wasm_bindgen::prelude::*;
 use web_sys::WebGl2RenderingContext;
 
 use crate::draw::{DrawCommand, Viewport};
-use crate::framebuffer::{ClearMask, DefaultFramebuffer};
+use crate::framebuffer::{
+    ClearMask, DefaultFramebuffer, Framebuffer, InvalidateMask, framebuffer_status_str,
+};
 use crate::program::Program;
 use crate::render_state::RenderState;
 use crate::uniform_values::UniformValues;
@@ -14,6 +16,8 @@ use crate::vao::VertexArray;
 struct RendererInner {
     gl: WebGl2RenderingContext,
     default_fb: DefaultFramebuffer,
+    // None = the default (canvas) framebuffer is bound; Some = a user FBO.
+    bound_fb: Option<Framebuffer>,
     prev_program: Option<Program>,
     prev_render_state: Option<RenderState>,
     prev_vao: Option<Option<VertexArray>>,
@@ -32,6 +36,7 @@ impl Renderer {
             inner: Rc::new(RefCell::new(RendererInner {
                 gl,
                 default_fb,
+                bound_fb: None,
                 prev_program: None,
                 prev_render_state: None,
                 prev_vao: None,
@@ -50,22 +55,110 @@ impl Renderer {
 
 #[wasm_bindgen]
 impl Renderer {
+    /// Binds a render target. `None` restores the default (canvas) framebuffer.
+    /// The bound target is state-tracked, so redundant calls are skipped, and
+    /// `clear` / `invalidate` / `draw` all act on whatever is bound here.
+    pub fn set_framebuffer(&self, fb: Option<Framebuffer>) {
+        let mut s = self.inner.borrow_mut();
+        let same = match (&s.bound_fb, &fb) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        };
+        if !same {
+            match &fb {
+                Some(f) => {
+                    s.gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&f.raw_gl()))
+                }
+                None => {
+                    s.gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, None)
+                }
+            }
+            s.bound_fb = fb;
+        }
+        // Apply any attachment changes recorded since the last bind — the FBO is
+        // now bound, so this is where lazy attach actually hits GL.
+        if let Some(f) = &s.bound_fb {
+            f.realize_if_dirty(&s.gl);
+        }
+    }
+
+    /// Checks framebuffer completeness. Binds `fb`, realizes pending attachments,
+    /// reads the status, then restores the previously bound target — so it never
+    /// disturbs the Renderer's tracked binding.
+    pub fn check_framebuffer(&self, fb: &Framebuffer) -> Result<(), String> {
+        let s = self.inner.borrow();
+        let gl = s.gl.clone();
+        gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&fb.raw_gl()));
+        fb.realize_if_dirty(&gl);
+        let status = gl.check_framebuffer_status(WebGl2RenderingContext::FRAMEBUFFER);
+        match &s.bound_fb {
+            Some(p) => gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&p.raw_gl())),
+            None => gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, None),
+        }
+        if status == WebGl2RenderingContext::FRAMEBUFFER_COMPLETE {
+            Ok(())
+        } else {
+            Err(framebuffer_status_str(status).to_string())
+        }
+    }
+
+    pub fn is_framebuffer_complete(&self, fb: &Framebuffer) -> bool {
+        self.check_framebuffer(fb).is_ok()
+    }
+
     pub fn clear(&self, mask: ClearMask) {
         let s = self.inner.borrow();
         let gl = &s.gl;
-        let fb = &s.default_fb;
 
-        if mask.color {
-            let c = fb.clear_color_rgba();
-            gl.clear_color(c[0], c[1], c[2], c[3]);
+        match &s.bound_fb {
+            // User FBO: per-attachment, correctly typed clearBuffer* calls.
+            Some(fb) => {
+                fb.realize_if_dirty(gl);
+                fb.clear(gl, mask);
+            }
+            // Default (canvas) framebuffer: single color buffer, classic path.
+            None => {
+                let c = s.default_fb.clear_color_rgba();
+                if mask.color {
+                    gl.clear_color(c[0], c[1], c[2], c[3]);
+                }
+                if mask.depth {
+                    gl.clear_depth(s.default_fb.clear_depth_value());
+                }
+                if mask.stencil {
+                    gl.clear_stencil(s.default_fb.clear_stencil_value());
+                }
+                gl.clear(mask.as_gl());
+            }
         }
-        if mask.depth {
-            gl.clear_depth(fb.clear_depth_value());
+    }
+
+    /// Discards the selected attachments of the currently bound framebuffer.
+    /// Only attachments that actually exist are invalidated, and the correct
+    /// attachment-point enums are chosen automatically (default vs user FBO).
+    pub fn invalidate(&self, mask: InvalidateMask) {
+        let s = self.inner.borrow();
+        if let Some(fb) = &s.bound_fb {
+            fb.realize_if_dirty(&s.gl);
         }
-        if mask.stencil {
-            gl.clear_stencil(fb.clear_stencil_value());
+        let arr = js_sys::Array::new();
+        match &s.bound_fb {
+            Some(fb) => fb.collect_invalidate_attachments(&arr, mask),
+            None => {
+                if mask.color {
+                    arr.push(&JsValue::from(WebGl2RenderingContext::COLOR));
+                }
+                if mask.depth {
+                    arr.push(&JsValue::from(WebGl2RenderingContext::DEPTH));
+                }
+                if mask.stencil {
+                    arr.push(&JsValue::from(WebGl2RenderingContext::STENCIL));
+                }
+            }
         }
-        gl.clear(mask.as_gl());
+        let _ =
+            s.gl.invalidate_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, arr.as_ref());
     }
 
     pub fn draw(
@@ -80,8 +173,16 @@ impl Renderer {
         let mut s = self.inner.borrow_mut();
         let gl = s.gl.clone();
 
-        // 1. Viewport
-        let vp = viewport.unwrap_or_else(|| s.default_fb.viewport());
+        // 0. Realize any lazily-recorded attachments on the bound FBO.
+        if let Some(fb) = &s.bound_fb {
+            fb.realize_if_dirty(&gl);
+        }
+
+        // 1. Viewport — defaults to the full size of the bound render target.
+        let vp = viewport.unwrap_or_else(|| match &s.bound_fb {
+            Some(fb) => fb.viewport(),
+            None => s.default_fb.viewport(),
+        });
         if s.prev_viewport != Some(vp) {
             gl.viewport(vp.x, vp.y, vp.width, vp.height);
             s.prev_viewport = Some(vp);
