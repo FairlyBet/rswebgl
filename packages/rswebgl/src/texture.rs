@@ -348,6 +348,11 @@ impl PartialEq for Texture {
 
 impl Eq for Texture {}
 
+// TODO(color-space): add DOM-source uploads (upload_from_image(&HtmlImageElement),
+// upload_from_bitmap(&ImageBitmap), upload_from_video(&HtmlVideoElement)). Only
+// those honor the gl `unpackColorSpace` (srgb/display-p3) setting — it does
+// nothing for the raw &[u8] paths below — so wire a ColorSpace param/setter in
+// there rather than exposing a global setter on Context.
 #[wasm_bindgen]
 impl Texture {
     pub fn upload_2d(

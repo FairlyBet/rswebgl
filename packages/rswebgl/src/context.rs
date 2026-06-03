@@ -36,6 +36,31 @@ impl PowerPreference {
     }
 }
 
+/// A predefined color space, for the drawing buffer (`DefaultFramebuffer`) and
+/// texture unpacking (`Context`).
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorSpace {
+    Srgb,
+    DisplayP3,
+}
+
+impl ColorSpace {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            ColorSpace::Srgb => "srgb",
+            ColorSpace::DisplayP3 => "display-p3",
+        }
+    }
+
+    pub(crate) fn from_js(v: &str) -> ColorSpace {
+        match v {
+            "display-p3" => ColorSpace::DisplayP3,
+            _ => ColorSpace::Srgb,
+        }
+    }
+}
+
 /// Attributes passed to `getContext("webgl2", ...)`. Fields default to the WebGL
 /// spec defaults; construct with `new()` and override what you need.
 #[wasm_bindgen]
@@ -110,7 +135,7 @@ pub struct Context {
 impl Context {
     pub fn from_gl(gl: WebGl2RenderingContext) -> Context {
         limits::init(&gl);
-        let default_fb = DefaultFramebuffer::new(Viewport::new(0, 0, 0, 0), None);
+        let default_fb = DefaultFramebuffer::new(gl.clone(), Viewport::new(0, 0, 0, 0), None);
         let renderer = Renderer::new(gl.clone(), default_fb.handle());
         Context {
             gl,
@@ -132,7 +157,7 @@ impl Context {
             .map_err(|_| "cast to WebGl2RenderingContext failed")?;
         limits::init(&gl);
         let viewport = Viewport::new(0, 0, canvas.width() as i32, canvas.height() as i32);
-        let default_fb = DefaultFramebuffer::new(viewport, Some(canvas.clone()));
+        let default_fb = DefaultFramebuffer::new(gl.clone(), viewport, Some(canvas.clone()));
         let renderer = Renderer::new(gl.clone(), default_fb.handle());
         Ok(Context {
             gl,

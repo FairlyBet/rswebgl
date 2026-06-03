@@ -5,6 +5,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, ResizeObserver, WebGl2RenderingContext, WebGlFramebuffer};
 
+use crate::context::ColorSpace;
 use crate::draw::Viewport;
 use crate::renderbuffer::Renderbuffer;
 use crate::texture::{CubeMapFace, Texture};
@@ -157,6 +158,7 @@ impl InvalidateMask {
 // ---------------------------------------------------------------------------
 
 struct DefaultFramebufferInner {
+    gl: WebGl2RenderingContext,
     viewport: Viewport,
     clear_color: [f32; 4],
     clear_depth: f32,
@@ -197,9 +199,14 @@ pub struct DefaultFramebuffer {
 }
 
 impl DefaultFramebuffer {
-    pub(crate) fn new(viewport: Viewport, canvas: Option<HtmlCanvasElement>) -> Self {
+    pub(crate) fn new(
+        gl: WebGl2RenderingContext,
+        viewport: Viewport,
+        canvas: Option<HtmlCanvasElement>,
+    ) -> Self {
         Self {
             inner: Rc::new(RefCell::new(DefaultFramebufferInner {
+                gl,
                 viewport,
                 clear_color: [0.0, 0.0, 0.0, 1.0],
                 clear_depth: 1.0,
@@ -236,6 +243,16 @@ impl DefaultFramebuffer {
 
 #[wasm_bindgen]
 impl DefaultFramebuffer {
+    /// Current drawing-buffer width in device pixels (tracks auto-resize).
+    pub fn width(&self) -> i32 {
+        self.inner.borrow().viewport.width
+    }
+
+    /// Current drawing-buffer height in device pixels (tracks auto-resize).
+    pub fn height(&self) -> i32 {
+        self.inner.borrow().viewport.height
+    }
+
     pub fn set_viewport(&self, v: Viewport) {
         self.inner.borrow_mut().viewport = v;
     }
@@ -293,6 +310,27 @@ impl DefaultFramebuffer {
 
     pub fn is_auto_resize_enabled(&self) -> bool {
         self.inner.borrow().observer.is_some()
+    }
+
+    /// Color space of the drawing buffer (`drawingBufferColorSpace`). `Srgb`
+    /// (default) or `DisplayP3` for wide-gamut output. Invalid values are ignored
+    /// by the browser, leaving it unchanged.
+    pub fn set_drawing_buffer_color_space(&self, space: ColorSpace) {
+        let s = self.inner.borrow();
+        let _ = js_sys::Reflect::set(
+            s.gl.as_ref(),
+            &JsValue::from_str("drawingBufferColorSpace"),
+            &JsValue::from_str(space.as_str()),
+        );
+    }
+
+    pub fn drawing_buffer_color_space(&self) -> ColorSpace {
+        let s = self.inner.borrow();
+        let v = js_sys::Reflect::get(s.gl.as_ref(), &JsValue::from_str("drawingBufferColorSpace"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+        ColorSpace::from_js(&v)
     }
 }
 
@@ -421,9 +459,6 @@ struct FramebufferInner {
     color_clear: Vec<ColorClearValue>,
     clear_depth: f32,
     clear_stencil: i32,
-    // Attachments changed since the last realize? The Renderer applies them to GL
-    // (while this FBO is bound) before using it — see `realize_if_dirty`.
-    dirty: bool,
 }
 
 impl Drop for FramebufferInner {
@@ -432,9 +467,17 @@ impl Drop for FramebufferInner {
     }
 }
 
-// All of the following assume the FBO is *already bound* — they only issue
-// attach/detach calls, never bind. Binding is the Renderer's job exclusively, so
-// these can never desync its tracked state.
+// Attach/detach are eager: they bind this FBO and issue the GL call immediately,
+// leaving it bound. In WebGL *any* object mutates global state, so there is no
+// point pretending otherwise — instead the Renderer re-binds its target at the
+// start of every pass and trusts nothing carried over. The helpers below assume
+// the FBO is already bound; the public methods bind first.
+
+fn bind(inner: &FramebufferInner) {
+    inner
+        .gl
+        .bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&inner.raw));
+}
 
 fn apply_color(gl: &WebGl2RenderingContext, point: u32, att: &ColorAttachment) {
     match att {
@@ -505,6 +548,50 @@ fn sync_draw_buffers(inner: &FramebufferInner, gl: &WebGl2RenderingContext) {
         }
     }
     gl.draw_buffers(arr.as_ref());
+}
+
+// Detaches whatever sits at both depth points, so switching depth kind (or
+// detaching) never leaves a stale attachment behind.
+fn detach_depth_points(gl: &WebGl2RenderingContext) {
+    gl.framebuffer_renderbuffer(
+        WebGl2RenderingContext::FRAMEBUFFER,
+        WebGl2RenderingContext::DEPTH_ATTACHMENT,
+        WebGl2RenderingContext::RENDERBUFFER,
+        None,
+    );
+    gl.framebuffer_renderbuffer(
+        WebGl2RenderingContext::FRAMEBUFFER,
+        WebGl2RenderingContext::DEPTH_STENCIL_ATTACHMENT,
+        WebGl2RenderingContext::RENDERBUFFER,
+        None,
+    );
+}
+
+// Binds the FBO and pushes color slot `index` (attach or detach) to GL, then
+// refreshes drawBuffers. The slot must already be set in `inner`.
+fn realize_color_slot(inner: &FramebufferInner, index: u32) {
+    bind(inner);
+    let point = WebGl2RenderingContext::COLOR_ATTACHMENT0 + index;
+    match inner.color.get(index as usize).and_then(|o| o.as_ref()) {
+        Some(att) => apply_color(&inner.gl, point, att),
+        None => inner.gl.framebuffer_texture_2d(
+            WebGl2RenderingContext::FRAMEBUFFER,
+            point,
+            WebGl2RenderingContext::TEXTURE_2D,
+            None,
+            0,
+        ),
+    }
+    sync_draw_buffers(inner, &inner.gl);
+}
+
+// Binds the FBO and pushes the current depth attachment (or its absence) to GL.
+fn realize_depth(inner: &FramebufferInner) {
+    bind(inner);
+    detach_depth_points(&inner.gl);
+    if let Some(depth) = &inner.depth {
+        apply_depth(&inner.gl, depth);
+    }
 }
 
 fn store_color(inner: &mut FramebufferInner, index: u32, att: ColorAttachment) {
@@ -607,7 +694,6 @@ impl Framebuffer {
                 color_clear: Vec::new(),
                 clear_depth: 1.0,
                 clear_stencil: 0,
-                dirty: false,
             })),
         })
     }
@@ -618,48 +704,6 @@ impl Framebuffer {
 
     pub(crate) fn viewport(&self) -> Viewport {
         self.inner.borrow().viewport
-    }
-
-    // Applies pending attachment changes to GL. The FBO must already be bound by
-    // the caller (the Renderer). Cheap no-op when nothing changed.
-    pub(crate) fn realize_if_dirty(&self, gl: &WebGl2RenderingContext) {
-        let mut s = self.inner.borrow_mut();
-        if !s.dirty {
-            return;
-        }
-        // Color: apply each slot, explicitly detaching empty ones so a removed
-        // attachment doesn't linger in GL state.
-        for i in 0..s.color.len() {
-            let point = WebGl2RenderingContext::COLOR_ATTACHMENT0 + i as u32;
-            match &s.color[i] {
-                Some(att) => apply_color(gl, point, att),
-                None => gl.framebuffer_texture_2d(
-                    WebGl2RenderingContext::FRAMEBUFFER,
-                    point,
-                    WebGl2RenderingContext::TEXTURE_2D,
-                    None,
-                    0,
-                ),
-            }
-        }
-        // Depth/stencil: clear both points first, then attach the current one.
-        gl.framebuffer_renderbuffer(
-            WebGl2RenderingContext::FRAMEBUFFER,
-            WebGl2RenderingContext::DEPTH_ATTACHMENT,
-            WebGl2RenderingContext::RENDERBUFFER,
-            None,
-        );
-        gl.framebuffer_renderbuffer(
-            WebGl2RenderingContext::FRAMEBUFFER,
-            WebGl2RenderingContext::DEPTH_STENCIL_ATTACHMENT,
-            WebGl2RenderingContext::RENDERBUFFER,
-            None,
-        );
-        if let Some(depth) = &s.depth {
-            apply_depth(gl, depth);
-        }
-        sync_draw_buffers(&s, gl);
-        s.dirty = false;
     }
 
     // Clears this FBO's attachments per the mask, using each attachment's typed
@@ -711,7 +755,7 @@ impl Framebuffer {
         self.inner.borrow_mut().viewport = v;
     }
 
-    // --- color attachments (recorded only; applied by the Renderer on bind) ---
+    // --- color attachments (applied to GL immediately; FBO left bound) ---
 
     pub fn attach_color_texture_2d(&self, index: u32, tex: &Texture, level: i32) {
         let mut s = self.inner.borrow_mut();
@@ -723,7 +767,7 @@ impl Framebuffer {
                 level,
             },
         );
-        s.dirty = true;
+        realize_color_slot(&s, index);
     }
 
     pub fn attach_color_cube_face(&self, index: u32, tex: &Texture, face: CubeMapFace, level: i32) {
@@ -737,7 +781,7 @@ impl Framebuffer {
                 level,
             },
         );
-        s.dirty = true;
+        realize_color_slot(&s, index);
     }
 
     pub fn attach_color_layer(&self, index: u32, tex: &Texture, level: i32, layer: i32) {
@@ -751,13 +795,13 @@ impl Framebuffer {
                 layer,
             },
         );
-        s.dirty = true;
+        realize_color_slot(&s, index);
     }
 
     pub fn attach_color_renderbuffer(&self, index: u32, rb: &Renderbuffer) {
         let mut s = self.inner.borrow_mut();
         store_color(&mut s, index, ColorAttachment::Renderbuffer(rb.clone()));
-        s.dirty = true;
+        realize_color_slot(&s, index);
     }
 
     pub fn detach_color(&self, index: u32) {
@@ -766,7 +810,7 @@ impl Framebuffer {
         if idx < s.color.len() {
             s.color[idx] = None;
         }
-        s.dirty = true;
+        realize_color_slot(&s, index);
     }
 
     // --- depth / stencil attachments ---
@@ -790,7 +834,7 @@ impl Framebuffer {
     pub fn detach_depth(&self) {
         let mut s = self.inner.borrow_mut();
         s.depth = None;
-        s.dirty = true;
+        realize_depth(&s);
     }
 
     // --- getters (return owned clones; None if that slot holds the other kind) ---
@@ -880,7 +924,7 @@ impl Framebuffer {
             level,
             stencil,
         });
-        s.dirty = true;
+        realize_depth(&s);
     }
 
     fn attach_depth_renderbuffer_impl(&self, rb: &Renderbuffer, stencil: bool) {
@@ -889,7 +933,7 @@ impl Framebuffer {
             rb: rb.clone(),
             stencil,
         });
-        s.dirty = true;
+        realize_depth(&s);
     }
 }
 

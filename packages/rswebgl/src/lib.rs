@@ -5,6 +5,7 @@ pub mod draw;
 pub mod extension;
 pub mod framebuffer;
 pub mod limits;
+pub mod pass;
 pub mod program;
 pub(crate) mod ref_count;
 pub mod render_state;

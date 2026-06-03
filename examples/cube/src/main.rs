@@ -9,6 +9,7 @@ use web_sys::HtmlCanvasElement;
 use rswebgl::context::{Context, ContextOptions};
 use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
 use rswebgl::framebuffer::ClearMask;
+use rswebgl::pass::{Batch, Pass};
 use rswebgl::render_state::{DepthFunc, RenderState};
 use rswebgl::uniform_values::UniformValues;
 use rswebgl::vao_builder::{AttrKind, VaoBuilder};
@@ -43,14 +44,11 @@ fn main() {
         .dyn_into()
         .expect("not a canvas");
 
-    let w = canvas.width() as i32;
-    let h = canvas.height() as i32;
-
     let mut options = ContextOptions::new();
     options.antialias = true;
     options.depth = true;
     let ctx = Context::from_canvas(&canvas, &options).expect("ctx");
-    let mut program = ctx.create_program(VERT, FRAG).expect("program");
+    let program = ctx.create_program(VERT, FRAG).expect("program");
 
     #[rustfmt::skip]
     let positions: [f32; 24] = [
@@ -97,11 +95,12 @@ fn main() {
     render_state.depth_func = DepthFunc::Less;
 
     let renderer = ctx.renderer();
-    ctx.default_framebuffer()
-        .set_clear_color(0.05, 0.05, 0.08, 1.0);
+    let default_fb = ctx.default_framebuffer();
+    default_fb.set_clear_color(0.05, 0.05, 0.08, 1.0);
+    // Track the canvas's CSS size × devicePixelRatio: keeps the drawing buffer and
+    // viewport correct as the fullscreen canvas resizes.
+    default_fb.enable_auto_resize().expect("auto-resize");
 
-    let aspect = w as f32 / h as f32;
-    let proj = Mat4::perspective_rh_gl(60f32.to_radians(), aspect, 0.1, 100.0);
     let view = Mat4::from_translation(Vec3::new(0.0, 0.0, -3.0));
 
     let draw_cmd = DrawCommand::elements(DrawMode::Triangles, 36, IndexType::UnsignedShort, 0);
@@ -113,22 +112,24 @@ fn main() {
     let g = f.clone();
     let win = window.clone();
 
+    let mut pass = Pass::to_default();
+    pass.set_clear(ClearMask::color_depth());
+    let mut batch = Batch::new(&program, &render_state);
+    batch.draw(&vao, &uniforms, draw_cmd);
+    pass.add(batch);
+
     *g.borrow_mut() = Some(Closure::<dyn FnMut(f64)>::new(move |time: f64| {
         let t = time as f32 / 1000.0;
         let model = Mat4::from_rotation_y(t) * Mat4::from_rotation_x(t * 0.7);
+        // Recompute aspect each frame from the current (auto-resized) buffer size.
+        let aspect = default_fb.width().max(1) as f32 / default_fb.height().max(1) as f32;
+        let proj = Mat4::perspective_rh_gl(45f32.to_radians(), aspect, 0.1, 100.0);
         let mvp = proj * view * model;
         uniforms.set_mat4("u_mvp", false, &mvp.to_cols_array());
 
-        renderer.clear(ClearMask::color_depth());
-
-        renderer.draw(
-            &render_state,
-            &mut program,
-            Some(vao.clone()),
-            &uniforms,
-            draw_cmd,
-            None,
-        );
+        // Build the frame: one pass to the canvas, clearing first, with a single
+        // batch (program + state) holding one draw.
+        renderer.render(&pass);
 
         let _ = win.request_animation_frame(f.borrow().as_ref().unwrap().as_ref().unchecked_ref());
     }));

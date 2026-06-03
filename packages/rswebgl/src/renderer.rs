@@ -4,10 +4,11 @@ use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use web_sys::WebGl2RenderingContext;
 
-use crate::draw::{DrawCommand, Viewport};
+use crate::draw::Viewport;
 use crate::framebuffer::{
     ClearMask, DefaultFramebuffer, Framebuffer, InvalidateMask, framebuffer_status_str,
 };
+use crate::pass::Pass;
 use crate::program::Program;
 use crate::render_state::RenderState;
 use crate::uniform_values::UniformValues;
@@ -16,13 +17,6 @@ use crate::vao::VertexArray;
 struct RendererInner {
     gl: WebGl2RenderingContext,
     default_fb: DefaultFramebuffer,
-    // None = the default (canvas) framebuffer is bound; Some = a user FBO.
-    bound_fb: Option<Framebuffer>,
-    prev_program: Option<Program>,
-    prev_render_state: Option<RenderState>,
-    prev_vao: Option<Option<VertexArray>>,
-    prev_uniforms: Option<UniformValues>,
-    prev_viewport: Option<Viewport>,
 }
 
 #[wasm_bindgen]
@@ -33,16 +27,7 @@ pub struct Renderer {
 impl Renderer {
     pub(crate) fn new(gl: WebGl2RenderingContext, default_fb: DefaultFramebuffer) -> Self {
         Self {
-            inner: Rc::new(RefCell::new(RendererInner {
-                gl,
-                default_fb,
-                bound_fb: None,
-                prev_program: None,
-                prev_render_state: None,
-                prev_vao: None,
-                prev_uniforms: None,
-                prev_viewport: None,
-            })),
+            inner: Rc::new(RefCell::new(RendererInner { gl, default_fb })),
         }
     }
 
@@ -55,47 +40,32 @@ impl Renderer {
 
 #[wasm_bindgen]
 impl Renderer {
-    /// Binds a render target. `None` restores the default (canvas) framebuffer.
-    /// The bound target is state-tracked, so redundant calls are skipped, and
-    /// `clear` / `invalidate` / `draw` all act on whatever is bound here.
-    pub fn set_framebuffer(&self, fb: Option<Framebuffer>) {
-        let mut s = self.inner.borrow_mut();
-        let same = match (&s.bound_fb, &fb) {
-            (None, None) => true,
-            (Some(a), Some(b)) => a == b,
-            _ => false,
-        };
-        if !same {
-            match &fb {
-                Some(f) => {
-                    s.gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&f.raw_gl()))
-                }
-                None => {
-                    s.gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, None)
-                }
-            }
-            s.bound_fb = fb;
-        }
-        // Apply any attachment changes recorded since the last bind — the FBO is
-        // now bound, so this is where lazy attach actually hits GL.
-        if let Some(f) = &s.bound_fb {
-            f.realize_if_dirty(&s.gl);
-        }
+    /// Executes one render pass. State is tracked only for the duration of this
+    /// call — nothing about the bound program/VAO/framebuffer is assumed on entry,
+    /// so anything a user object did to global GL state in between can't desync us.
+    pub fn render(&self, pass: &Pass) {
+        let s = self.inner.borrow();
+        let mut tracker = StateTracker::new(&s.gl);
+        execute_pass(&s, pass, &mut tracker);
     }
 
-    /// Checks framebuffer completeness. Binds `fb`, realizes pending attachments,
-    /// reads the status, then restores the previously bound target — so it never
-    /// disturbs the Renderer's tracked binding.
+    /// Executes several passes under one state tracker, so redundant binds across
+    /// pass boundaries (same program/VAO/render state) are skipped. The JS array of
+    /// passes is consumed. (Rust callers can use `render_passes(&[Pass])` to avoid
+    /// giving up ownership.)
+    pub fn render_all(&self, passes: Vec<Pass>) {
+        self.render_passes(&passes);
+    }
+
+    /// Checks framebuffer completeness without disturbing rendering. Binds `fb`,
+    /// reads the status, then restores the default framebuffer (the next `render`
+    /// re-binds its own target anyway).
     pub fn check_framebuffer(&self, fb: &Framebuffer) -> Result<(), String> {
         let s = self.inner.borrow();
-        let gl = s.gl.clone();
+        let gl = &s.gl;
         gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&fb.raw_gl()));
-        fb.realize_if_dirty(&gl);
         let status = gl.check_framebuffer_status(WebGl2RenderingContext::FRAMEBUFFER);
-        match &s.bound_fb {
-            Some(p) => gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&p.raw_gl())),
-            None => gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, None),
-        }
+        gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, None);
         if status == WebGl2RenderingContext::FRAMEBUFFER_COMPLETE {
             Ok(())
         } else {
@@ -106,125 +76,215 @@ impl Renderer {
     pub fn is_framebuffer_complete(&self, fb: &Framebuffer) -> bool {
         self.check_framebuffer(fb).is_ok()
     }
+}
 
-    pub fn clear(&self, mask: ClearMask) {
+impl Renderer {
+    /// Executes several passes sharing one state tracker, so redundant binds
+    /// across pass boundaries (same program/VAO/render state) are skipped.
+    /// Rust-only: a `&[Pass]` doesn't cross the wasm_bindgen boundary.
+    pub fn render_passes(&self, passes: &[Pass]) {
         let s = self.inner.borrow();
-        let gl = &s.gl;
+        let mut tracker = StateTracker::new(&s.gl);
+        for pass in passes {
+            execute_pass(&s, pass, &mut tracker);
+        }
+    }
+}
 
-        match &s.bound_fb {
-            // User FBO: per-attachment, correctly typed clearBuffer* calls.
-            Some(fb) => {
-                fb.realize_if_dirty(gl);
-                fb.clear(gl, mask);
-            }
-            // Default (canvas) framebuffer: single color buffer, classic path.
-            None => {
-                let c = s.default_fb.clear_color_rgba();
-                if mask.color {
-                    gl.clear_color(c[0], c[1], c[2], c[3]);
-                }
-                if mask.depth {
-                    gl.clear_depth(s.default_fb.clear_depth_value());
-                }
-                if mask.stencil {
-                    gl.clear_stencil(s.default_fb.clear_stencil_value());
-                }
-                gl.clear(mask.as_gl());
-            }
+// ---------------------------------------------------------------------------
+// Pass execution
+// ---------------------------------------------------------------------------
+
+fn execute_pass(s: &RendererInner, pass: &Pass, t: &mut StateTracker) {
+    let gl = &s.gl;
+
+    // Render target — bind whatever this pass draws into.
+    t.bind_target(&pass.target);
+
+    // Viewport — the pass's override, else the target's full size.
+    let vp = pass.viewport.unwrap_or_else(|| match &pass.target {
+        Some(fb) => fb.viewport(),
+        None => s.default_fb.viewport(),
+    });
+    t.set_viewport(vp);
+
+    // Load op — clear before drawing. Clearing obeys the write masks and scissor,
+    // so force them open first; that dirties render state, so the next batch is
+    // made to re-apply it in full.
+    if pass.clear != ClearMask::none() {
+        t.open_for_clear(pass.clear);
+        match &pass.target {
+            Some(fb) => fb.clear(gl, pass.clear),
+            None => clear_default(&s.default_fb, gl, pass.clear),
+        }
+        t.invalidate_render_state();
+    }
+
+    // Draw — each batch shares a program + render state across its draws.
+    for batch in &pass.batches {
+        t.apply_render_state(&batch.render_state);
+        t.use_program(&batch.program);
+        for d in &batch.draws {
+            t.bind_vao(&d.vao);
+            t.upload_uniforms(&d.uniforms, &batch.program);
+            d.command.execute(gl);
         }
     }
 
-    /// Discards the selected attachments of the currently bound framebuffer.
-    /// Only attachments that actually exist are invalidated, and the correct
-    /// attachment-point enums are chosen automatically (default vs user FBO).
-    pub fn invalidate(&self, mask: InvalidateMask) {
-        let s = self.inner.borrow();
-        if let Some(fb) = &s.bound_fb {
-            fb.realize_if_dirty(&s.gl);
-        }
+    // Store op — discard attachments we won't read again.
+    if pass.invalidate != InvalidateMask::none() {
         let arr = js_sys::Array::new();
-        match &s.bound_fb {
-            Some(fb) => fb.collect_invalidate_attachments(&arr, mask),
+        match &pass.target {
+            Some(fb) => fb.collect_invalidate_attachments(&arr, pass.invalidate),
             None => {
-                if mask.color {
+                if pass.invalidate.color {
                     arr.push(&JsValue::from(WebGl2RenderingContext::COLOR));
                 }
-                if mask.depth {
+                if pass.invalidate.depth {
                     arr.push(&JsValue::from(WebGl2RenderingContext::DEPTH));
                 }
-                if mask.stencil {
+                if pass.invalidate.stencil {
                     arr.push(&JsValue::from(WebGl2RenderingContext::STENCIL));
                 }
             }
         }
-        let _ =
-            s.gl.invalidate_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, arr.as_ref());
+        let _ = gl.invalidate_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, arr.as_ref());
+    }
+}
+
+fn clear_default(default_fb: &DefaultFramebuffer, gl: &WebGl2RenderingContext, mask: ClearMask) {
+    if mask.color {
+        let c = default_fb.clear_color_rgba();
+        gl.clear_color(c[0], c[1], c[2], c[3]);
+    }
+    if mask.depth {
+        gl.clear_depth(default_fb.clear_depth_value());
+    }
+    if mask.stencil {
+        gl.clear_stencil(default_fb.clear_stencil_value());
+    }
+    gl.clear(mask.as_gl());
+}
+
+// ---------------------------------------------------------------------------
+// StateTracker — caches applied GL state for the lifetime of a single
+// render/render_passes call. Each slot starts as `None` ("nothing applied yet"),
+// so the first use forces a full apply; thereafter only differences hit GL.
+// ---------------------------------------------------------------------------
+
+struct StateTracker<'a> {
+    gl: &'a WebGl2RenderingContext,
+    // Outer Option = tracked yet; inner Option = a user FBO vs the default.
+    target: Option<Option<Framebuffer>>,
+    viewport: Option<Viewport>,
+    render_state: Option<RenderState>,
+    program: Option<Program>,
+    // Outer = tracked yet; inner = bound VAO vs explicitly bound to None.
+    vao: Option<Option<VertexArray>>,
+    // What's currently set in the active program. Persisted across draws and diffed
+    // in place (no per-draw clone); cleared on program switch since locations are
+    // per-program.
+    applied_uniforms: UniformValues,
+}
+
+impl<'a> StateTracker<'a> {
+    fn new(gl: &'a WebGl2RenderingContext) -> Self {
+        Self {
+            gl,
+            target: None,
+            viewport: None,
+            render_state: None,
+            program: None,
+            vao: None,
+            applied_uniforms: UniformValues::new(),
+        }
     }
 
-    pub fn draw(
-        &self,
-        render_state: &RenderState,
-        program: &mut Program,
-        vao: Option<VertexArray>,
-        uniforms: &UniformValues,
-        draw: DrawCommand,
-        viewport: Option<Viewport>,
-    ) {
-        let mut s = self.inner.borrow_mut();
-        let gl = s.gl.clone();
-
-        // 0. Realize any lazily-recorded attachments on the bound FBO.
-        if let Some(fb) = &s.bound_fb {
-            fb.realize_if_dirty(&gl);
+    fn bind_target(&mut self, target: &Option<Framebuffer>) {
+        let same = match &self.target {
+            Some(cur) => fb_eq(cur, target),
+            None => false,
+        };
+        if !same {
+            match target {
+                Some(fb) => self
+                    .gl
+                    .bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&fb.raw_gl())),
+                None => self
+                    .gl
+                    .bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, None),
+            }
+            self.target = Some(target.clone());
         }
+    }
 
-        // 1. Viewport — defaults to the full size of the bound render target.
-        let vp = viewport.unwrap_or_else(|| match &s.bound_fb {
-            Some(fb) => fb.viewport(),
-            None => s.default_fb.viewport(),
-        });
-        if s.prev_viewport != Some(vp) {
-            gl.viewport(vp.x, vp.y, vp.width, vp.height);
-            s.prev_viewport = Some(vp);
+    fn set_viewport(&mut self, vp: Viewport) {
+        if self.viewport != Some(vp) {
+            self.gl.viewport(vp.x, vp.y, vp.width, vp.height);
+            self.viewport = Some(vp);
         }
+    }
 
-        // 2. Render state
-        match &s.prev_render_state {
-            Some(p) => render_state.apply_diff(p, &gl),
-            None => render_state.apply(&gl),
+    // Opens the write masks and scissor the given clear touches, so the clear
+    // isn't silently masked off or scissored down by leftover state.
+    fn open_for_clear(&self, mask: ClearMask) {
+        if mask.color {
+            self.gl.color_mask(true, true, true, true);
         }
-        s.prev_render_state = Some(render_state.clone());
-
-        // 3. Program (must precede uniform uploads)
-        if s.prev_program.as_ref() != Some(program) {
-            gl.use_program(Some(program.raw_gl()));
-            s.prev_program = Some(program.clone());
+        if mask.depth {
+            self.gl.depth_mask(true);
         }
+        if mask.stencil {
+            self.gl.stencil_mask(0xFFFF_FFFF);
+        }
+        self.gl.disable(WebGl2RenderingContext::SCISSOR_TEST);
+    }
 
-        // 4. VAO — None must be bound explicitly (e.g. procedural vertices from
-        // gl_VertexID), so we track "never bound" separately from "bound to None".
-        let vao_same = match (&s.prev_vao, &vao) {
-            (Some(Some(p)), Some(v)) => p == v,
+    // Forces the next render-state apply to be a full one (used after a clear,
+    // which mutates masks/scissor behind the tracker's back).
+    fn invalidate_render_state(&mut self) {
+        self.render_state = None;
+    }
+
+    fn apply_render_state(&mut self, rs: &RenderState) {
+        match &self.render_state {
+            Some(prev) => rs.apply_diff(prev, self.gl),
+            None => rs.apply(self.gl),
+        }
+        self.render_state = Some(rs.clone());
+    }
+
+    fn use_program(&mut self, program: &Program) {
+        if self.program.as_ref() != Some(program) {
+            self.gl.use_program(Some(program.raw_gl()));
+            self.program = Some(program.clone());
+            // Uniform locations are per-program; drop the applied cache (in place,
+            // keeping capacity) so the next draw re-uploads everything it needs.
+            self.applied_uniforms.clear();
+        }
+    }
+
+    fn bind_vao(&mut self, vao: &Option<VertexArray>) {
+        let same = match (&self.vao, vao) {
+            (Some(Some(prev)), Some(v)) => prev == v,
             (Some(None), None) => true,
             _ => false,
         };
-        if !vao_same {
-            gl.bind_vertex_array(vao.as_ref().map(|v| v.raw_gl()));
-            s.prev_vao = Some(vao);
+        if !same {
+            self.gl.bind_vertex_array(vao.as_ref().map(|v| v.raw_gl()));
+            self.vao = Some(vao.clone());
         }
+    }
 
-        // 5. Uniforms (after useProgram)
-        match &s.prev_uniforms {
-            Some(prev) => uniforms.upload_diff(prev, program),
-            None => uniforms.upload(program),
-        }
-        // TODO(perf): UniformValues::clone is O(N) — clones Vec + each Box<str> + each
-        // SmallVec. For typical 30-50 uniforms this is meaningful per-draw. Consider
-        // Rc<UniformValues> for cheap pointer-eq fast path, or a version counter on
-        // UniformValues to detect "same data passed again" without comparison.
-        s.prev_uniforms = Some(uniforms.clone());
+    fn upload_uniforms(&mut self, uniforms: &UniformValues, program: &Program) {
+        self.applied_uniforms.sync_from(uniforms, program);
+    }
+}
 
-        // 6. Draw
-        draw.execute(&gl);
+fn fb_eq(a: &Option<Framebuffer>, b: &Option<Framebuffer>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => x == y,
+        _ => false,
     }
 }

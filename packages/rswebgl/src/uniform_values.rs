@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use smallvec::{SmallVec, smallvec};
 use wasm_bindgen::prelude::*;
 use web_sys::WebGl2RenderingContext;
@@ -64,23 +67,32 @@ pub enum Uniform {
     },
 }
 
+// `entries` lives behind a shared `Rc<RefCell>`, so cloning a `UniformValues`
+// yields another handle to the *same* data — consistent with the rest of the
+// library (Texture/Buffer/VertexArray/Program all share on clone). This is what
+// lets a `Draw` hold a clone that stays live: mutating the original handle (e.g.
+// a per-frame `set_mat4`) is seen by the already-built pass it was added to.
 #[wasm_bindgen]
 #[derive(Debug, Clone)]
 pub struct UniformValues {
-    entries: Vec<(Box<str>, Uniform)>,
+    entries: Rc<RefCell<Vec<(Box<str>, Uniform)>>>,
 }
 
 impl UniformValues {
     fn put(&mut self, name: &str, v: Uniform) {
-        match self.entries.binary_search_by(|(k, _)| k.as_ref().cmp(name)) {
-            Ok(idx) => self.entries[idx].1 = v,
-            Err(idx) => self.entries.insert(idx, (name.into(), v)),
+        let mut e = self.entries.borrow_mut();
+        match e.binary_search_by(|(k, _)| k.as_ref().cmp(name)) {
+            Ok(idx) => e[idx].1 = v,
+            Err(idx) => e.insert(idx, (name.into(), v)),
         }
     }
 
-    fn find(&self, name: &str) -> Option<&Uniform> {
-        match self.entries.binary_search_by(|(k, _)| k.as_ref().cmp(name)) {
-            Ok(idx) => Some(&self.entries[idx].1),
+    // Returns a clone: entries sit behind a RefCell, so we can't hand out a borrow
+    // that outlives it. Getters aren't a hot path, so the clone is fine.
+    fn get(&self, name: &str) -> Option<Uniform> {
+        let e = self.entries.borrow();
+        match e.binary_search_by(|(k, _)| k.as_ref().cmp(name)) {
+            Ok(idx) => Some(e[idx].1.clone()),
             Err(_) => None,
         }
     }
@@ -88,7 +100,7 @@ impl UniformValues {
     fn assign_unit(&self, name: &str) -> u32 {
         let max = limits::max_combined_texture_units() as usize;
         let mut used: SmallVec<[bool; 32]> = SmallVec::from_elem(false, max);
-        for (k, v) in &self.entries {
+        for (k, v) in self.entries.borrow().iter() {
             if let Uniform::Sampler { unit, .. } = v {
                 if k.as_ref() == name {
                     return *unit;
@@ -128,7 +140,7 @@ impl Default for UniformValues {
     }
 }
 
-fn apply_value(program: &mut Program, name: &str, value: &Uniform) {
+fn apply_value(program: &Program, name: &str, value: &Uniform) {
     let Some(loc) = program.loc(name) else { return };
     let gl = program.gl();
     let loc = &loc;
@@ -191,13 +203,13 @@ fn apply_value(program: &mut Program, name: &str, value: &Uniform) {
         }
         .upload(gl, loc),
         Uniform::Sampler { .. } => {
-            // Samplers are handled in upload/upload_diff to share activeTexture tracking
+            // Samplers are handled in upload/sync_from to share activeTexture tracking
         }
     }
 }
 
 fn apply_sampler(
-    program: &mut Program,
+    program: &Program,
     name: &str,
     unit: u32,
     texture: &Texture,
@@ -216,44 +228,62 @@ fn apply_sampler(
     }
 }
 
+// Uploads a single uniform that is known to be new or changed. For samplers,
+// `unit_changed` gates the uniform1i write (the texture bind always happens).
+fn apply_changed(
+    program: &Program,
+    name: &str,
+    value: &Uniform,
+    unit_changed: bool,
+    current_active: &mut Option<u32>,
+) {
+    match value {
+        Uniform::Sampler { unit, texture } => {
+            apply_sampler(program, name, *unit, texture, unit_changed, current_active);
+        }
+        _ => apply_value(program, name, value),
+    }
+}
+
 #[wasm_bindgen]
 impl UniformValues {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self {
-            entries: Vec::new(),
+            entries: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
     pub fn clear(&mut self) {
-        self.entries.clear();
+        self.entries.borrow_mut().clear();
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.borrow().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.borrow().is_empty()
     }
 
     pub fn has(&self, name: &str) -> bool {
-        self.find(name).is_some()
+        self.get(name).is_some()
     }
 
     pub fn remove(&mut self, name: &str) -> bool {
-        match self.entries.binary_search_by(|(k, _)| k.as_ref().cmp(name)) {
+        let mut e = self.entries.borrow_mut();
+        match e.binary_search_by(|(k, _)| k.as_ref().cmp(name)) {
             Ok(idx) => {
-                self.entries.remove(idx);
+                e.remove(idx);
                 true
             }
             Err(_) => false,
         }
     }
 
-    pub fn upload(&self, program: &mut Program) {
+    pub fn upload(&self, program: &Program) {
         let mut current_active: Option<u32> = None;
-        for (name, value) in &self.entries {
+        for (name, value) in self.entries.borrow().iter() {
             match value {
                 Uniform::Sampler { unit, texture } => {
                     apply_sampler(program, name, *unit, texture, true, &mut current_active);
@@ -263,39 +293,35 @@ impl UniformValues {
         }
     }
 
-    pub fn upload_diff(&self, prev: &UniformValues, program: &mut Program) {
+    /// Diffs `incoming` against `self` — the renderer's per-program cache of what's
+    /// already in the program — uploading only uniforms that are new or changed and
+    /// recording them here in place. No whole-map clone: only individual changed
+    /// values are cloned. The caller must `clear` this cache on program switch,
+    /// since uniform locations belong to the active program.
+    pub(crate) fn sync_from(&mut self, incoming: &UniformValues, program: &Program) {
+        let incoming = incoming.entries.borrow();
+        let mut applied = self.entries.borrow_mut();
         let mut current_active: Option<u32> = None;
-        for (name, value) in &self.entries {
-            let prev_v = prev.find(name);
-            match value {
-                Uniform::Sampler { unit, texture } => {
-                    let (tex_changed, unit_changed) = match prev_v {
-                        Some(Uniform::Sampler {
-                            unit: pu,
-                            texture: pt,
-                        }) => (pt != texture, pu != unit),
-                        _ => (true, true),
-                    };
-                    if !tex_changed && !unit_changed {
+        for (name, value) in incoming.iter() {
+            match applied.binary_search_by(|(k, _)| k.as_ref().cmp(name.as_ref())) {
+                // Already present: skip if identical, otherwise re-upload + update.
+                Ok(idx) => {
+                    if &applied[idx].1 == value {
                         continue;
                     }
-                    apply_sampler(
-                        program,
-                        name,
-                        *unit,
-                        texture,
-                        unit_changed,
-                        &mut current_active,
-                    );
-                }
-                _ => {
-                    let changed = match prev_v {
-                        Some(p) => p != value,
-                        None => true,
+                    let unit_changed = match (&applied[idx].1, value) {
+                        (Uniform::Sampler { unit: pu, .. }, Uniform::Sampler { unit, .. }) => {
+                            pu != unit
+                        }
+                        _ => true,
                     };
-                    if changed {
-                        apply_value(program, name, value);
-                    }
+                    apply_changed(program, name, value, unit_changed, &mut current_active);
+                    applied[idx].1 = value.clone();
+                }
+                // New uniform: upload and insert, keeping `entries` sorted.
+                Err(idx) => {
+                    apply_changed(program, name, value, true, &mut current_active);
+                    applied.insert(idx, (name.clone(), value.clone()));
                 }
             }
         }
@@ -382,14 +408,14 @@ impl UniformValues {
     }
 
     pub fn get_sampler_unit(&self, name: &str) -> Option<u32> {
-        match self.find(name) {
-            Some(Uniform::Sampler { unit, .. }) => Some(*unit),
+        match self.get(name) {
+            Some(Uniform::Sampler { unit, .. }) => Some(unit),
             _ => None,
         }
     }
 
     pub fn get_sampler_texture(&self, name: &str) -> Option<Texture> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Sampler { texture, .. }) => Some(texture.clone()),
             _ => None,
         }
@@ -563,19 +589,19 @@ impl UniformValues {
     // --- scalar single getters (return Some only if stored as 1-element) ---
 
     pub fn get_float(&self, name: &str) -> Option<f32> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Float(v)) if v.len() == 1 => Some(v[0]),
             _ => None,
         }
     }
     pub fn get_int(&self, name: &str) -> Option<i32> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Int(v)) if v.len() == 1 => Some(v[0]),
             _ => None,
         }
     }
     pub fn get_uint(&self, name: &str) -> Option<u32> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::UInt(v)) if v.len() == 1 => Some(v[0]),
             _ => None,
         }
@@ -584,73 +610,73 @@ impl UniformValues {
     // --- vector / array getters (return full stored data) ---
 
     pub fn get_float_array(&self, name: &str) -> Option<Vec<f32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Float(v)) => Some(v.to_vec()),
             _ => None,
         }
     }
     pub fn get_int_array(&self, name: &str) -> Option<Vec<i32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Int(v)) => Some(v.to_vec()),
             _ => None,
         }
     }
     pub fn get_uint_array(&self, name: &str) -> Option<Vec<u32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::UInt(v)) => Some(v.to_vec()),
             _ => None,
         }
     }
     pub fn get_vec2(&self, name: &str) -> Option<Vec<f32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Vec2(v)) => Some(v.to_vec()),
             _ => None,
         }
     }
     pub fn get_vec3(&self, name: &str) -> Option<Vec<f32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Vec3(v)) => Some(v.to_vec()),
             _ => None,
         }
     }
     pub fn get_vec4(&self, name: &str) -> Option<Vec<f32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Vec4(v)) => Some(v.to_vec()),
             _ => None,
         }
     }
     pub fn get_ivec2(&self, name: &str) -> Option<Vec<i32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::IVec2(v)) => Some(v.to_vec()),
             _ => None,
         }
     }
     pub fn get_ivec3(&self, name: &str) -> Option<Vec<i32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::IVec3(v)) => Some(v.to_vec()),
             _ => None,
         }
     }
     pub fn get_ivec4(&self, name: &str) -> Option<Vec<i32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::IVec4(v)) => Some(v.to_vec()),
             _ => None,
         }
     }
     pub fn get_uvec2(&self, name: &str) -> Option<Vec<u32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::UVec2(v)) => Some(v.to_vec()),
             _ => None,
         }
     }
     pub fn get_uvec3(&self, name: &str) -> Option<Vec<u32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::UVec3(v)) => Some(v.to_vec()),
             _ => None,
         }
     }
     pub fn get_uvec4(&self, name: &str) -> Option<Vec<u32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::UVec4(v)) => Some(v.to_vec()),
             _ => None,
         }
@@ -659,62 +685,62 @@ impl UniformValues {
     // --- matrix getters (return full stored data, single or array) ---
 
     pub fn get_mat2(&self, name: &str) -> Option<Vec<f32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Mat2 { data, .. }) => Some(data.to_vec()),
             _ => None,
         }
     }
     pub fn get_mat3(&self, name: &str) -> Option<Vec<f32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Mat3 { data, .. }) => Some(data.to_vec()),
             _ => None,
         }
     }
     pub fn get_mat4(&self, name: &str) -> Option<Vec<f32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Mat4 { data, .. }) => Some(data.to_vec()),
             _ => None,
         }
     }
     pub fn get_mat2x3(&self, name: &str) -> Option<Vec<f32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Mat2x3 { data, .. }) => Some(data.to_vec()),
             _ => None,
         }
     }
     pub fn get_mat2x4(&self, name: &str) -> Option<Vec<f32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Mat2x4 { data, .. }) => Some(data.to_vec()),
             _ => None,
         }
     }
     pub fn get_mat3x2(&self, name: &str) -> Option<Vec<f32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Mat3x2 { data, .. }) => Some(data.to_vec()),
             _ => None,
         }
     }
     pub fn get_mat3x4(&self, name: &str) -> Option<Vec<f32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Mat3x4 { data, .. }) => Some(data.to_vec()),
             _ => None,
         }
     }
     pub fn get_mat4x2(&self, name: &str) -> Option<Vec<f32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Mat4x2 { data, .. }) => Some(data.to_vec()),
             _ => None,
         }
     }
     pub fn get_mat4x3(&self, name: &str) -> Option<Vec<f32>> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Mat4x3 { data, .. }) => Some(data.to_vec()),
             _ => None,
         }
     }
 
     pub fn get_transpose(&self, name: &str) -> Option<bool> {
-        match self.find(name) {
+        match self.get(name) {
             Some(Uniform::Mat2 { transpose, .. })
             | Some(Uniform::Mat3 { transpose, .. })
             | Some(Uniform::Mat4 { transpose, .. })
@@ -723,7 +749,7 @@ impl UniformValues {
             | Some(Uniform::Mat3x2 { transpose, .. })
             | Some(Uniform::Mat3x4 { transpose, .. })
             | Some(Uniform::Mat4x2 { transpose, .. })
-            | Some(Uniform::Mat4x3 { transpose, .. }) => Some(*transpose),
+            | Some(Uniform::Mat4x3 { transpose, .. }) => Some(transpose),
             _ => None,
         }
     }

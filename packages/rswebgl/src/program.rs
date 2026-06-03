@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlProgram, WebGlShader, WebGlUniformLocation};
 
@@ -7,21 +10,36 @@ use crate::uniform_cache::UniformCache;
 
 const COMPLETION_STATUS_KHR: u32 = 0x91B1;
 
-#[derive(Debug, Clone)]
-struct ProgramInner {
-    gl: WebGl2RenderingContext,
-    raw: WebGlProgram,
+// Everything that changes after construction. A Program is a clone-able handle
+// (like Buffer/Texture/VAO), so all mutable state lives here behind one shared
+// `Rc<RefCell>` — otherwise clones would fork it and drift: one clone finalizing
+// (or caching a uniform location) would leave the others stale. Sharing it also
+// lets the mutating methods take `&self`, so a Program held inside a render
+// `Batch` needs no `&mut`.
+#[derive(Debug)]
+struct ProgramState {
     vert: Option<WebGlShader>,
     frag: Option<WebGlShader>,
-    parallel: bool,
     ready: bool,
     valid: bool,
     cache: UniformCache,
 }
 
+#[derive(Debug, Clone)]
+struct ProgramInner {
+    gl: WebGl2RenderingContext,
+    raw: WebGlProgram,
+    // Immutable after construction — safe to copy per clone.
+    parallel: bool,
+    state: Rc<RefCell<ProgramState>>,
+}
+
 ref_counted!(Program wraps ProgramInner; drop(self) {
-    self.inner.gl.delete_shader(self.inner.vert.take().as_ref());
-    self.inner.gl.delete_shader(self.inner.frag.take().as_ref());
+    {
+        let mut st = self.inner.state.borrow_mut();
+        self.inner.gl.delete_shader(st.vert.take().as_ref());
+        self.inner.gl.delete_shader(st.frag.take().as_ref());
+    }
     self.inner.gl.delete_program(Some(&self.inner.raw));
 });
 
@@ -44,12 +62,14 @@ impl Program {
             inner: ProgramInner {
                 gl: gl.clone(),
                 raw,
-                vert: Some(vert),
-                frag: Some(frag),
                 parallel,
-                ready: false,
-                valid: false,
-                cache: UniformCache::new(),
+                state: Rc::new(RefCell::new(ProgramState {
+                    vert: Some(vert),
+                    frag: Some(frag),
+                    ready: false,
+                    valid: false,
+                    cache: UniformCache::new(),
+                })),
             },
             rc: RefCount::new(),
         })
@@ -63,39 +83,37 @@ impl Program {
         &self.inner.raw
     }
 
-    pub(crate) fn loc(&mut self, name: &str) -> Option<WebGlUniformLocation> {
+    pub(crate) fn loc(&self, name: &str) -> Option<WebGlUniformLocation> {
         self.inner
+            .state
+            .borrow_mut()
             .cache
             .get(&self.inner.gl, &self.inner.raw, name)
             .cloned()
     }
 
-    fn finalize(&mut self) {
-        self.inner.ready = true;
-        self.inner.valid = self
-            .inner
-            .gl
+    fn finalize(&self) {
+        let gl = &self.inner.gl;
+        let mut st = self.inner.state.borrow_mut();
+        st.ready = true;
+        st.valid = gl
             .get_program_parameter(&self.inner.raw, WebGl2RenderingContext::LINK_STATUS)
             .as_bool()
             .unwrap_or(false);
 
-        if !self.inner.valid {
-            let prog_log = self
-                .inner
-                .gl
+        if !st.valid {
+            let prog_log = gl
                 .get_program_info_log(&self.inner.raw)
                 .unwrap_or_else(|| "unknown error".into());
-            let vert_log = self
-                .inner
+            let vert_log = st
                 .vert
                 .as_ref()
-                .and_then(|s| self.inner.gl.get_shader_info_log(s))
+                .and_then(|s| gl.get_shader_info_log(s))
                 .unwrap_or_default();
-            let frag_log = self
-                .inner
+            let frag_log = st
                 .frag
                 .as_ref()
-                .and_then(|s| self.inner.gl.get_shader_info_log(s))
+                .and_then(|s| gl.get_shader_info_log(s))
                 .unwrap_or_default();
 
             console::error(&format!("[rswebgl] program link failed: {prog_log}"));
@@ -107,15 +125,15 @@ impl Program {
             }
         }
 
-        self.inner.gl.delete_shader(self.inner.vert.take().as_ref());
-        self.inner.gl.delete_shader(self.inner.frag.take().as_ref());
+        gl.delete_shader(st.vert.take().as_ref());
+        gl.delete_shader(st.frag.take().as_ref());
     }
 }
 
 #[wasm_bindgen]
 impl Program {
-    pub fn is_ready(&mut self) -> bool {
-        if self.inner.ready {
+    pub fn is_ready(&self) -> bool {
+        if self.inner.state.borrow().ready {
             return true;
         }
 
@@ -133,11 +151,11 @@ impl Program {
             self.finalize();
         }
 
-        self.inner.ready
+        self.inner.state.borrow().ready
     }
 
     pub fn is_valid(&self) -> bool {
-        self.inner.valid
+        self.inner.state.borrow().valid
     }
 
     pub fn raw(&self) -> WebGlProgram {
