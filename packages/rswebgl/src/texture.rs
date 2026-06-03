@@ -491,10 +491,6 @@ impl Texture {
         self.inner.gl.bind_texture(t, None);
     }
 
-    pub fn raw(&self) -> WebGlTexture {
-        self.inner.raw.clone()
-    }
-
     pub fn target(&self) -> TextureTarget {
         self.inner.target.clone()
     }

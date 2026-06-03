@@ -157,10 +157,6 @@ impl Program {
     pub fn is_valid(&self) -> bool {
         self.inner.state.borrow().valid
     }
-
-    pub fn raw(&self) -> WebGlProgram {
-        self.inner.raw.clone()
-    }
 }
 
 impl PartialEq for Program {

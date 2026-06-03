@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlVertexArrayObject};
 
@@ -106,12 +109,22 @@ impl VertexAttr {
 // VertexArray
 // ---------------------------------------------------------------------------
 
+// The buffers a VAO keeps alive (so they outlive the GL VAO that references them)
+// belong to the GL object, not to a particular handle. They live behind a shared
+// `Rc<RefCell>` so cloning a `VertexArray` is a handle copy, not a fork — otherwise
+// configuring one clone would leave the others' keep-alive lists stale, and a
+// buffer one clone holds could be freed while the shared GL VAO still uses it.
+#[derive(Debug)]
+struct VertexArrayState {
+    attribs: Vec<Option<(Buffer, VertexAttr)>>,
+    index_buffer: Option<Buffer>,
+}
+
 #[derive(Debug, Clone)]
 struct VertexArrayInner {
     gl: WebGl2RenderingContext,
     raw: WebGlVertexArrayObject,
-    attribs: Vec<Option<(Buffer, VertexAttr)>>,
-    index_buffer: Option<Buffer>,
+    state: Rc<RefCell<VertexArrayState>>,
 }
 
 ref_counted!(VertexArray wraps VertexArrayInner; drop(self) {
@@ -125,8 +138,10 @@ impl VertexArray {
             inner: VertexArrayInner {
                 gl: gl.clone(),
                 raw,
-                attribs: Vec::new(),
-                index_buffer: None,
+                state: Rc::new(RefCell::new(VertexArrayState {
+                    attribs: Vec::new(),
+                    index_buffer: None,
+                })),
             },
             rc: RefCount::new(),
         })
@@ -177,10 +192,11 @@ impl VertexArray {
         gl.bind_vertex_array(None);
 
         let idx = index as usize;
-        if idx >= self.inner.attribs.len() {
-            self.inner.attribs.resize_with(idx + 1, || None);
+        let mut st = self.inner.state.borrow_mut();
+        if idx >= st.attribs.len() {
+            st.attribs.resize_with(idx + 1, || None);
         }
-        self.inner.attribs[idx] = Some((buffer.clone(), attr.clone()));
+        st.attribs[idx] = Some((buffer.clone(), attr.clone()));
     }
 
     pub fn remove_attr(&mut self, index: u32) {
@@ -190,8 +206,9 @@ impl VertexArray {
         gl.bind_vertex_array(None);
 
         let idx = index as usize;
-        if idx < self.inner.attribs.len() {
-            self.inner.attribs[idx] = None;
+        let mut st = self.inner.state.borrow_mut();
+        if idx < st.attribs.len() {
+            st.attribs[idx] = None;
         }
     }
 
@@ -204,7 +221,7 @@ impl VertexArray {
         );
         gl.bind_vertex_array(None);
 
-        self.inner.index_buffer = Some(buffer.clone());
+        self.inner.state.borrow_mut().index_buffer = Some(buffer.clone());
     }
 
     pub fn remove_index_buffer(&mut self) {
@@ -213,7 +230,7 @@ impl VertexArray {
         gl.bind_buffer(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER, None);
         gl.bind_vertex_array(None);
 
-        self.inner.index_buffer = None;
+        self.inner.state.borrow_mut().index_buffer = None;
     }
 
     pub fn bind(&self) {

@@ -257,8 +257,14 @@ impl Context {
         let parallel = self.is_extension_enabled(Extension::KhrParallelShaderCompile);
         Program::new(&self.gl, vert_src, frag_src, parallel)
     }
+}
 
-    pub fn gl(&self) -> WebGl2RenderingContext {
+impl Context {
+    // Internal raw-context accessor for builders within this crate. Deliberately
+    // not public: handing the live WebGl2RenderingContext to users would let them
+    // mutate global GL state behind the renderer's back — the desync hazard the
+    // pass-based renderer exists to remove.
+    pub(crate) fn gl(&self) -> WebGl2RenderingContext {
         self.gl.clone()
     }
 }
