@@ -11,6 +11,8 @@ smallvec = { workspace = true }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 web-sys = { workspace = true, features = [
+    "Blob",
+    "BlobPropertyBag",
     "console",
     "Element",
     "HtmlCanvasElement",
@@ -19,6 +21,7 @@ web-sys = { workspace = true, features = [
     "ImageBitmap",
     "ImageData",
     "ResizeObserver",
+    "Url",
     "Window",
     "WebGl2RenderingContext",
     "WebGlBuffer",

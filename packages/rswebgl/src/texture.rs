@@ -2,8 +2,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use web_sys::{
-    HtmlCanvasElement, HtmlImageElement, HtmlVideoElement, ImageBitmap, ImageData,
-    WebGl2RenderingContext, WebGlTexture,
+    Blob, BlobPropertyBag, HtmlCanvasElement, HtmlImageElement, HtmlVideoElement, ImageBitmap,
+    ImageData, Url, WebGl2RenderingContext, WebGlTexture,
 };
 
 use crate::compressed_format::CompressedFormat;
@@ -858,9 +858,92 @@ impl Texture {
             }
         };
         img.set_cross_origin(Some("anonymous"));
+        self.drive_image_load(
+            img,
+            url,
+            format.clone(),
+            generate_mipmaps,
+            flip_y,
+            on_load,
+            None,
+        );
+    }
 
+    /// Load an encoded image (PNG/JPEG/…) from raw `bytes` and upload it into
+    /// this texture once it decodes — the in-memory counterpart of `load_image`.
+    ///
+    /// The bytes are wrapped in a `Blob` (tagged with `mime`, e.g. `"image/png"`)
+    /// and handed to the browser's image decoder via an object URL, which is
+    /// revoked once decoding finishes. Same storage/mipmap/`on_load` semantics as
+    /// `load_image`. Useful for images embedded in a container (e.g. a glTF
+    /// `bufferView`) where no URL exists.
+    pub fn load_bytes(
+        &self,
+        bytes: &[u8],
+        mime: &str,
+        format: &TextureFormat,
+        generate_mipmaps: bool,
+        flip_y: bool,
+        on_load: js_sys::Function,
+    ) {
+        let parts = js_sys::Array::new();
+        parts.push(&js_sys::Uint8Array::from(bytes));
+        let opts = BlobPropertyBag::new();
+        opts.set_type(mime);
+        let blob = match Blob::new_with_u8_array_sequence_and_options(&parts, &opts) {
+            Ok(b) => b,
+            Err(e) => {
+                console::error(&format!(
+                    "[rswebgl] load_bytes: Blob creation failed: {e:?}"
+                ));
+                return;
+            }
+        };
+        let url = match Url::create_object_url_with_blob(&blob) {
+            Ok(u) => u,
+            Err(e) => {
+                console::error(&format!(
+                    "[rswebgl] load_bytes: createObjectURL failed: {e:?}"
+                ));
+                return;
+            }
+        };
+        // Blob URLs are same-origin and CORS-clean — no crossOrigin needed.
+        let img = match HtmlImageElement::new() {
+            Ok(img) => img,
+            Err(_) => {
+                console::error("[rswebgl] failed to create HtmlImageElement");
+                let _ = Url::revoke_object_url(&url);
+                return;
+            }
+        };
+        let revoke = url.clone();
+        self.drive_image_load(
+            img,
+            &url,
+            format.clone(),
+            generate_mipmaps,
+            flip_y,
+            on_load,
+            Some(revoke),
+        );
+    }
+
+    /// Shared `onload` machinery for `load_image`/`load_bytes`: on decode it sizes
+    /// immutable storage to the image, fills level 0, optionally builds mipmaps,
+    /// revokes a transient object URL if one was given, then fires `on_load`.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_image_load(
+        &self,
+        img: HtmlImageElement,
+        src: &str,
+        format: TextureFormat,
+        generate_mipmaps: bool,
+        flip_y: bool,
+        on_load: js_sys::Function,
+        revoke_url: Option<String>,
+    ) {
         let tex = self.clone();
-        let format = format.clone();
         let img_cb = img.clone();
         // once_into_js: the closure runs at most once, then drops itself; JS
         // holds it alive via the onload property until it fires.
@@ -881,10 +964,13 @@ impl Texture {
             if generate_mipmaps {
                 tex.generate_mipmaps();
             }
+            if let Some(url) = revoke_url {
+                let _ = Url::revoke_object_url(&url);
+            }
             let _ = on_load.call0(&JsValue::NULL);
         });
         img.set_onload(Some(cb.unchecked_ref()));
-        img.set_src(url);
+        img.set_src(src);
     }
 
     // --- LOD / sampler parameters -------------------------------------------
