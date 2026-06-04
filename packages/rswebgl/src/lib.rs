@@ -14,6 +14,7 @@ pub mod render_state;
 pub mod renderbuffer;
 pub mod renderer;
 pub mod texture;
+pub mod uniform_buffer;
 pub(crate) mod uniform_cache;
 pub(crate) mod uniform_value;
 pub mod uniform_values;

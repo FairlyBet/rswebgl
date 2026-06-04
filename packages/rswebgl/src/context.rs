@@ -12,6 +12,7 @@ use crate::program::Program;
 use crate::renderbuffer::{Renderbuffer, RenderbufferFormat};
 use crate::renderer::Renderer;
 use crate::texture::{Texture, TextureMagFilter, TextureMinFilter, TextureTarget};
+use crate::uniform_buffer::{UboLayout, UniformBuffer};
 use crate::vao::VertexArray;
 
 // ---------------------------------------------------------------------------
@@ -218,6 +219,16 @@ impl Context {
 
     pub fn create_vertex_array(&self) -> Result<VertexArray, String> {
         VertexArray::new(&self.gl)
+    }
+
+    /// Allocate a uniform block backed by a GL buffer, laid out per std140 from
+    /// `layout`. Fields are addressed by path (e.g. `"lights[2].color"`).
+    pub fn create_uniform_buffer(
+        &self,
+        layout: &UboLayout,
+        usage: BufferUsage,
+    ) -> Result<UniformBuffer, String> {
+        UniformBuffer::new(&self.gl, layout, usage)
     }
 
     pub fn create_framebuffer(&self, width: i32, height: i32) -> Result<Framebuffer, String> {

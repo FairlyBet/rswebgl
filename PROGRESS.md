@@ -45,7 +45,7 @@
 | Sampler binding             | ✅     | `src/uniform_values.rs` |
 | Rust trait `UniformValue`   | ✅     | `src/uniform_value.rs`  |
 | Uniform location cache      | ✅     | `src/uniform_cache.rs`  |
-| Uniform Buffer Object (UBO) | ❌     | —                       |
+| Uniform Buffer Object (UBO) | 🔶     | `src/uniform_buffer.rs` |
 
 ## Vertex Attributes
 
