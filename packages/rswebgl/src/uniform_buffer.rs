@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
-use web_sys::WebGl2RenderingContext;
+use web_sys::{WebGl2RenderingContext, WebGlBuffer};
 
 use crate::buffer::{Buffer, BufferKind, BufferUsage};
 use crate::console;
@@ -292,6 +292,7 @@ fn validate_block_size(size: u32, max: u32) -> Result<(), String> {
 // UniformBuffer — CPU-staged, std140-packed, GPU-backed uniform block.
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 struct UboState {
     data: Vec<u8>,
     fields: HashMap<String, (u32, Std140Type)>,
@@ -309,6 +310,7 @@ struct UboState {
 /// Cloning yields another handle to the same block (shared CPU staging + GL
 /// buffer), like the other resource types.
 #[wasm_bindgen]
+#[derive(Debug)]
 pub struct UniformBuffer {
     buffer: Buffer,
     state: Rc<RefCell<UboState>>,
@@ -320,6 +322,14 @@ impl Clone for UniformBuffer {
             buffer: self.buffer.clone(),
             state: Rc::clone(&self.state),
         }
+    }
+}
+
+// Two handles are equal iff they share the same staging/GL buffer — lets the
+// renderer's uniform diffing skip re-binding an unchanged block.
+impl PartialEq for UniformBuffer {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.state, &other.state)
     }
 }
 
@@ -343,13 +353,18 @@ impl UniformBuffer {
     }
 
     // Flush the dirty range to the GL buffer (no-op if clean). Shared by the
-    // public `upload()` and — later — the renderer's bind-time auto-upload.
+    // public `upload()` and the renderer's bind-time auto-upload.
     pub(crate) fn flush(&self) {
         let mut st = self.state.borrow_mut();
         if let Some((lo, hi)) = st.dirty.take() {
             self.buffer
                 .write(lo as i32, &st.data[lo as usize..hi as usize]);
         }
+    }
+
+    // The GL buffer, for binding to a uniform-buffer binding point.
+    pub(crate) fn buffer_raw(&self) -> &WebGlBuffer {
+        self.buffer.raw_gl()
     }
 }
 

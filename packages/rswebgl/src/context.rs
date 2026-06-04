@@ -130,6 +130,9 @@ pub struct Context {
     extensions: Vec<Extension>,
     renderer: Renderer,
     default_fb: DefaultFramebuffer,
+    // Programs created while this is set check their uniform-block layouts against
+    // the shader on first bind (one-time introspection per block). On by default.
+    validate_uniform_blocks: bool,
 }
 
 #[wasm_bindgen]
@@ -143,6 +146,7 @@ impl Context {
             extensions: Vec::new(),
             renderer,
             default_fb,
+            validate_uniform_blocks: true,
         }
     }
 
@@ -165,7 +169,16 @@ impl Context {
             extensions: Vec::new(),
             renderer,
             default_fb,
+            validate_uniform_blocks: true,
         })
+    }
+
+    /// Whether programs created from now on validate their uniform-block layouts
+    /// against the shader on first bind (a one-time introspection check per block;
+    /// the per-frame upload path is never affected). On by default — turn off to
+    /// skip the check in release builds.
+    pub fn set_validate_uniform_blocks(&mut self, on: bool) {
+        self.validate_uniform_blocks = on;
     }
 
     pub fn renderer(&self) -> Renderer {
@@ -256,7 +269,13 @@ impl Context {
 
     pub fn create_program(&self, vert_src: &str, frag_src: &str) -> Result<Program, String> {
         let parallel = self.is_extension_enabled(Extension::KhrParallelShaderCompile);
-        Program::new(&self.gl, vert_src, frag_src, parallel)
+        Program::new(
+            &self.gl,
+            vert_src,
+            frag_src,
+            parallel,
+            self.validate_uniform_blocks,
+        )
     }
 }
 

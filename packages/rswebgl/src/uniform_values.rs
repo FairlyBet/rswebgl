@@ -9,6 +9,7 @@ use crate::console;
 use crate::limits;
 use crate::program::Program;
 use crate::texture::Texture;
+use crate::uniform_buffer::UniformBuffer;
 use crate::uniform_value::{self as uv, UniformValue};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,6 +66,13 @@ pub enum Uniform {
         unit: u32,
         texture: Texture,
     },
+    // A uniform block bound to `binding`. `range` is None for the whole buffer
+    // (bindBufferBase) or Some((offset, size)) for a sub-range (bindBufferRange).
+    Block {
+        binding: u32,
+        ubo: UniformBuffer,
+        range: Option<(i32, i32)>,
+    },
 }
 
 // `entries` lives behind a shared `Rc<RefCell>`, so cloning a `UniformValues`
@@ -116,6 +124,33 @@ impl UniformValues {
             None => {
                 console::warn(&format!(
                     "[rswebgl] sampler \"{name}\": all {max} texture units occupied"
+                ));
+                0
+            }
+        }
+    }
+
+    // Mirror of `assign_unit` for uniform-block binding points (a separate GL
+    // namespace): reuse this block's point if already set, else the first free one.
+    fn assign_block_binding(&self, name: &str) -> u32 {
+        let max = limits::max_uniform_buffer_bindings() as usize;
+        let mut used: SmallVec<[bool; 32]> = SmallVec::from_elem(false, max);
+        for (k, v) in self.entries.borrow().iter() {
+            if let Uniform::Block { binding, .. } = v {
+                if k.as_ref() == name {
+                    return *binding;
+                }
+                let idx = *binding as usize;
+                if idx < max {
+                    used[idx] = true;
+                }
+            }
+        }
+        match used.iter().position(|b| !b) {
+            Some(i) => i as u32,
+            None => {
+                console::warn(&format!(
+                    "[rswebgl] uniform block \"{name}\": all {max} binding points occupied"
                 ));
                 0
             }
@@ -202,9 +237,38 @@ fn apply_value(program: &Program, name: &str, value: &Uniform) {
             data,
         }
         .upload(gl, loc),
-        Uniform::Sampler { .. } => {
-            // Samplers are handled in upload/sync_from to share activeTexture tracking
+        Uniform::Sampler { .. } | Uniform::Block { .. } => {
+            // Samplers and blocks are handled in upload/sync_from (they bind GL
+            // objects / share activeTexture tracking rather than uploading a value).
         }
+    }
+}
+
+// Links the block to its binding point for this program (cached), flushes the
+// UBO's pending writes, and binds it (or a sub-range) to that point.
+fn apply_block(
+    program: &Program,
+    name: &str,
+    binding: u32,
+    ubo: &UniformBuffer,
+    range: Option<(i32, i32)>,
+) {
+    program.bind_block(name, binding, ubo.byte_size());
+    ubo.flush();
+    let gl = program.gl();
+    match range {
+        Some((offset, size)) => gl.bind_buffer_range_with_i32_and_i32(
+            WebGl2RenderingContext::UNIFORM_BUFFER,
+            binding,
+            Some(ubo.buffer_raw()),
+            offset,
+            size,
+        ),
+        None => gl.bind_buffer_base(
+            WebGl2RenderingContext::UNIFORM_BUFFER,
+            binding,
+            Some(ubo.buffer_raw()),
+        ),
     }
 }
 
@@ -241,6 +305,11 @@ fn apply_changed(
         Uniform::Sampler { unit, texture } => {
             apply_sampler(program, name, *unit, texture, unit_changed, current_active);
         }
+        Uniform::Block {
+            binding,
+            ubo,
+            range,
+        } => apply_block(program, name, *binding, ubo, *range),
         _ => apply_value(program, name, value),
     }
 }
@@ -288,6 +357,11 @@ impl UniformValues {
                 Uniform::Sampler { unit, texture } => {
                     apply_sampler(program, name, *unit, texture, true, &mut current_active);
                 }
+                Uniform::Block {
+                    binding,
+                    ubo,
+                    range,
+                } => apply_block(program, name, *binding, ubo, *range),
                 _ => apply_value(program, name, value),
             }
         }
@@ -303,6 +377,22 @@ impl UniformValues {
         let mut applied = self.entries.borrow_mut();
         let mut current_active: Option<u32> = None;
         for (name, value) in incoming.iter() {
+            // Blocks bypass the equality-skip: the entry can be unchanged while the
+            // UBO's bytes are dirty, so we always re-apply (flush + bind), which is
+            // cheap when nothing actually changed.
+            if let Uniform::Block {
+                binding,
+                ubo,
+                range,
+            } = value
+            {
+                apply_block(program, name, *binding, ubo, *range);
+                match applied.binary_search_by(|(k, _)| k.as_ref().cmp(name.as_ref())) {
+                    Ok(idx) => applied[idx].1 = value.clone(),
+                    Err(idx) => applied.insert(idx, (name.clone(), value.clone())),
+                }
+                continue;
+            }
             match applied.binary_search_by(|(k, _)| k.as_ref().cmp(name.as_ref())) {
                 // Already present: skip if identical, otherwise re-upload + update.
                 Ok(idx) => {
@@ -417,6 +507,57 @@ impl UniformValues {
     pub fn get_sampler_texture(&self, name: &str) -> Option<Texture> {
         match self.get(name) {
             Some(Uniform::Sampler { texture, .. }) => Some(texture.clone()),
+            _ => None,
+        }
+    }
+
+    // --- uniform block (UBO) ---
+
+    /// Bind a uniform block (whole buffer) by its GLSL block name. The binding
+    /// point is auto-assigned, mirroring sampler texture units.
+    pub fn set_uniform_block(&self, name: &str, ubo: &UniformBuffer) {
+        let binding = self.assign_block_binding(name);
+        self.put(
+            name,
+            Uniform::Block {
+                binding,
+                ubo: ubo.clone(),
+                range: None,
+            },
+        );
+    }
+
+    /// Bind a sub-range of a uniform block (`bindBufferRange`). `offset` must be a
+    /// multiple of `UNIFORM_BUFFER_OFFSET_ALIGNMENT` (else GL rejects the bind).
+    pub fn set_uniform_block_range(&self, name: &str, ubo: &UniformBuffer, offset: i32, size: i32) {
+        let align = limits::uniform_buffer_offset_alignment() as i32;
+        if align > 0 && offset % align != 0 {
+            console::warn(&format!(
+                "[rswebgl] uniform block \"{name}\": offset {offset} is not a multiple of \
+                 UNIFORM_BUFFER_OFFSET_ALIGNMENT ({align})"
+            ));
+        }
+        let binding = self.assign_block_binding(name);
+        self.put(
+            name,
+            Uniform::Block {
+                binding,
+                ubo: ubo.clone(),
+                range: Some((offset, size)),
+            },
+        );
+    }
+
+    pub fn get_uniform_block(&self, name: &str) -> Option<UniformBuffer> {
+        match self.get(name) {
+            Some(Uniform::Block { ubo, .. }) => Some(ubo),
+            _ => None,
+        }
+    }
+
+    pub fn get_uniform_block_binding(&self, name: &str) -> Option<u32> {
+        match self.get(name) {
+            Some(Uniform::Block { binding, .. }) => Some(binding),
             _ => None,
         }
     }

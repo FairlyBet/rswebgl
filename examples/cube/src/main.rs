@@ -6,19 +6,25 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
+use rswebgl::buffer::BufferUsage;
 use rswebgl::context::{Context, ContextOptions};
 use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
 use rswebgl::framebuffer::ClearMask;
 use rswebgl::pass::{Batch, Pass};
 use rswebgl::render_state::{DepthFunc, RenderState};
+use rswebgl::uniform_buffer::{Std140Type, UboLayout};
 use rswebgl::uniform_values::UniformValues;
 use rswebgl::vao_builder::{AttrKind, VaoBuilder};
 
+// The MVP comes from a uniform block (UBO) instead of a plain uniform. The block
+// name "Matrices" is what binds it on the Rust side; the member is std140-packed.
 const VERT: &str = r#"#version 300 es
 precision highp float;
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec3 a_color;
-uniform mat4 u_mvp;
+uniform Matrices {
+    mat4 u_mvp;
+};
 out vec3 v_color;
 void main() {
     gl_Position = u_mvp * vec4(a_pos, 1.0);
@@ -105,7 +111,13 @@ fn main() {
 
     let draw_cmd = DrawCommand::elements(DrawMode::Triangles, 36, IndexType::UnsignedShort, 0);
 
+    // One mat4 in a std140 block, updated each frame and bound by block name.
+    let layout = UboLayout::new().field("u_mvp", Std140Type::Mat4);
+    let ubo = ctx
+        .create_uniform_buffer(&layout, BufferUsage::DynamicDraw)
+        .expect("ubo");
     let uniforms = UniformValues::new();
+    uniforms.set_uniform_block("Matrices", &ubo);
 
     // requestAnimationFrame loop with self-reference via Rc<RefCell<Option<Closure>>>.
     let f: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));
@@ -125,7 +137,9 @@ fn main() {
         let aspect = default_fb.width().max(1) as f32 / default_fb.height().max(1) as f32;
         let proj = Mat4::perspective_rh_gl(45f32.to_radians(), aspect, 0.1, 100.0);
         let mvp = proj * view * model;
-        uniforms.set_mat4("u_mvp", false, &mvp.to_cols_array());
+        // Write into the block's staging buffer; the renderer flushes it (one
+        // bufferSubData) and binds the block when the pass draws.
+        ubo.set_mat("u_mvp", &mvp.to_cols_array());
 
         // Build the frame: one pass to the canvas, clearing first, with a single
         // batch (program + state) holding one draw.
