@@ -15,9 +15,9 @@
 | Program                     | ✅     | `src/program.rs`      |
 | Vertex Array Object (VAO)   | ✅     | `src/vao.rs`          |
 | Texture 2D                  | ✅     | `src/texture.rs`      |
-| Texture 3D                  | 🔶     | `src/texture.rs`      |
+| Texture 3D                  | ✅     | `src/texture.rs`      |
 | Texture Cube Map            | ✅     | `src/texture.rs`      |
-| Texture 2D Array            | 🔶     | `src/texture.rs`      |
+| Texture 2D Array            | ✅     | `src/texture.rs`      |
 | Framebuffer                 | ✅     | `src/framebuffer.rs`  |
 | Renderbuffer                | ✅     | `src/renderbuffer.rs` |
 | Renderbuffer multisample    | ✅     | `src/renderbuffer.rs` |
@@ -98,20 +98,21 @@
 
 ## Texture Operations
 
-| Entity                      | Status | File |
-|-----------------------------|--------|------|
-| texSubImage2D               | ❌     | —    |
-| texSubImage3D               | ❌     | —    |
-| copyTexImage2D              | ❌     | —    |
-| copyTexSubImage2D           | ❌     | —    |
-| copyTexSubImage3D           | ❌     | —    |
-| texStorage2D                | ❌     | —    |
-| texStorage3D                | ❌     | —    |
-| compressedTexImage2D        | ❌     | —    |
-| compressedTexImage3D        | ❌     | —    |
-| Texture LOD params          | ❌     | —    |
-| Pixel pack / unpack params  | ❌     | —    |
-| DOM-source uploads          | ❌     | —    |
+| Entity                      | Status | File                       |
+|-----------------------------|--------|----------------------------|
+| texStorage2D / 3D           | ✅     | `src/texture.rs`           |
+| texSubImage2D               | ✅     | `src/texture.rs`           |
+| texSubImage3D               | ✅     | `src/texture.rs`           |
+| compressedTexImage2D / 3D   | ✅     | `src/texture.rs` (storage+sub) |
+| compressedTexSubImage2D/3D  | ✅     | `src/texture.rs`           |
+| Compressed format registry  | ✅     | `src/compressed_format.rs` |
+| Texture LOD / compare params| ✅     | `src/texture.rs`           |
+| Pixel unpack params         | ✅     | `src/pixel_unpack.rs`      |
+| DOM-source uploads          | ✅     | `src/texture.rs`           |
+| `load_image` (onload upload)| ✅     | `src/texture.rs`           |
+| copyTexImage2D              | ❌     | deferred (read-fb / pass)  |
+| copyTexSubImage2D / 3D      | ❌     | deferred (read-fb / pass)  |
+| Pixel pack params           | ❌     | — (with readPixels)        |
 
 ## Clear
 

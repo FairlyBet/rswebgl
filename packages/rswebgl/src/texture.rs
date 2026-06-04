@@ -1,8 +1,16 @@
+use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
-use web_sys::{WebGl2RenderingContext, WebGlTexture};
+use web_sys::{
+    HtmlCanvasElement, HtmlImageElement, HtmlVideoElement, ImageBitmap, ImageData,
+    WebGl2RenderingContext, WebGlTexture,
+};
 
+use crate::compressed_format::CompressedFormat;
 use crate::console;
+use crate::pixel_unpack::PixelUnpack;
 use crate::ref_count::{RefCount, ref_counted};
+use crate::render_state::DepthFunc;
 
 // ---------------------------------------------------------------------------
 // TextureTarget
@@ -76,6 +84,17 @@ pub enum TextureWrap {
     Repeat = 10497,         // REPEAT
     ClampToEdge = 33071,    // CLAMP_TO_EDGE
     MirroredRepeat = 33648, // MIRRORED_REPEAT
+}
+
+// ---------------------------------------------------------------------------
+// TextureCompareMode (depth / shadow sampling)
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextureCompareMode {
+    None = 0,                     // NONE
+    CompareRefToTexture = 0x884E, // COMPARE_REF_TO_TEXTURE
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +357,26 @@ impl Texture {
     pub(crate) fn target_gl(&self) -> u32 {
         self.inner.target.as_gl()
     }
+
+    fn set_param_i(&self, pname: u32, value: i32) {
+        let t = self.inner.target.as_gl();
+        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
+        self.inner.gl.tex_parameteri(t, pname, value);
+        self.inner.gl.bind_texture(t, None);
+    }
+
+    fn set_param_f(&self, pname: u32, value: f32) {
+        let t = self.inner.target.as_gl();
+        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
+        self.inner.gl.tex_parameterf(t, pname, value);
+        self.inner.gl.bind_texture(t, None);
+    }
+}
+
+/// Full mip-chain length for a base size: `floor(log2(max(w,h))) + 1`.
+fn mip_levels(w: i32, h: i32) -> i32 {
+    let max = w.max(h).max(1) as u32;
+    (32 - max.leading_zeros()) as i32
 }
 
 impl PartialEq for Texture {
@@ -348,95 +387,546 @@ impl PartialEq for Texture {
 
 impl Eq for Texture {}
 
-// TODO(color-space): add DOM-source uploads (upload_from_image(&HtmlImageElement),
-// upload_from_bitmap(&ImageBitmap), upload_from_video(&HtmlVideoElement)). Only
-// those honor the gl `unpackColorSpace` (srgb/display-p3) setting — it does
-// nothing for the raw &[u8] paths below — so wire a ColorSpace param/setter in
-// there rather than exposing a global setter on Context.
+// Storage-first model (MDN-recommended for WebGL2): allocate immutable storage
+// once with `storage_*`, then fill levels with `sub_image_*`. `texImage2D` (the
+// mutable, define-each-level-independently path) is deliberately not exposed —
+// it defers validation to draw time and can make drivers over-allocate.
 #[wasm_bindgen]
 impl Texture {
-    pub fn upload_2d(
+    // --- immutable storage allocation ---------------------------------------
+
+    /// Allocate immutable storage (`texStorage2D`). For TEXTURE_2D and
+    /// TEXTURE_CUBE_MAP (the latter allocates all six faces). `levels` is the
+    /// mip count (≥1). Can only be called once per texture.
+    pub fn storage_2d(&self, levels: i32, format: &TextureFormat, width: i32, height: i32) {
+        let t = self.inner.target.as_gl();
+        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
+        self.inner
+            .gl
+            .tex_storage_2d(t, levels, format.internal as u32, width, height);
+        self.inner.gl.bind_texture(t, None);
+    }
+
+    /// Allocate immutable storage (`texStorage3D`). For TEXTURE_3D and
+    /// TEXTURE_2D_ARRAY (where `depth` is the layer count).
+    pub fn storage_3d(
         &self,
-        level: i32,
+        levels: i32,
         format: &TextureFormat,
         width: i32,
         height: i32,
-        data: &[u8],
+        depth: i32,
     ) {
         let t = self.inner.target.as_gl();
         self.inner.gl.bind_texture(t, Some(&self.inner.raw));
-        if let Err(e) = self
-            .inner
+        self.inner
             .gl
-            .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
-                t,
-                level,
-                format.internal,
-                width,
-                height,
-                0,
-                format.format,
-                format.data_type,
-                Some(data),
-            )
-        {
-            console::error(&format!("[rswebgl] texImage2D failed: {:?}", e));
-        }
+            .tex_storage_3d(t, levels, format.internal as u32, width, height, depth);
         self.inner.gl.bind_texture(t, None);
     }
 
-    pub fn alloc_2d(&self, level: i32, format: &TextureFormat, width: i32, height: i32) {
+    /// Allocate immutable storage with a compressed sized internal format.
+    /// Requires the matching extension enabled (see `CompressedFormat`).
+    pub fn compressed_storage_2d(
+        &self,
+        levels: i32,
+        format: &CompressedFormat,
+        width: i32,
+        height: i32,
+    ) {
         let t = self.inner.target.as_gl();
         self.inner.gl.bind_texture(t, Some(&self.inner.raw));
-        if let Err(e) = self
-            .inner
+        self.inner
             .gl
-            .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
-                t,
-                level,
-                format.internal,
-                width,
-                height,
-                0,
-                format.format,
-                format.data_type,
-                None,
-            )
-        {
-            console::error(&format!("[rswebgl] texImage2D alloc failed: {:?}", e));
-        }
+            .tex_storage_2d(t, levels, format.as_gl(), width, height);
         self.inner.gl.bind_texture(t, None);
     }
 
-    pub fn upload_cube_face(
+    /// Compressed immutable storage for TEXTURE_3D / TEXTURE_2D_ARRAY.
+    pub fn compressed_storage_3d(
+        &self,
+        levels: i32,
+        format: &CompressedFormat,
+        width: i32,
+        height: i32,
+        depth: i32,
+    ) {
+        let t = self.inner.target.as_gl();
+        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
+        self.inner
+            .gl
+            .tex_storage_3d(t, levels, format.as_gl(), width, height, depth);
+        self.inner.gl.bind_texture(t, None);
+    }
+
+    // --- fill from raw bytes (texSubImage) ----------------------------------
+
+    /// Fill a region of an allocated 2D level from raw bytes. Default unpack.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sub_image_2d(
+        &self,
+        level: i32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        format: &TextureFormat,
+        data: &[u8],
+    ) {
+        self.sub_image_2d_with(
+            level,
+            x,
+            y,
+            width,
+            height,
+            format,
+            data,
+            &PixelUnpack::default(),
+        );
+    }
+
+    /// `sub_image_2d` with explicit pixel-unpack settings (flip_y, alignment…).
+    #[allow(clippy::too_many_arguments)]
+    pub fn sub_image_2d_with(
+        &self,
+        level: i32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        format: &TextureFormat,
+        data: &[u8],
+        unpack: &PixelUnpack,
+    ) {
+        let t = self.inner.target.as_gl();
+        let gl = &self.inner.gl;
+        gl.bind_texture(t, Some(&self.inner.raw));
+        unpack.apply(gl);
+        if let Err(e) = gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(
+            t,
+            level,
+            x,
+            y,
+            width,
+            height,
+            format.format,
+            format.data_type,
+            Some(data),
+        ) {
+            console::error(&format!("[rswebgl] texSubImage2D failed: {e:?}"));
+        }
+        PixelUnpack::reset(gl);
+        gl.bind_texture(t, None);
+    }
+
+    /// Fill a region of an allocated 3D / 2D-array level from raw bytes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sub_image_3d(
+        &self,
+        level: i32,
+        x: i32,
+        y: i32,
+        z: i32,
+        width: i32,
+        height: i32,
+        depth: i32,
+        format: &TextureFormat,
+        data: &[u8],
+    ) {
+        self.sub_image_3d_with(
+            level,
+            x,
+            y,
+            z,
+            width,
+            height,
+            depth,
+            format,
+            data,
+            &PixelUnpack::default(),
+        );
+    }
+
+    /// `sub_image_3d` with explicit pixel-unpack settings.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sub_image_3d_with(
+        &self,
+        level: i32,
+        x: i32,
+        y: i32,
+        z: i32,
+        width: i32,
+        height: i32,
+        depth: i32,
+        format: &TextureFormat,
+        data: &[u8],
+        unpack: &PixelUnpack,
+    ) {
+        let t = self.inner.target.as_gl();
+        let gl = &self.inner.gl;
+        gl.bind_texture(t, Some(&self.inner.raw));
+        unpack.apply(gl);
+        if let Err(e) = gl.tex_sub_image_3d_with_opt_u8_array(
+            t,
+            level,
+            x,
+            y,
+            z,
+            width,
+            height,
+            depth,
+            format.format,
+            format.data_type,
+            Some(data),
+        ) {
+            console::error(&format!("[rswebgl] texSubImage3D failed: {e:?}"));
+        }
+        PixelUnpack::reset(gl);
+        gl.bind_texture(t, None);
+    }
+
+    /// Fill a region of one cube-map face from raw bytes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sub_image_cube_face(
         &self,
         face: CubeMapFace,
         level: i32,
-        format: &TextureFormat,
+        x: i32,
+        y: i32,
         width: i32,
         height: i32,
+        format: &TextureFormat,
         data: &[u8],
     ) {
         let t = self.inner.target.as_gl();
-        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
-        if let Err(e) = self
-            .inner
-            .gl
-            .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
-                face.as_gl(),
-                level,
-                format.internal,
-                width,
-                height,
-                0,
-                format.format,
-                format.data_type,
-                Some(data),
-            )
-        {
-            console::error(&format!("[rswebgl] texImage2D cube face failed: {:?}", e));
+        let gl = &self.inner.gl;
+        gl.bind_texture(t, Some(&self.inner.raw));
+        if let Err(e) = gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(
+            face.as_gl(),
+            level,
+            x,
+            y,
+            width,
+            height,
+            format.format,
+            format.data_type,
+            Some(data),
+        ) {
+            console::error(&format!("[rswebgl] texSubImage2D cube face failed: {e:?}"));
         }
-        self.inner.gl.bind_texture(t, None);
+        gl.bind_texture(t, None);
+    }
+
+    // --- fill from compressed bytes (compressedTexSubImage) -----------------
+
+    /// Fill a region of an allocated 2D level with compressed block data.
+    #[allow(clippy::too_many_arguments)]
+    pub fn compressed_sub_image_2d(
+        &self,
+        level: i32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        format: &CompressedFormat,
+        data: &[u8],
+    ) {
+        let t = self.inner.target.as_gl();
+        let gl = &self.inner.gl;
+        gl.bind_texture(t, Some(&self.inner.raw));
+        // SAFETY: the view borrows wasm memory only for this call; the GL copy
+        // happens synchronously and we don't allocate while it's alive.
+        let view = unsafe { js_sys::Uint8Array::view(data) };
+        gl.compressed_tex_sub_image_2d_with_array_buffer_view(
+            t,
+            level,
+            x,
+            y,
+            width,
+            height,
+            format.as_gl(),
+            &view,
+        );
+        gl.bind_texture(t, None);
+    }
+
+    /// Fill a region of an allocated 3D / 2D-array level with compressed data.
+    #[allow(clippy::too_many_arguments)]
+    pub fn compressed_sub_image_3d(
+        &self,
+        level: i32,
+        x: i32,
+        y: i32,
+        z: i32,
+        width: i32,
+        height: i32,
+        depth: i32,
+        format: &CompressedFormat,
+        data: &[u8],
+    ) {
+        let t = self.inner.target.as_gl();
+        let gl = &self.inner.gl;
+        gl.bind_texture(t, Some(&self.inner.raw));
+        // SAFETY: see compressed_sub_image_2d.
+        let view = unsafe { js_sys::Uint8Array::view(data) };
+        gl.compressed_tex_sub_image_3d_with_array_buffer_view(
+            t,
+            level,
+            x,
+            y,
+            z,
+            width,
+            height,
+            depth,
+            format.as_gl(),
+            &view,
+        );
+        gl.bind_texture(t, None);
+    }
+
+    // --- fill from DOM sources (texSubImage) --------------------------------
+
+    /// Fill a 2D level from an `HtmlImageElement` (must be loaded & CORS-clean).
+    pub fn sub_image_2d_from_image(
+        &self,
+        level: i32,
+        x: i32,
+        y: i32,
+        image: &HtmlImageElement,
+        format: &TextureFormat,
+        unpack: &PixelUnpack,
+    ) {
+        let t = self.inner.target.as_gl();
+        let gl = &self.inner.gl;
+        gl.bind_texture(t, Some(&self.inner.raw));
+        unpack.apply(gl);
+        if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_html_image_element(
+            t,
+            level,
+            x,
+            y,
+            format.format,
+            format.data_type,
+            image,
+        ) {
+            console::error(&format!("[rswebgl] texSubImage2D(image) failed: {e:?}"));
+        }
+        PixelUnpack::reset(gl);
+        gl.bind_texture(t, None);
+    }
+
+    /// Fill a 2D level from an `ImageBitmap`.
+    pub fn sub_image_2d_from_bitmap(
+        &self,
+        level: i32,
+        x: i32,
+        y: i32,
+        bitmap: &ImageBitmap,
+        format: &TextureFormat,
+        unpack: &PixelUnpack,
+    ) {
+        let t = self.inner.target.as_gl();
+        let gl = &self.inner.gl;
+        gl.bind_texture(t, Some(&self.inner.raw));
+        unpack.apply(gl);
+        if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_image_bitmap(
+            t,
+            level,
+            x,
+            y,
+            format.format,
+            format.data_type,
+            bitmap,
+        ) {
+            console::error(&format!("[rswebgl] texSubImage2D(bitmap) failed: {e:?}"));
+        }
+        PixelUnpack::reset(gl);
+        gl.bind_texture(t, None);
+    }
+
+    /// Fill a 2D level from the current frame of an `HtmlVideoElement`.
+    pub fn sub_image_2d_from_video(
+        &self,
+        level: i32,
+        x: i32,
+        y: i32,
+        video: &HtmlVideoElement,
+        format: &TextureFormat,
+        unpack: &PixelUnpack,
+    ) {
+        let t = self.inner.target.as_gl();
+        let gl = &self.inner.gl;
+        gl.bind_texture(t, Some(&self.inner.raw));
+        unpack.apply(gl);
+        if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_html_video_element(
+            t,
+            level,
+            x,
+            y,
+            format.format,
+            format.data_type,
+            video,
+        ) {
+            console::error(&format!("[rswebgl] texSubImage2D(video) failed: {e:?}"));
+        }
+        PixelUnpack::reset(gl);
+        gl.bind_texture(t, None);
+    }
+
+    /// Fill a 2D level from an `HtmlCanvasElement`.
+    pub fn sub_image_2d_from_canvas(
+        &self,
+        level: i32,
+        x: i32,
+        y: i32,
+        canvas: &HtmlCanvasElement,
+        format: &TextureFormat,
+        unpack: &PixelUnpack,
+    ) {
+        let t = self.inner.target.as_gl();
+        let gl = &self.inner.gl;
+        gl.bind_texture(t, Some(&self.inner.raw));
+        unpack.apply(gl);
+        if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_html_canvas_element(
+            t,
+            level,
+            x,
+            y,
+            format.format,
+            format.data_type,
+            canvas,
+        ) {
+            console::error(&format!("[rswebgl] texSubImage2D(canvas) failed: {e:?}"));
+        }
+        PixelUnpack::reset(gl);
+        gl.bind_texture(t, None);
+    }
+
+    /// Fill a 2D level from `ImageData`.
+    pub fn sub_image_2d_from_image_data(
+        &self,
+        level: i32,
+        x: i32,
+        y: i32,
+        image_data: &ImageData,
+        format: &TextureFormat,
+        unpack: &PixelUnpack,
+    ) {
+        let t = self.inner.target.as_gl();
+        let gl = &self.inner.gl;
+        gl.bind_texture(t, Some(&self.inner.raw));
+        unpack.apply(gl);
+        if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_image_data(
+            t,
+            level,
+            x,
+            y,
+            format.format,
+            format.data_type,
+            image_data,
+        ) {
+            console::error(&format!("[rswebgl] texSubImage2D(imageData) failed: {e:?}"));
+        }
+        PixelUnpack::reset(gl);
+        gl.bind_texture(t, None);
+    }
+
+    // --- convenience: load an image URL and upload it on `onload` -----------
+
+    /// Load an image from `url` and upload it into this texture once it loads.
+    ///
+    /// On load it allocates immutable storage sized to the image, fills level 0,
+    /// optionally builds mipmaps, then invokes `on_load` (a JS callback) to
+    /// signal the texture is ready to sample. Until then the texture is empty.
+    ///
+    /// The texture must be freshly created (storage is immutable / one-shot).
+    /// The image is requested with `crossOrigin = "anonymous"` so the result is
+    /// CORS-clean and usable as a texture.
+    pub fn load_image(
+        &self,
+        url: &str,
+        format: &TextureFormat,
+        generate_mipmaps: bool,
+        flip_y: bool,
+        on_load: js_sys::Function,
+    ) {
+        let img = match HtmlImageElement::new() {
+            Ok(img) => img,
+            Err(_) => {
+                console::error("[rswebgl] failed to create HtmlImageElement");
+                return;
+            }
+        };
+        img.set_cross_origin(Some("anonymous"));
+
+        let tex = self.clone();
+        let format = format.clone();
+        let img_cb = img.clone();
+        // once_into_js: the closure runs at most once, then drops itself; JS
+        // holds it alive via the onload property until it fires.
+        let cb = Closure::once_into_js(move || {
+            let w = img_cb.natural_width() as i32;
+            let h = img_cb.natural_height() as i32;
+            let levels = if generate_mipmaps {
+                mip_levels(w, h)
+            } else {
+                1
+            };
+            tex.storage_2d(levels, &format, w, h);
+            let unpack = PixelUnpack {
+                flip_y,
+                ..PixelUnpack::default()
+            };
+            tex.sub_image_2d_from_image(0, 0, 0, &img_cb, &format, &unpack);
+            if generate_mipmaps {
+                tex.generate_mipmaps();
+            }
+            let _ = on_load.call0(&JsValue::NULL);
+        });
+        img.set_onload(Some(cb.unchecked_ref()));
+        img.set_src(url);
+    }
+
+    // --- LOD / sampler parameters -------------------------------------------
+
+    /// `TEXTURE_BASE_LEVEL` — lowest mip level used when sampling.
+    pub fn set_base_level(&self, level: i32) {
+        self.set_param_i(WebGl2RenderingContext::TEXTURE_BASE_LEVEL, level);
+    }
+
+    /// `TEXTURE_MAX_LEVEL` — highest mip level used when sampling.
+    pub fn set_max_level(&self, level: i32) {
+        self.set_param_i(WebGl2RenderingContext::TEXTURE_MAX_LEVEL, level);
+    }
+
+    /// `TEXTURE_MIN_LOD` — clamp the minimum level-of-detail.
+    pub fn set_min_lod(&self, lod: f32) {
+        self.set_param_f(WebGl2RenderingContext::TEXTURE_MIN_LOD, lod);
+    }
+
+    /// `TEXTURE_MAX_LOD` — clamp the maximum level-of-detail.
+    pub fn set_max_lod(&self, lod: f32) {
+        self.set_param_f(WebGl2RenderingContext::TEXTURE_MAX_LOD, lod);
+    }
+
+    /// `TEXTURE_COMPARE_MODE` — enable depth comparison (shadow sampling).
+    pub fn set_compare_mode(&self, mode: TextureCompareMode) {
+        self.set_param_i(WebGl2RenderingContext::TEXTURE_COMPARE_MODE, mode as i32);
+    }
+
+    /// `TEXTURE_COMPARE_FUNC` — comparison used when compare mode is enabled.
+    pub fn set_compare_func(&self, func: DepthFunc) {
+        self.set_param_i(
+            WebGl2RenderingContext::TEXTURE_COMPARE_FUNC,
+            func.as_gl() as i32,
+        );
+    }
+
+    /// `TEXTURE_MAX_ANISOTROPY_EXT` — anisotropic filtering level (≥1.0).
+    /// Requires `ExtTextureFilterAnisotropic` to be enabled.
+    pub fn set_max_anisotropy(&self, value: f32) {
+        const TEXTURE_MAX_ANISOTROPY_EXT: u32 = 0x84FE;
+        self.set_param_f(TEXTURE_MAX_ANISOTROPY_EXT, value);
     }
 
     pub fn set_min_filter(&self, filter: TextureMinFilter) {

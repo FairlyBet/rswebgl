@@ -1,4 +1,5 @@
 pub mod buffer;
+pub mod compressed_format;
 pub mod console;
 pub mod context;
 pub mod draw;
@@ -6,6 +7,7 @@ pub mod extension;
 pub mod framebuffer;
 pub mod limits;
 pub mod pass;
+pub mod pixel_unpack;
 pub mod program;
 pub(crate) mod ref_count;
 pub mod render_state;

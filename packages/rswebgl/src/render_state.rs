@@ -19,7 +19,7 @@ pub enum DepthFunc {
 }
 
 impl DepthFunc {
-    fn as_gl(&self) -> u32 {
+    pub(crate) fn as_gl(&self) -> u32 {
         *self as u32
     }
 }
