@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use wasm_bindgen::prelude::*;
 use web_sys::WebGl2RenderingContext;
 
-use crate::buffer::{Buffer, BufferTarget, BufferUsage};
+use crate::buffer::{Buffer, BufferKind, BufferUsage};
 use crate::console;
 use crate::context::Context;
 use crate::vao::{VertexArray, VertexAttr};
@@ -433,7 +433,7 @@ impl VaoBuilder {
         // 6. Upload
         let vbo = Buffer::new(
             &self.gl,
-            BufferTarget::Array,
+            BufferKind::Generic,
             BufferUsage::StaticDraw,
             &interleaved,
         )?;
@@ -454,7 +454,7 @@ impl VaoBuilder {
         if let Some(idx) = &self.indices {
             let ibo = Buffer::new(
                 &self.gl,
-                BufferTarget::ElementArray,
+                BufferKind::Index,
                 BufferUsage::StaticDraw,
                 &idx.data,
             )?;

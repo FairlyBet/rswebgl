@@ -2,7 +2,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
-use crate::buffer::{Buffer, BufferTarget, BufferUsage};
+use crate::buffer::{Buffer, BufferKind, BufferUsage};
 use crate::console;
 use crate::draw::Viewport;
 use crate::extension::Extension;
@@ -199,22 +199,12 @@ impl Context {
         self.extensions.iter().any(|e| e == &ext)
     }
 
-    pub fn create_buffer(
-        &self,
-        target: BufferTarget,
-        usage: BufferUsage,
-        data: &[u8],
-    ) -> Result<Buffer, String> {
-        Buffer::new(&self.gl, target, usage, data)
+    pub fn create_buffer(&self, usage: BufferUsage, data: &[u8]) -> Result<Buffer, String> {
+        Buffer::new(&self.gl, BufferKind::Generic, usage, data)
     }
 
-    pub fn create_empty_buffer(
-        &self,
-        target: BufferTarget,
-        usage: BufferUsage,
-        size: u32,
-    ) -> Result<Buffer, String> {
-        Buffer::new_empty(&self.gl, target, usage, size)
+    pub fn create_empty_buffer(&self, usage: BufferUsage, size: u32) -> Result<Buffer, String> {
+        Buffer::new_empty(&self.gl, BufferKind::Generic, usage, size)
     }
 
     pub fn create_texture(
