@@ -1,5 +1,5 @@
 [workspace]
-members = ["packages/rswebgl", "examples/cube", "examples/texture"]
+members = ["packages/rswebgl", "examples/cube", "examples/cubemap", "examples/texture"]
 resolver = "3"
 
 [workspace.dependencies]
