@@ -1,0 +1,13 @@
+[package]
+name = "example-gltf"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rswebgl = { workspace = true }
+rswebgl-gltf = { path = "../../packages/rswebgl-gltf" }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = "0.4"
+js-sys = { workspace = true }
+web-sys = { workspace = true, features = ["Document", "Element", "HtmlCanvasElement", "Window"] }
+glam = { workspace = true }

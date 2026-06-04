@@ -143,3 +143,15 @@
 | Extension registry                      | ✅     | `src/extension.rs`    |
 | KHR_parallel_compile                    | ✅     | `src/program.rs`      |
 | RefCount (GL lifecycle)                 | ✅     | `src/ref_count.rs`    |
+
+## Asset loading
+
+| Entity                      | Status | File                       |
+|-----------------------------|--------|----------------------------|
+| glTF 2.0 / GLB → primitives | ✅     | `packages/rswebgl-gltf`    |
+
+Separate crate translating glTF/GLB (geometry → VAOs, materials → uniforms +
+render state, textures, node transforms → draw list) using only rswebgl's public
+API. Async load (fetches external buffers/images; textures fill in via the DOM
+image decoder). v1 covers static meshes + PBR metallic-roughness factors/base
+color; deferred items (skinning, animation, KTX2/Draco, …) are in `TODO.md`.

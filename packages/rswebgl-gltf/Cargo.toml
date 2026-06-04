@@ -1,0 +1,33 @@
+[package]
+name = "rswebgl-gltf"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rswebgl = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = "0.4"
+js-sys = { workspace = true }
+glam = { workspace = true }
+base64 = "0.22"
+
+# No `import`/`image` default features: those pull `std::fs` and the heavy
+# `image` crate. We resolve buffers/images ourselves (async fetch + the browser
+# decoder) and only need the parser + the `utils` accessor readers.
+gltf = { version = "1.4", default-features = false, features = [
+    "utils",
+    "names",
+    "extras",
+] }
+
+[dependencies.web-sys]
+workspace = true
+features = [
+    "Location",
+    "Response",
+    "Url",
+    "Window",
+]
