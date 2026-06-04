@@ -244,9 +244,11 @@ fn apply_value(program: &Program, name: &str, value: &Uniform) {
     }
 }
 
-// Links the block to its binding point for this program (cached), flushes the
-// UBO's pending writes, and binds it (or a sub-range) to that point.
-fn apply_block(
+// Links the block to its binding point for this program (cached) and binds the
+// buffer (or sub-range) to that point. Does NOT flush — binding is independent of
+// content currency, so the caller flushes separately (always) and only calls this
+// when the block entry actually changed.
+fn bind_block_buffer(
     program: &Program,
     name: &str,
     binding: u32,
@@ -254,7 +256,6 @@ fn apply_block(
     range: Option<(i32, i32)>,
 ) {
     program.bind_block(name, binding, ubo.byte_size());
-    ubo.flush();
     let gl = program.gl();
     match range {
         Some((offset, size)) => gl.bind_buffer_range_with_i32_and_i32(
@@ -270,6 +271,18 @@ fn apply_block(
             Some(ubo.buffer_raw()),
         ),
     }
+}
+
+// Full unconditional apply (flush + bind), for the non-diffing `upload` path.
+fn apply_block(
+    program: &Program,
+    name: &str,
+    binding: u32,
+    ubo: &UniformBuffer,
+    range: Option<(i32, i32)>,
+) {
+    ubo.flush();
+    bind_block_buffer(program, name, binding, ubo, range);
 }
 
 fn apply_sampler(
@@ -377,19 +390,30 @@ impl UniformValues {
         let mut applied = self.entries.borrow_mut();
         let mut current_active: Option<u32> = None;
         for (name, value) in incoming.iter() {
-            // Blocks bypass the equality-skip: the entry can be unchanged while the
-            // UBO's bytes are dirty, so we always re-apply (flush + bind), which is
-            // cheap when nothing actually changed.
+            // Blocks split the two concerns the equality-skip conflates: the UBO's
+            // bytes can be dirty while the entry is unchanged, so we ALWAYS flush —
+            // but the bindBufferBase only needs redoing when the entry (buffer /
+            // binding / range) actually changed, so that part still diffs. A program
+            // switch clears `applied`, which re-binds and keeps the global binding
+            // points consistent.
             if let Uniform::Block {
                 binding,
                 ubo,
                 range,
             } = value
             {
-                apply_block(program, name, *binding, ubo, *range);
-                match applied.binary_search_by(|(k, _)| k.as_ref().cmp(name.as_ref())) {
-                    Ok(idx) => applied[idx].1 = value.clone(),
-                    Err(idx) => applied.insert(idx, (name.clone(), value.clone())),
+                ubo.flush();
+                let slot = applied.binary_search_by(|(k, _)| k.as_ref().cmp(name.as_ref()));
+                let changed = match slot {
+                    Ok(idx) => &applied[idx].1 != value,
+                    Err(_) => true,
+                };
+                if changed {
+                    bind_block_buffer(program, name, *binding, ubo, *range);
+                    match slot {
+                        Ok(idx) => applied[idx].1 = value.clone(),
+                        Err(idx) => applied.insert(idx, (name.clone(), value.clone())),
+                    }
                 }
                 continue;
             }
