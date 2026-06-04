@@ -79,7 +79,7 @@ pub struct UniformValues {
 }
 
 impl UniformValues {
-    fn put(&mut self, name: &str, v: Uniform) {
+    fn put(&self, name: &str, v: Uniform) {
         let mut e = self.entries.borrow_mut();
         match e.binary_search_by(|(k, _)| k.as_ref().cmp(name)) {
             Ok(idx) => e[idx].1 = v,
@@ -254,7 +254,7 @@ impl UniformValues {
         }
     }
 
-    pub fn clear(&mut self) {
+    pub fn clear(&self) {
         self.entries.borrow_mut().clear();
     }
 
@@ -270,7 +270,7 @@ impl UniformValues {
         self.get(name).is_some()
     }
 
-    pub fn remove(&mut self, name: &str) -> bool {
+    pub fn remove(&self, name: &str) -> bool {
         let mut e = self.entries.borrow_mut();
         match e.binary_search_by(|(k, _)| k.as_ref().cmp(name)) {
             Ok(idx) => {
@@ -298,7 +298,7 @@ impl UniformValues {
     /// recording them here in place. No whole-map clone: only individual changed
     /// values are cloned. The caller must `clear` this cache on program switch,
     /// since uniform locations belong to the active program.
-    pub(crate) fn sync_from(&mut self, incoming: &UniformValues, program: &Program) {
+    pub(crate) fn sync_from(&self, incoming: &UniformValues, program: &Program) {
         let incoming = incoming.entries.borrow();
         let mut applied = self.entries.borrow_mut();
         let mut current_active: Option<u32> = None;
@@ -329,61 +329,61 @@ impl UniformValues {
 
     // --- scalar setters (single) ---
 
-    pub fn set_float(&mut self, name: &str, x: f32) {
+    pub fn set_float(&self, name: &str, x: f32) {
         self.put(name, Uniform::Float(smallvec![x]));
     }
-    pub fn set_int(&mut self, name: &str, x: i32) {
+    pub fn set_int(&self, name: &str, x: i32) {
         self.put(name, Uniform::Int(smallvec![x]));
     }
-    pub fn set_uint(&mut self, name: &str, x: u32) {
+    pub fn set_uint(&self, name: &str, x: u32) {
         self.put(name, Uniform::UInt(smallvec![x]));
     }
 
     // --- vector setters (single) ---
 
-    pub fn set_vec2(&mut self, name: &str, x: f32, y: f32) {
+    pub fn set_vec2(&self, name: &str, x: f32, y: f32) {
         self.put(name, Uniform::Vec2(smallvec![x, y]));
     }
-    pub fn set_vec3(&mut self, name: &str, x: f32, y: f32, z: f32) {
+    pub fn set_vec3(&self, name: &str, x: f32, y: f32, z: f32) {
         self.put(name, Uniform::Vec3(smallvec![x, y, z]));
     }
-    pub fn set_vec4(&mut self, name: &str, x: f32, y: f32, z: f32, w: f32) {
+    pub fn set_vec4(&self, name: &str, x: f32, y: f32, z: f32, w: f32) {
         self.put(name, Uniform::Vec4(smallvec![x, y, z, w]));
     }
-    pub fn set_ivec2(&mut self, name: &str, x: i32, y: i32) {
+    pub fn set_ivec2(&self, name: &str, x: i32, y: i32) {
         self.put(name, Uniform::IVec2(smallvec![x, y]));
     }
-    pub fn set_ivec3(&mut self, name: &str, x: i32, y: i32, z: i32) {
+    pub fn set_ivec3(&self, name: &str, x: i32, y: i32, z: i32) {
         self.put(name, Uniform::IVec3(smallvec![x, y, z]));
     }
-    pub fn set_ivec4(&mut self, name: &str, x: i32, y: i32, z: i32, w: i32) {
+    pub fn set_ivec4(&self, name: &str, x: i32, y: i32, z: i32, w: i32) {
         self.put(name, Uniform::IVec4(smallvec![x, y, z, w]));
     }
-    pub fn set_uvec2(&mut self, name: &str, x: u32, y: u32) {
+    pub fn set_uvec2(&self, name: &str, x: u32, y: u32) {
         self.put(name, Uniform::UVec2(smallvec![x, y]));
     }
-    pub fn set_uvec3(&mut self, name: &str, x: u32, y: u32, z: u32) {
+    pub fn set_uvec3(&self, name: &str, x: u32, y: u32, z: u32) {
         self.put(name, Uniform::UVec3(smallvec![x, y, z]));
     }
-    pub fn set_uvec4(&mut self, name: &str, x: u32, y: u32, z: u32, w: u32) {
+    pub fn set_uvec4(&self, name: &str, x: u32, y: u32, z: u32, w: u32) {
         self.put(name, Uniform::UVec4(smallvec![x, y, z, w]));
     }
 
     // --- bool ergonomics (uploaded as int) ---
 
-    pub fn set_bool(&mut self, name: &str, x: bool) {
+    pub fn set_bool(&self, name: &str, x: bool) {
         self.put(name, Uniform::Int(smallvec![x as i32]));
     }
-    pub fn set_bvec2(&mut self, name: &str, x: bool, y: bool) {
+    pub fn set_bvec2(&self, name: &str, x: bool, y: bool) {
         self.put(name, Uniform::IVec2(smallvec![x as i32, y as i32]));
     }
-    pub fn set_bvec3(&mut self, name: &str, x: bool, y: bool, z: bool) {
+    pub fn set_bvec3(&self, name: &str, x: bool, y: bool, z: bool) {
         self.put(
             name,
             Uniform::IVec3(smallvec![x as i32, y as i32, z as i32]),
         );
     }
-    pub fn set_bvec4(&mut self, name: &str, x: bool, y: bool, z: bool, w: bool) {
+    pub fn set_bvec4(&self, name: &str, x: bool, y: bool, z: bool, w: bool) {
         self.put(
             name,
             Uniform::IVec4(smallvec![x as i32, y as i32, z as i32, w as i32]),
@@ -396,7 +396,7 @@ impl UniformValues {
 
     // --- sampler ---
 
-    pub fn set_sampler(&mut self, name: &str, texture: &Texture) {
+    pub fn set_sampler(&self, name: &str, texture: &Texture) {
         let unit = self.assign_unit(name);
         self.put(
             name,
@@ -423,62 +423,62 @@ impl UniformValues {
 
     // --- array setters (length must be non-zero multiple of stride) ---
 
-    pub fn set_float_array(&mut self, name: &str, data: &[f32]) {
+    pub fn set_float_array(&self, name: &str, data: &[f32]) {
         if Self::check_stride(name, data.len(), 1) {
             self.put(name, Uniform::Float(SmallVec::from_slice(data)));
         }
     }
-    pub fn set_int_array(&mut self, name: &str, data: &[i32]) {
+    pub fn set_int_array(&self, name: &str, data: &[i32]) {
         if Self::check_stride(name, data.len(), 1) {
             self.put(name, Uniform::Int(SmallVec::from_slice(data)));
         }
     }
-    pub fn set_uint_array(&mut self, name: &str, data: &[u32]) {
+    pub fn set_uint_array(&self, name: &str, data: &[u32]) {
         if Self::check_stride(name, data.len(), 1) {
             self.put(name, Uniform::UInt(SmallVec::from_slice(data)));
         }
     }
-    pub fn set_vec2_array(&mut self, name: &str, data: &[f32]) {
+    pub fn set_vec2_array(&self, name: &str, data: &[f32]) {
         if Self::check_stride(name, data.len(), 2) {
             self.put(name, Uniform::Vec2(SmallVec::from_slice(data)));
         }
     }
-    pub fn set_vec3_array(&mut self, name: &str, data: &[f32]) {
+    pub fn set_vec3_array(&self, name: &str, data: &[f32]) {
         if Self::check_stride(name, data.len(), 3) {
             self.put(name, Uniform::Vec3(SmallVec::from_slice(data)));
         }
     }
-    pub fn set_vec4_array(&mut self, name: &str, data: &[f32]) {
+    pub fn set_vec4_array(&self, name: &str, data: &[f32]) {
         if Self::check_stride(name, data.len(), 4) {
             self.put(name, Uniform::Vec4(SmallVec::from_slice(data)));
         }
     }
-    pub fn set_ivec2_array(&mut self, name: &str, data: &[i32]) {
+    pub fn set_ivec2_array(&self, name: &str, data: &[i32]) {
         if Self::check_stride(name, data.len(), 2) {
             self.put(name, Uniform::IVec2(SmallVec::from_slice(data)));
         }
     }
-    pub fn set_ivec3_array(&mut self, name: &str, data: &[i32]) {
+    pub fn set_ivec3_array(&self, name: &str, data: &[i32]) {
         if Self::check_stride(name, data.len(), 3) {
             self.put(name, Uniform::IVec3(SmallVec::from_slice(data)));
         }
     }
-    pub fn set_ivec4_array(&mut self, name: &str, data: &[i32]) {
+    pub fn set_ivec4_array(&self, name: &str, data: &[i32]) {
         if Self::check_stride(name, data.len(), 4) {
             self.put(name, Uniform::IVec4(SmallVec::from_slice(data)));
         }
     }
-    pub fn set_uvec2_array(&mut self, name: &str, data: &[u32]) {
+    pub fn set_uvec2_array(&self, name: &str, data: &[u32]) {
         if Self::check_stride(name, data.len(), 2) {
             self.put(name, Uniform::UVec2(SmallVec::from_slice(data)));
         }
     }
-    pub fn set_uvec3_array(&mut self, name: &str, data: &[u32]) {
+    pub fn set_uvec3_array(&self, name: &str, data: &[u32]) {
         if Self::check_stride(name, data.len(), 3) {
             self.put(name, Uniform::UVec3(SmallVec::from_slice(data)));
         }
     }
-    pub fn set_uvec4_array(&mut self, name: &str, data: &[u32]) {
+    pub fn set_uvec4_array(&self, name: &str, data: &[u32]) {
         if Self::check_stride(name, data.len(), 4) {
             self.put(name, Uniform::UVec4(SmallVec::from_slice(data)));
         }
@@ -486,7 +486,7 @@ impl UniformValues {
 
     // --- matrix setters (length must be non-zero multiple of NxM) ---
 
-    pub fn set_mat2(&mut self, name: &str, transpose: bool, data: &[f32]) {
+    pub fn set_mat2(&self, name: &str, transpose: bool, data: &[f32]) {
         if Self::check_stride(name, data.len(), 4) {
             self.put(
                 name,
@@ -497,7 +497,7 @@ impl UniformValues {
             );
         }
     }
-    pub fn set_mat3(&mut self, name: &str, transpose: bool, data: &[f32]) {
+    pub fn set_mat3(&self, name: &str, transpose: bool, data: &[f32]) {
         if Self::check_stride(name, data.len(), 9) {
             self.put(
                 name,
@@ -508,7 +508,7 @@ impl UniformValues {
             );
         }
     }
-    pub fn set_mat4(&mut self, name: &str, transpose: bool, data: &[f32]) {
+    pub fn set_mat4(&self, name: &str, transpose: bool, data: &[f32]) {
         if Self::check_stride(name, data.len(), 16) {
             self.put(
                 name,
@@ -519,7 +519,7 @@ impl UniformValues {
             );
         }
     }
-    pub fn set_mat2x3(&mut self, name: &str, transpose: bool, data: &[f32]) {
+    pub fn set_mat2x3(&self, name: &str, transpose: bool, data: &[f32]) {
         if Self::check_stride(name, data.len(), 6) {
             self.put(
                 name,
@@ -530,7 +530,7 @@ impl UniformValues {
             );
         }
     }
-    pub fn set_mat2x4(&mut self, name: &str, transpose: bool, data: &[f32]) {
+    pub fn set_mat2x4(&self, name: &str, transpose: bool, data: &[f32]) {
         if Self::check_stride(name, data.len(), 8) {
             self.put(
                 name,
@@ -541,7 +541,7 @@ impl UniformValues {
             );
         }
     }
-    pub fn set_mat3x2(&mut self, name: &str, transpose: bool, data: &[f32]) {
+    pub fn set_mat3x2(&self, name: &str, transpose: bool, data: &[f32]) {
         if Self::check_stride(name, data.len(), 6) {
             self.put(
                 name,
@@ -552,7 +552,7 @@ impl UniformValues {
             );
         }
     }
-    pub fn set_mat3x4(&mut self, name: &str, transpose: bool, data: &[f32]) {
+    pub fn set_mat3x4(&self, name: &str, transpose: bool, data: &[f32]) {
         if Self::check_stride(name, data.len(), 12) {
             self.put(
                 name,
@@ -563,7 +563,7 @@ impl UniformValues {
             );
         }
     }
-    pub fn set_mat4x2(&mut self, name: &str, transpose: bool, data: &[f32]) {
+    pub fn set_mat4x2(&self, name: &str, transpose: bool, data: &[f32]) {
         if Self::check_stride(name, data.len(), 8) {
             self.put(
                 name,
@@ -574,7 +574,7 @@ impl UniformValues {
             );
         }
     }
-    pub fn set_mat4x3(&mut self, name: &str, transpose: bool, data: &[f32]) {
+    pub fn set_mat4x3(&self, name: &str, transpose: bool, data: &[f32]) {
         if Self::check_stride(name, data.len(), 12) {
             self.put(
                 name,

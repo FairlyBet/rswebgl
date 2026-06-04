@@ -100,7 +100,7 @@ fn main() {
     //   let cb = Closure::<dyn FnMut()>::new(|| {}).into_js_value();
     //   tex.load_image("./photo.png", &TextureFormat::rgba8(), true, true, cb.into());
 
-    let mut uniforms = UniformValues::new();
+    let uniforms = UniformValues::new();
     uniforms.set_sampler("u_tex", &tex);
 
     let render_state = RenderState::new();

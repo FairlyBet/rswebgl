@@ -333,12 +333,12 @@ impl VaoBuilder {
     }
 
     pub fn build(self) -> Result<VertexArray, String> {
-        let mut vao = VertexArray::new(&self.gl)?;
-        self.build_into(&mut vao)?;
+        let vao = VertexArray::new(&self.gl)?;
+        self.build_into(&vao)?;
         Ok(vao)
     }
 
-    pub fn build_into(self, vao: &mut VertexArray) -> Result<(), String> {
+    pub fn build_into(self, vao: &VertexArray) -> Result<(), String> {
         // 1. Source type matches declared kind
         for e in &self.attrs {
             let expected = e.kind.desc().gl_type;

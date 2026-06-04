@@ -162,7 +162,7 @@ impl Eq for VertexArray {}
 
 #[wasm_bindgen]
 impl VertexArray {
-    pub fn attr(&mut self, index: u32, buffer: &Buffer, attr: &VertexAttr) {
+    pub fn attr(&self, index: u32, buffer: &Buffer, attr: &VertexAttr) {
         let gl = &self.inner.gl;
         gl.bind_vertex_array(Some(&self.inner.raw));
         gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER, Some(buffer.raw_gl()));
@@ -199,7 +199,7 @@ impl VertexArray {
         st.attribs[idx] = Some((buffer.clone(), attr.clone()));
     }
 
-    pub fn remove_attr(&mut self, index: u32) {
+    pub fn remove_attr(&self, index: u32) {
         let gl = &self.inner.gl;
         gl.bind_vertex_array(Some(&self.inner.raw));
         gl.disable_vertex_attrib_array(index);
@@ -212,7 +212,7 @@ impl VertexArray {
         }
     }
 
-    pub fn set_index_buffer(&mut self, buffer: &Buffer) {
+    pub fn set_index_buffer(&self, buffer: &Buffer) {
         let gl = &self.inner.gl;
         gl.bind_vertex_array(Some(&self.inner.raw));
         gl.bind_buffer(
@@ -224,7 +224,7 @@ impl VertexArray {
         self.inner.state.borrow_mut().index_buffer = Some(buffer.clone());
     }
 
-    pub fn remove_index_buffer(&mut self) {
+    pub fn remove_index_buffer(&self) {
         let gl = &self.inner.gl;
         gl.bind_vertex_array(Some(&self.inner.raw));
         gl.bind_buffer(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER, None);

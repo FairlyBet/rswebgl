@@ -105,7 +105,7 @@ fn main() {
 
     let draw_cmd = DrawCommand::elements(DrawMode::Triangles, 36, IndexType::UnsignedShort, 0);
 
-    let mut uniforms = UniformValues::new();
+    let uniforms = UniformValues::new();
 
     // requestAnimationFrame loop with self-reference via Rc<RefCell<Option<Closure>>>.
     let f: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));
