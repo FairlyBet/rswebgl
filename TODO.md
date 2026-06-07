@@ -127,6 +127,12 @@ texture) into VAOs/textures/draw-list with spec-correct render state. Deferred:
 - **Material → shader/scene system.** The translator emits data + a documented
   uniform convention (`write_uniforms`); a real material/scene/lighting system is
   future work. Back-face normal flip currently lives in the example shader.
+  A reference PBR shader pair (`shaders/pbr/main.{vert,frag}`) already declares
+  the full spec data interface (all attributes, `Frame`/`Object`/`Material`/
+  `Skin`/`Lights` UBOs, the five PBR maps, alpha modes, MRT targets) behind
+  feature `#define`s — but its BRDF is a placeholder (`// TODO(pbr)`), and the
+  translator doesn't yet build these UBOs / select shader permutations / fill in
+  the Cook-Torrance + IBL lighting. That permutation+lighting layer is the work.
 - **Texture sRGB role** decided by base-color/emissive usage scan; a texture
   shared across linear+sRGB roles would pick one. Acceptable in practice.
 - **ORM channel packing** (`src/pack.rs` + `texture_packer`) combines a *separate*

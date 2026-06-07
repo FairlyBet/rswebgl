@@ -157,4 +157,5 @@ API. Async load (fetches external buffers/images; textures fill in via the DOM
 image decoder). v1 covers static meshes + PBR metallic-roughness factors/base
 color; deferred items (skinning, animation, KTX2/Draco, …) are in `TODO.md`.
 Separate occlusion + metallic-roughness maps are GPU-packed into one ORM texture
-(`src/pack.rs` + `texture_packer`).
+(`src/pack.rs` + `texture_packer`); a reference PBR shader interface lives in
+`packages/rswebgl-gltf/shaders/pbr/`.
