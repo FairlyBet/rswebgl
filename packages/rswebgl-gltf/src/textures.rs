@@ -5,6 +5,9 @@
 //! `Texture::load_image` / `load_bytes`), which sizes storage, uploads, and
 //! generates mipmaps on `onload`. We deliberately don't await the images — the
 //! model is usable right away and textures pop in as they decode.
+//!
+//! This module builds *single* textures and exposes the sampler/format helpers;
+//! the higher-level assembly (including ORM channel packing) lives in `pack.rs`.
 
 use std::collections::HashSet;
 
@@ -17,25 +20,19 @@ use rswebgl::texture::{
 use crate::buffers::{data_uri_mime, decode_data_uri};
 use crate::fetch::resolve_url;
 
-/// One `Texture` per `document.textures()`, index-aligned.
-pub fn build_textures(
-    ctx: &Context,
-    doc: &gltf::Document,
-    buffers: &[Vec<u8>],
-    base: &str,
-) -> Vec<Texture> {
-    let srgb = srgb_texture_set(doc);
-    doc.textures()
-        .map(|t| build_texture(ctx, &t, buffers, base, srgb.contains(&t.index())))
-        .collect()
-}
-
-fn build_texture(
+/// Create one GPU texture for `tex` and kick off its async image load.
+///
+/// `srgb` picks the internal format (sRGB for color roles, linear for data).
+/// `on_load` is the rswebgl image-load callback (`on_load(width, height)`); pass
+/// an empty function for fire-and-forget, or a real one to join on completion
+/// (used by ORM packing to learn the decoded size).
+pub(crate) fn build_texture(
     ctx: &Context,
     tex: &gltf::Texture,
     buffers: &[Vec<u8>],
     base: &str,
     srgb: bool,
+    on_load: js_sys::Function,
 ) -> Texture {
     let sampler = tex.sampler();
     let (min, generate_mipmaps) = min_filter(sampler.min_filter());
@@ -59,7 +56,6 @@ fn build_texture(
     // glTF texture coordinates have their origin at the top-left, matching the
     // browser image's natural orientation and WebGL's default unpack — no flip.
     let flip_y = false;
-    let on_load = js_sys::Function::new_no_args("");
 
     match tex.source().source() {
         gltf::image::Source::Uri { uri, mime_type } => {
@@ -100,7 +96,7 @@ fn build_texture(
 /// Texture indices used in an sRGB role (baseColor, emissive) — those decode
 /// from sRGB; every other texture (normal, metallic-roughness, occlusion) is
 /// linear.
-fn srgb_texture_set(doc: &gltf::Document) -> HashSet<usize> {
+pub(crate) fn srgb_texture_set(doc: &gltf::Document) -> HashSet<usize> {
     let mut set = HashSet::new();
     for mat in doc.materials() {
         if let Some(info) = mat.pbr_metallic_roughness().base_color_texture() {
@@ -114,7 +110,7 @@ fn srgb_texture_set(doc: &gltf::Document) -> HashSet<usize> {
 }
 
 /// glTF min filter → (`TextureMinFilter`, build-mipmaps?). `None` = "auto".
-fn min_filter(f: Option<gltf::texture::MinFilter>) -> (TextureMinFilter, bool) {
+pub(crate) fn min_filter(f: Option<gltf::texture::MinFilter>) -> (TextureMinFilter, bool) {
     use gltf::texture::MinFilter as M;
     match f {
         Some(M::Nearest) => (TextureMinFilter::Nearest, false),
@@ -127,14 +123,14 @@ fn min_filter(f: Option<gltf::texture::MinFilter>) -> (TextureMinFilter, bool) {
     }
 }
 
-fn mag_filter(f: Option<gltf::texture::MagFilter>) -> TextureMagFilter {
+pub(crate) fn mag_filter(f: Option<gltf::texture::MagFilter>) -> TextureMagFilter {
     match f {
         Some(gltf::texture::MagFilter::Nearest) => TextureMagFilter::Nearest,
         _ => TextureMagFilter::Linear,
     }
 }
 
-fn wrap(w: gltf::texture::WrappingMode) -> TextureWrap {
+pub(crate) fn wrap(w: gltf::texture::WrappingMode) -> TextureWrap {
     use gltf::texture::WrappingMode as W;
     match w {
         W::ClampToEdge => TextureWrap::ClampToEdge,

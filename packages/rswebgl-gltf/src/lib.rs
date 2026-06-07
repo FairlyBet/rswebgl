@@ -21,6 +21,7 @@ mod buffers;
 mod fetch;
 mod geometry;
 mod material;
+mod pack;
 mod scene;
 mod textures;
 
@@ -173,11 +174,17 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, String> {
         .await
         .map_err(js_err)?;
 
-    let textures = textures::build_textures(ctx, &document, &buffers, &base);
-    let materials: Vec<Material> = document
+    // Assemble textures, packing separate occlusion + metallic-roughness maps
+    // into one ORM texture where safe; `remap` rewrites material texture indices
+    // to match (a packed pair collapses two indices into one).
+    let (textures, remap) = pack::build_texture_set(ctx, &document, &buffers, &base);
+    let mut materials: Vec<Material> = document
         .materials()
         .map(|m| material::translate(&m))
         .collect();
+    for m in &mut materials {
+        material::remap_textures(m, &remap);
+    }
     let mut items = Vec::new();
     let (center, radius) = scene::build_draw_list(ctx, &document, &buffers, &materials, &mut items);
 

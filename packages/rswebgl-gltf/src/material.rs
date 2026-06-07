@@ -118,6 +118,24 @@ pub fn translate(mat: &gltf::Material) -> Material {
     }
 }
 
+/// Remap every texture index in `m` through `remap` (document texture index →
+/// final `Model` texture index). Called after textures are assembled, since
+/// ORM-packing can collapse two source textures into one and reorder the rest.
+pub fn remap_textures(m: &mut Material, remap: &[i32]) {
+    let map = |i: i32| -> i32 {
+        if i >= 0 {
+            remap.get(i as usize).copied().unwrap_or(-1)
+        } else {
+            -1
+        }
+    };
+    m.base_color_tex = map(m.base_color_tex);
+    m.metallic_roughness_tex = map(m.metallic_roughness_tex);
+    m.normal_tex = map(m.normal_tex);
+    m.occlusion_tex = map(m.occlusion_tex);
+    m.emissive_tex = map(m.emissive_tex);
+}
+
 /// The glTF default material (used for primitives that reference none).
 pub fn default_material() -> Material {
     Material {

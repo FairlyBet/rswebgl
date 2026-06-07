@@ -129,6 +129,15 @@ texture) into VAOs/textures/draw-list with spec-correct render state. Deferred:
   future work. Back-face normal flip currently lives in the example shader.
 - **Texture sRGB role** decided by base-color/emissive usage scan; a texture
   shared across linear+sRGB roles would pick one. Acceptable in practice.
+- **ORM channel packing** (`src/pack.rs` + `texture_packer`) combines a *separate*
+  occlusion + metallic-roughness pair into one `R=AO,G=rough,B=metal` texture
+  (sources loaded transiently, freed after the GPU pack — only the packed texture
+  is kept). Conservative: only when each source is used exclusively in its role
+  and the occ↔MR pairing is 1:1. The transient sources are forced to NEAREST
+  before packing (safe — they're dropped right after), so a same-size pack is an
+  exact texel copy. Not yet exercised end-to-end — the example shader samples only
+  base color, so there's no visible consumer until the reference PBR shader is
+  wired in. Possible refinement: a metric/log of bytes saved vs. textures kept.
 
 ## Texture packer (`packages/rswebgl/src/texture_packer.rs`)
 
