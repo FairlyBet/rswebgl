@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
@@ -11,6 +14,11 @@ use crate::console;
 use crate::pixel_unpack::PixelUnpack;
 use crate::ref_count::{RefCount, ref_counted};
 use crate::render_state::DepthFunc;
+
+/// Self-referential slot for a one-shot image-load handler (see
+/// [`Texture::drive_image_load`]). The handler removes itself from the slot when
+/// it fires, breaking the `Rc` cycle that otherwise keeps it alive.
+type ImageLoadHandler = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
 
 // ---------------------------------------------------------------------------
 // TextureTarget
@@ -374,7 +382,7 @@ impl Texture {
 }
 
 /// Full mip-chain length for a base size: `floor(log2(max(w,h))) + 1`.
-fn mip_levels(w: i32, h: i32) -> i32 {
+pub(crate) fn mip_levels(w: i32, h: i32) -> i32 {
     let max = w.max(h).max(1) as u32;
     (32 - max.leading_zeros()) as i32
 }
@@ -838,6 +846,9 @@ impl Texture {
     /// On load it allocates immutable storage sized to the image, fills level 0,
     /// optionally builds mipmaps, then invokes `on_load` (a JS callback) to
     /// signal the texture is ready to sample. Until then the texture is empty.
+    /// `on_load` is called as `on_load(width, height)` — the decoded size, or
+    /// `(0, 0)` if the image failed to load; callbacks that don't need the size
+    /// can ignore the arguments.
     ///
     /// The texture must be freshly created (storage is immutable / one-shot).
     /// The image is requested with `crossOrigin = "anonymous"` so the result is
@@ -929,9 +940,12 @@ impl Texture {
         );
     }
 
-    /// Shared `onload` machinery for `load_image`/`load_bytes`: on decode it sizes
-    /// immutable storage to the image, fills level 0, optionally builds mipmaps,
-    /// revokes a transient object URL if one was given, then fires `on_load`.
+    /// Shared decode machinery for `load_image`/`load_bytes`. One closure handles
+    /// both `onload` and `onerror`: on success it sizes immutable storage to the
+    /// image, fills level 0, optionally builds mipmaps; on failure it logs. Either
+    /// way it revokes a transient object URL, fires `on_load`, and tears itself
+    /// down — so a failed/aborted load leaks neither the closure (and its captured
+    /// texture handle) nor the object URL.
     #[allow(clippy::too_many_arguments)]
     fn drive_image_load(
         &self,
@@ -945,31 +959,60 @@ impl Texture {
     ) {
         let tex = self.clone();
         let img_cb = img.clone();
-        // once_into_js: the closure runs at most once, then drops itself; JS
-        // holds it alive via the onload property until it fires.
-        let cb = Closure::once_into_js(move || {
-            let w = img_cb.natural_width() as i32;
-            let h = img_cb.natural_height() as i32;
-            let levels = if generate_mipmaps {
-                mip_levels(w, h)
+        let src_owned = src.to_string(); // moved into the closure for error logs
+        // The closure is stored in this slot and captures a clone of the same
+        // `Rc`, so it keeps itself alive until an event fires (the only strong
+        // refs form a cycle). The handler breaks that cycle by taking itself out
+        // of the slot, which is also what frees its captures — so it must run at
+        // most once and own the cleanup for both the success and error paths.
+        let slot: ImageLoadHandler = Rc::new(RefCell::new(None));
+        let me = slot.clone();
+        let cb = Closure::<dyn FnMut()>::new(move || {
+            // Detach both handlers so a stray second event can't re-enter, and
+            // move ourselves out of the shared slot. `_self` now solely owns this
+            // closure and frees it (and every capture below) when this call ends,
+            // breaking the Rc cycle — keep it the last thing dropped.
+            img_cb.set_onload(None);
+            img_cb.set_onerror(None);
+            let _self = me.borrow_mut().take();
+
+            // onload vs onerror without inspecting the event: a decoded image
+            // reports a non-zero natural size, a failed one does not.
+            let (w, h) = if img_cb.complete() && img_cb.natural_width() > 0 {
+                let w = img_cb.natural_width() as i32;
+                let h = img_cb.natural_height() as i32;
+                let levels = if generate_mipmaps {
+                    mip_levels(w, h)
+                } else {
+                    1
+                };
+                tex.storage_2d(levels, &format, w, h);
+                let unpack = PixelUnpack {
+                    flip_y,
+                    ..PixelUnpack::default()
+                };
+                tex.sub_image_2d_from_image(0, 0, 0, &img_cb, &format, &unpack);
+                if generate_mipmaps {
+                    tex.generate_mipmaps();
+                }
+                (w, h)
             } else {
-                1
+                console::error(&format!("[rswebgl] image failed to load: {src_owned}"));
+                (0, 0) // signal failure to the callback
             };
-            tex.storage_2d(levels, &format, w, h);
-            let unpack = PixelUnpack {
-                flip_y,
-                ..PixelUnpack::default()
-            };
-            tex.sub_image_2d_from_image(0, 0, 0, &img_cb, &format, &unpack);
-            if generate_mipmaps {
-                tex.generate_mipmaps();
+
+            if let Some(url) = &revoke_url {
+                let _ = Url::revoke_object_url(url);
             }
-            if let Some(url) = revoke_url {
-                let _ = Url::revoke_object_url(&url);
-            }
-            let _ = on_load.call0(&JsValue::NULL);
+            // Report the decoded size (0,0 on failure). Callbacks that don't need
+            // it (the common case) are nullary JS functions and ignore the args.
+            let _ = on_load.call2(&JsValue::NULL, &(w as f64).into(), &(h as f64).into());
+            // `_self` drops here, after every capture has been used for the last
+            // time, freeing the closure box.
         });
-        img.set_onload(Some(cb.unchecked_ref()));
+        img.set_onload(Some(cb.as_ref().unchecked_ref()));
+        img.set_onerror(Some(cb.as_ref().unchecked_ref()));
+        *slot.borrow_mut() = Some(cb);
         img.set_src(src);
     }
 
