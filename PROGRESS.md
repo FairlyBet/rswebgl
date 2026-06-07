@@ -110,6 +110,7 @@
 | Pixel unpack params         | ✅     | `src/pixel_unpack.rs`      |
 | DOM-source uploads          | ✅     | `src/texture.rs`           |
 | `load_image` (onload upload)| ✅     | `src/texture.rs`           |
+| GPU channel packing (ORM)   | ✅     | `src/texture_packer.rs`    |
 | copyTexImage2D              | ❌     | deferred (read-fb / pass)  |
 | copyTexSubImage2D / 3D      | ❌     | deferred (read-fb / pass)  |
 | Pixel pack params           | ❌     | — (with readPixels)        |
