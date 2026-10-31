@@ -122,6 +122,13 @@ fn execute_pass(s: &RendererInner, pass: &Pass, t: &mut StateTracker) {
 
     // Draw — each batch shares a program + render state across its draws.
     for batch in &pass.batches {
+        // A program whose link failed is skipped (its error is reported once).
+        // One still linking in the background is waited on, not skipped, so a
+        // one-shot pass (a bake, a pack) can't silently draw nothing; callers who
+        // want to avoid the stall poll `Program::is_ready` before submitting.
+        if !batch.program.ensure_linked() {
+            continue;
+        }
         t.apply_render_state(&batch.render_state);
         t.use_program(&batch.program);
         for d in &batch.draws {

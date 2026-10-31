@@ -42,8 +42,6 @@ struct ProgramState {
 struct ProgramInner {
     gl: WebGl2RenderingContext,
     raw: WebGlProgram,
-    // Immutable after construction — safe to copy per clone.
-    parallel: bool,
     // Whether to check uniform-block layouts against the shader on first bind.
     validate_blocks: bool,
     state: Rc<RefCell<ProgramState>>,
@@ -74,11 +72,10 @@ impl Program {
         gl.attach_shader(&raw, &frag);
         gl.link_program(&raw);
 
-        Ok(Program {
+        let program = Program {
             inner: ProgramInner {
                 gl: gl.clone(),
                 raw,
-                parallel,
                 validate_blocks,
                 state: Rc::new(RefCell::new(ProgramState {
                     vert: Some(vert),
@@ -90,7 +87,16 @@ impl Program {
                 })),
             },
             rc: RefCount::new(),
-        })
+        };
+
+        // Without parallel compile the first status query blocks on the link
+        // anyway, so do it now and hand compile/link errors back to the caller.
+        // With it, the link finishes in the background; `is_ready` polls it and
+        // the renderer skips the program until then (and for good if it failed).
+        if !parallel {
+            program.finalize()?;
+        }
+        Ok(program)
     }
 
     // Links the uniform block named `name` to binding point `point` for this
@@ -142,7 +148,20 @@ impl Program {
             .cloned()
     }
 
-    fn finalize(&self) {
+    // Waits for the link if it's still running (blocking), reporting a failure
+    // once. Returns whether the program is usable.
+    pub(crate) fn ensure_linked(&self) -> bool {
+        if !self.inner.state.borrow().ready
+            && let Err(msg) = self.finalize()
+        {
+            console::error(&format!("[rswebgl] {msg}"));
+        }
+        self.inner.state.borrow().valid
+    }
+
+    // Reads the link status once the link has completed, frees the shader
+    // objects, and returns the compile/link logs on failure.
+    fn finalize(&self) -> Result<(), String> {
         let gl = &self.inner.gl;
         let mut st = self.inner.state.borrow_mut();
         st.ready = true;
@@ -151,54 +170,51 @@ impl Program {
             .as_bool()
             .unwrap_or(false);
 
-        if !st.valid {
+        let result = if st.valid {
+            Ok(())
+        } else {
             let prog_log = gl
                 .get_program_info_log(&self.inner.raw)
                 .unwrap_or_else(|| "unknown error".into());
-            let vert_log = st
-                .vert
-                .as_ref()
-                .and_then(|s| gl.get_shader_info_log(s))
-                .unwrap_or_default();
-            let frag_log = st
-                .frag
-                .as_ref()
-                .and_then(|s| gl.get_shader_info_log(s))
-                .unwrap_or_default();
-
-            console::error(&format!("[rswebgl] program link failed: {prog_log}"));
-            if !vert_log.is_empty() {
-                console::error(&format!("[rswebgl] vertex shader: {vert_log}"));
+            let mut msg = format!("program link failed: {}", prog_log.trim());
+            for (stage, shader) in [("vertex", &st.vert), ("fragment", &st.frag)] {
+                let log = shader
+                    .as_ref()
+                    .and_then(|s| gl.get_shader_info_log(s))
+                    .unwrap_or_default();
+                if !log.trim().is_empty() {
+                    msg.push_str(&format!("\n{stage} shader: {}", log.trim()));
+                }
             }
-            if !frag_log.is_empty() {
-                console::error(&format!("[rswebgl] fragment shader: {frag_log}"));
-            }
-        }
+            Err(msg)
+        };
 
         gl.delete_shader(st.vert.take().as_ref());
         gl.delete_shader(st.frag.take().as_ref());
+        result
     }
 }
 
 #[wasm_bindgen]
 impl Program {
+    /// Whether the link has finished. Always true unless the program was created
+    /// with `KHR_parallel_shader_compile` enabled; then it polls without blocking
+    /// (the renderer would otherwise wait on the link at first draw), and a failed
+    /// link is logged to the console once, when it completes.
     pub fn is_ready(&self) -> bool {
         if self.inner.state.borrow().ready {
             return true;
         }
 
-        let complete = if self.inner.parallel {
-            self.inner
-                .gl
-                .get_program_parameter(&self.inner.raw, COMPLETION_STATUS_KHR)
-                .as_bool()
-                .unwrap_or(false)
-        } else {
-            true
-        };
+        let complete = self
+            .inner
+            .gl
+            .get_program_parameter(&self.inner.raw, COMPLETION_STATUS_KHR)
+            .as_bool()
+            .unwrap_or(false);
 
         if complete {
-            self.finalize();
+            self.ensure_linked();
         }
 
         self.inner.state.borrow().ready
