@@ -2,6 +2,7 @@ pub mod buffer;
 pub mod compressed_format;
 pub mod console;
 pub mod context;
+pub(crate) mod context_loss;
 pub mod draw;
 pub mod extension;
 pub mod framebuffer;

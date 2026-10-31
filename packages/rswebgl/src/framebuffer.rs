@@ -6,6 +6,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, ResizeObserver, WebGl2RenderingContext, WebGlFramebuffer};
 
 use crate::context::ColorSpace;
+use crate::context_loss;
 use crate::draw::Viewport;
 use crate::renderbuffer::Renderbuffer;
 use crate::texture::{CubeMapFace, Texture};
@@ -450,6 +451,8 @@ impl Default for ColorClearValue {
 struct FramebufferInner {
     gl: WebGl2RenderingContext,
     raw: WebGlFramebuffer,
+    // Context generation it was created in (see context_loss).
+    generation: u32,
     width: i32,
     height: i32,
     viewport: Viewport,
@@ -463,7 +466,9 @@ struct FramebufferInner {
 
 impl Drop for FramebufferInner {
     fn drop(&mut self) {
-        self.gl.delete_framebuffer(Some(&self.raw));
+        if context_loss::is_current(&self.gl, self.generation) {
+            self.gl.delete_framebuffer(Some(&self.raw));
+        }
     }
 }
 
@@ -686,6 +691,7 @@ impl Framebuffer {
             inner: Rc::new(RefCell::new(FramebufferInner {
                 gl: gl.clone(),
                 raw,
+                generation: context_loss::generation(gl),
                 width,
                 height,
                 viewport: Viewport::new(0, 0, width, height),

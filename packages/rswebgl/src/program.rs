@@ -6,6 +6,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlProgram, WebGlShader, WebGlUniformLocation};
 
 use crate::console;
+use crate::context_loss;
 use crate::uniform_cache::UniformCache;
 
 const COMPLETION_STATUS_KHR: u32 = 0x91B1;
@@ -39,6 +40,8 @@ struct ProgramState {
 struct ProgramInner {
     gl: WebGl2RenderingContext,
     raw: WebGlProgram,
+    // Context generation it was created in (see context_loss).
+    generation: u32,
     // Whether to check uniform-block layouts against the shader on first bind.
     validate_blocks: bool,
     state: RefCell<ProgramState>,
@@ -46,6 +49,9 @@ struct ProgramInner {
 
 impl Drop for ProgramInner {
     fn drop(&mut self) {
+        if !context_loss::is_current(&self.gl, self.generation) {
+            return;
+        }
         let st = self.state.get_mut();
         self.gl.delete_shader(st.vert.take().as_ref());
         self.gl.delete_shader(st.frag.take().as_ref());
@@ -81,6 +87,7 @@ impl Program {
             inner: Rc::new(ProgramInner {
                 gl: gl.clone(),
                 raw,
+                generation: context_loss::generation(gl),
                 validate_blocks,
                 state: RefCell::new(ProgramState {
                     vert: Some(vert),
@@ -208,6 +215,10 @@ impl Program {
     pub fn is_ready(&self) -> bool {
         if self.inner.state.borrow().ready {
             return true;
+        }
+        // A lost context reports every link as complete and failed.
+        if self.inner.gl.is_context_lost() {
+            return false;
         }
 
         let complete = self

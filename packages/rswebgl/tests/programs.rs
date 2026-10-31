@@ -53,7 +53,7 @@ fn create_program_returns_compile_log() {
 // renderer then skips the broken batch (no GL error) and still draws the rest.
 #[wasm_bindgen_test]
 fn renderer_skips_program_that_failed_to_link() {
-    let mut f = fixture();
+    let f = fixture();
     if !f.ctx.enable_extension(Extension::KhrParallelShaderCompile) {
         return; // Nothing parallel to test on this browser.
     }

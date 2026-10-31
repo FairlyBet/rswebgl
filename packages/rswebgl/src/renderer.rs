@@ -42,10 +42,9 @@ impl Renderer {
     /// Executes one render pass. State is tracked only for the duration of this
     /// call — nothing about the bound program/VAO/framebuffer is assumed on entry,
     /// so anything a user object did to global GL state in between can't desync us.
+    /// Does nothing while the context is lost.
     pub fn render(&self, pass: &Pass) {
-        let s = &*self.inner;
-        let mut tracker = StateTracker::new(&s.gl);
-        execute_pass(s, pass, &mut tracker);
+        self.render_passes(std::slice::from_ref(pass));
     }
 
     /// Executes several passes under one state tracker, so redundant binds across
@@ -60,8 +59,10 @@ impl Renderer {
     /// reads the status, then restores the default framebuffer (the next `render`
     /// re-binds its own target anyway).
     pub fn check_framebuffer(&self, fb: &Framebuffer) -> Result<(), String> {
-        let s = &*self.inner;
-        let gl = &s.gl;
+        let gl = &self.inner.gl;
+        if gl.is_context_lost() {
+            return Err("WebGL context is lost".into());
+        }
         gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&fb.raw_gl()));
         let status = gl.check_framebuffer_status(WebGl2RenderingContext::FRAMEBUFFER);
         gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, None);
@@ -83,6 +84,11 @@ impl Renderer {
     /// Rust-only: a `&[Pass]` doesn't cross the wasm_bindgen boundary.
     pub fn render_passes(&self, passes: &[Pass]) {
         let s = &*self.inner;
+        // Every call would be a no-op anyway, but program/framebuffer status
+        // queries would report bogus failures (and mark programs invalid).
+        if s.gl.is_context_lost() {
+            return;
+        }
         let mut tracker = StateTracker::new(&s.gl);
         for pass in passes {
             execute_pass(s, pass, &mut tracker);

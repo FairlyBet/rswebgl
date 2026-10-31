@@ -91,9 +91,21 @@ treatment instead of "enable it yourself":
   `UNMASKED_RENDERER_WEBGL`. One method `ctx.gpu_info() -> String` (vendor +
   renderer). Good for bug reports and "is this Mali/Adreno → enable fallback"
   heuristics. Trivial. *Good second pick after float targets.*
-- **`WEBGL_lose_context`.** Force context loss/restore — needed to *test*
-  `webglcontextlost` handling (which we don't have yet — separate topic). A dev
-  tool.
+- ~~**`WEBGL_lose_context`.**~~ Done: `Context::simulate_context_loss` /
+  `simulate_context_restore`, used by `tests/context_loss.rs` and the cube
+  example (press L).
+
+## Context loss
+
+Handled (`src/context_loss.rs`): the renderer idles while lost, extensions are
+re-enabled on restore, `on_lost` / `on_restored` callbacks, and stale handles
+skip their delete. Recreating resources is the app's job (see the cube
+example). Possible follow-ups:
+
+- **Automatic restore** of objects the library itself owns (e.g. the
+  `TexturePacker` program and quad), so apps don't have to rebuild them.
+- glTF `Model` has no "reload" path; an app has to call `load_model` again.
+- No JS example of `set_on_restored` yet.
 
 ### Niche — note for completeness, not soon
 

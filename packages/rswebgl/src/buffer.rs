@@ -3,6 +3,8 @@ use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlBuffer};
 
+use crate::context_loss;
+
 #[wasm_bindgen]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BufferTarget {
@@ -59,13 +61,17 @@ pub(crate) enum BufferKind {
 struct BufferInner {
     gl: WebGl2RenderingContext,
     raw: WebGlBuffer,
+    // Context generation it was created in (see context_loss).
+    generation: u32,
     size: u32,
     kind: BufferKind,
 }
 
 impl Drop for BufferInner {
     fn drop(&mut self) {
-        self.gl.delete_buffer(Some(&self.raw));
+        if context_loss::is_current(&self.gl, self.generation) {
+            self.gl.delete_buffer(Some(&self.raw));
+        }
     }
 }
 
@@ -119,6 +125,7 @@ impl Buffer {
             inner: Rc::new(BufferInner {
                 gl: gl.clone(),
                 raw,
+                generation: context_loss::generation(gl),
                 size: data.len() as u32,
                 kind,
             }),
@@ -139,6 +146,7 @@ impl Buffer {
             inner: Rc::new(BufferInner {
                 gl: gl.clone(),
                 raw,
+                generation: context_loss::generation(gl),
                 size,
                 kind,
             }),

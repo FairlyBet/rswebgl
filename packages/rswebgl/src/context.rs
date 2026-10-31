@@ -1,9 +1,12 @@
+use std::rc::Rc;
+
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
+use web_sys::{HtmlCanvasElement, WebGl2RenderingContext, WebglLoseContext};
 
 use crate::buffer::{Buffer, BufferKind, BufferUsage};
 use crate::console;
+use crate::context_loss::{self, LossState};
 use crate::draw::Viewport;
 use crate::extension::Extension;
 use crate::framebuffer::{DefaultFramebuffer, Framebuffer};
@@ -127,7 +130,8 @@ impl ContextOptions {
 #[wasm_bindgen]
 pub struct Context {
     gl: WebGl2RenderingContext,
-    extensions: Vec<Extension>,
+    // Enabled extensions + loss/restore callbacks, shared with the canvas listeners.
+    loss: Rc<LossState>,
     renderer: Renderer,
     default_fb: DefaultFramebuffer,
     // Programs created while this is set check their uniform-block layouts against
@@ -138,16 +142,8 @@ pub struct Context {
 #[wasm_bindgen]
 impl Context {
     pub fn from_gl(gl: WebGl2RenderingContext) -> Context {
-        limits::init(&gl);
         let default_fb = DefaultFramebuffer::new(gl.clone(), Viewport::new(0, 0, 0, 0), None);
-        let renderer = Renderer::new(gl.clone(), default_fb.handle());
-        Context {
-            gl,
-            extensions: Vec::new(),
-            renderer,
-            default_fb,
-            validate_uniform_blocks: true,
-        }
+        Context::new(gl, default_fb)
     }
 
     pub fn from_canvas(
@@ -160,17 +156,61 @@ impl Context {
             .ok_or("WebGL2 not supported")?
             .dyn_into::<WebGl2RenderingContext>()
             .map_err(|_| "cast to WebGl2RenderingContext failed")?;
-        limits::init(&gl);
         let viewport = Viewport::new(0, 0, canvas.width() as i32, canvas.height() as i32);
         let default_fb = DefaultFramebuffer::new(gl.clone(), viewport, Some(canvas.clone()));
-        let renderer = Renderer::new(gl.clone(), default_fb.handle());
-        Ok(Context {
-            gl,
-            extensions: Vec::new(),
-            renderer,
-            default_fb,
-            validate_uniform_blocks: true,
-        })
+        Ok(Context::new(gl, default_fb))
+    }
+
+    /// Whether the context is currently lost. While it is, `Renderer::render`
+    /// does nothing and `create_*` return an error.
+    pub fn is_lost(&self) -> bool {
+        self.gl.is_context_lost()
+    }
+
+    /// JS: called when the context is lost. Everything created so far is dead.
+    pub fn set_on_lost(&self, f: js_sys::Function) {
+        self.on_lost(move || {
+            let _ = f.call0(&JsValue::NULL);
+        });
+    }
+
+    /// JS: called once the context is back (extensions already re-enabled).
+    /// Recreate every buffer, texture, program, … here and rebuild the passes;
+    /// handles from before the loss are dead and only safe to drop.
+    pub fn set_on_restored(&self, f: js_sys::Function) {
+        self.on_restored(move || {
+            let _ = f.call0(&JsValue::NULL);
+        });
+    }
+
+    /// Debug aid: forces a context loss via `WEBGL_lose_context`, to exercise
+    /// the restore path. Returns false if the extension isn't available.
+    pub fn simulate_context_loss(&self) -> bool {
+        let Some(ext) = self
+            .gl
+            .get_extension(Extension::WebglLoseContext.name())
+            .ok()
+            .flatten()
+        else {
+            return false;
+        };
+        let ext: WebglLoseContext = ext.unchecked_into();
+        ext.lose_context();
+        *self.loss.lose_ext.borrow_mut() = Some(ext);
+        true
+    }
+
+    /// Debug aid: restores a context lost via `simulate_context_loss`. The
+    /// restore (and `on_restored`) happens asynchronously. Returns false if no
+    /// simulated loss is pending.
+    pub fn simulate_context_restore(&self) -> bool {
+        match self.loss.lose_ext.borrow_mut().take() {
+            Some(ext) => {
+                ext.restore_context();
+                true
+            }
+            None => false,
+        }
     }
 
     /// Whether programs created from now on validate their uniform-block layouts
@@ -189,7 +229,8 @@ impl Context {
         self.default_fb.handle()
     }
 
-    pub fn enable_extension(&mut self, ext: Extension) -> bool {
+    /// Enables an extension; it's re-enabled automatically after a context restore.
+    pub fn enable_extension(&self, ext: Extension) -> bool {
         if self.is_extension_enabled(ext.clone()) {
             return true;
         }
@@ -198,7 +239,7 @@ impl Context {
 
         if available {
             console::log(&format!("[rswebgl] extension enabled: {}", ext.name()));
-            self.extensions.push(ext);
+            self.loss.extensions.borrow_mut().push(ext);
         } else {
             console::warn(&format!(
                 "[rswebgl] extension not available: {}",
@@ -210,14 +251,16 @@ impl Context {
     }
 
     pub fn is_extension_enabled(&self, ext: Extension) -> bool {
-        self.extensions.iter().any(|e| e == &ext)
+        self.loss.extensions.borrow().iter().any(|e| e == &ext)
     }
 
     pub fn create_buffer(&self, usage: BufferUsage, data: &[u8]) -> Result<Buffer, String> {
+        self.check_alive()?;
         Buffer::new(&self.gl, BufferKind::Generic, usage, data)
     }
 
     pub fn create_empty_buffer(&self, usage: BufferUsage, size: u32) -> Result<Buffer, String> {
+        self.check_alive()?;
         Buffer::new_empty(&self.gl, BufferKind::Generic, usage, size)
     }
 
@@ -227,10 +270,12 @@ impl Context {
         min_filter: TextureMinFilter,
         mag_filter: TextureMagFilter,
     ) -> Result<Texture, String> {
+        self.check_alive()?;
         Texture::new(&self.gl, target, min_filter, mag_filter)
     }
 
     pub fn create_vertex_array(&self) -> Result<VertexArray, String> {
+        self.check_alive()?;
         VertexArray::new(&self.gl)
     }
 
@@ -241,10 +286,12 @@ impl Context {
         layout: &UboLayout,
         usage: BufferUsage,
     ) -> Result<UniformBuffer, String> {
+        self.check_alive()?;
         UniformBuffer::new(&self.gl, layout, usage)
     }
 
     pub fn create_framebuffer(&self, width: i32, height: i32) -> Result<Framebuffer, String> {
+        self.check_alive()?;
         Framebuffer::new(&self.gl, width, height)
     }
 
@@ -254,6 +301,7 @@ impl Context {
         width: i32,
         height: i32,
     ) -> Result<Renderbuffer, String> {
+        self.check_alive()?;
         Renderbuffer::new(&self.gl, format, width, height)
     }
 
@@ -264,10 +312,12 @@ impl Context {
         width: i32,
         height: i32,
     ) -> Result<Renderbuffer, String> {
+        self.check_alive()?;
         Renderbuffer::new_multisample(&self.gl, format, samples, width, height)
     }
 
     pub fn create_program(&self, vert_src: &str, frag_src: &str) -> Result<Program, String> {
+        self.check_alive()?;
         let parallel = self.is_extension_enabled(Extension::KhrParallelShaderCompile);
         Program::new(
             &self.gl,
@@ -280,6 +330,40 @@ impl Context {
 }
 
 impl Context {
+    fn new(gl: WebGl2RenderingContext, default_fb: DefaultFramebuffer) -> Context {
+        limits::init(&gl);
+        let loss = LossState::new();
+        context_loss::install(&gl, &loss);
+        let renderer = Renderer::new(gl.clone(), default_fb.handle());
+        Context {
+            gl,
+            loss,
+            renderer,
+            default_fb,
+            validate_uniform_blocks: true,
+        }
+    }
+
+    /// Called when the context is lost. Everything created so far is dead.
+    pub fn on_lost(&self, f: impl FnMut() + 'static) {
+        *self.loss.on_lost.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Called once the context is back (extensions already re-enabled). Recreate
+    /// every buffer, texture, program, … here and rebuild the passes; handles
+    /// from before the loss are dead and only safe to drop.
+    pub fn on_restored(&self, f: impl FnMut() + 'static) {
+        *self.loss.on_restored.borrow_mut() = Some(Box::new(f));
+    }
+
+    fn check_alive(&self) -> Result<(), String> {
+        if self.gl.is_context_lost() {
+            Err("WebGL context is lost".into())
+        } else {
+            Ok(())
+        }
+    }
+
     // Internal raw-context accessor for builders within this crate. Deliberately
     // not public: handing the live WebGl2RenderingContext to users would let them
     // mutate global GL state behind the renderer's back — the desync hazard the

@@ -11,5 +11,7 @@ web-sys = { workspace = true, features = [
     "Document",
     "Element",
     "HtmlCanvasElement",
+    "KeyboardEvent",
+    "console",
     "Window",
 ] }

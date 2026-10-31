@@ -5,6 +5,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlVertexArrayObject};
 
 use crate::buffer::Buffer;
+use crate::context_loss;
 
 // ---------------------------------------------------------------------------
 // AttrType
@@ -122,12 +123,16 @@ struct VertexArrayState {
 struct VertexArrayInner {
     gl: WebGl2RenderingContext,
     raw: WebGlVertexArrayObject,
+    // Context generation it was created in (see context_loss).
+    generation: u32,
     state: RefCell<VertexArrayState>,
 }
 
 impl Drop for VertexArrayInner {
     fn drop(&mut self) {
-        self.gl.delete_vertex_array(Some(&self.raw));
+        if context_loss::is_current(&self.gl, self.generation) {
+            self.gl.delete_vertex_array(Some(&self.raw));
+        }
     }
 }
 
@@ -146,6 +151,7 @@ impl VertexArray {
             inner: Rc::new(VertexArrayInner {
                 gl: gl.clone(),
                 raw,
+                generation: context_loss::generation(gl),
                 state: RefCell::new(VertexArrayState {
                     attribs: Vec::new(),
                     index_buffer: None,

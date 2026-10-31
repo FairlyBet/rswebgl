@@ -11,6 +11,7 @@ use web_sys::{
 
 use crate::compressed_format::CompressedFormat;
 use crate::console;
+use crate::context_loss;
 use crate::pixel_unpack::PixelUnpack;
 use crate::render_state::DepthFunc;
 
@@ -302,12 +303,16 @@ impl TextureFormat {
 struct TextureInner {
     gl: WebGl2RenderingContext,
     raw: WebGlTexture,
+    // Context generation it was created in (see context_loss).
+    generation: u32,
     target: TextureTarget,
 }
 
 impl Drop for TextureInner {
     fn drop(&mut self) {
-        self.gl.delete_texture(Some(&self.raw));
+        if context_loss::is_current(&self.gl, self.generation) {
+            self.gl.delete_texture(Some(&self.raw));
+        }
     }
 }
 
@@ -361,6 +366,7 @@ impl Texture {
             inner: Rc::new(TextureInner {
                 gl: gl.clone(),
                 raw,
+                generation: context_loss::generation(gl),
                 target,
             }),
         })

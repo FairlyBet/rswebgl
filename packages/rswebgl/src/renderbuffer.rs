@@ -3,6 +3,8 @@ use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlRenderbuffer};
 
+use crate::context_loss;
+
 // ---------------------------------------------------------------------------
 // RenderbufferFormat
 // ---------------------------------------------------------------------------
@@ -43,6 +45,8 @@ impl RenderbufferFormat {
 struct RenderbufferInner {
     gl: WebGl2RenderingContext,
     raw: WebGlRenderbuffer,
+    // Context generation it was created in (see context_loss).
+    generation: u32,
     width: i32,
     height: i32,
     samples: i32,
@@ -51,7 +55,9 @@ struct RenderbufferInner {
 
 impl Drop for RenderbufferInner {
     fn drop(&mut self) {
-        self.gl.delete_renderbuffer(Some(&self.raw));
+        if context_loss::is_current(&self.gl, self.generation) {
+            self.gl.delete_renderbuffer(Some(&self.raw));
+        }
     }
 }
 
@@ -85,6 +91,7 @@ impl Renderbuffer {
             inner: Rc::new(RenderbufferInner {
                 gl: gl.clone(),
                 raw,
+                generation: context_loss::generation(gl),
                 width,
                 height,
                 samples: 0,
@@ -116,6 +123,7 @@ impl Renderbuffer {
             inner: Rc::new(RenderbufferInner {
                 gl: gl.clone(),
                 raw,
+                generation: context_loss::generation(gl),
                 width,
                 height,
                 samples,

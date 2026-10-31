@@ -4,7 +4,7 @@ use std::rc::Rc;
 use glam::{Mat4, Vec3};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use web_sys::HtmlCanvasElement;
+use web_sys::{HtmlCanvasElement, KeyboardEvent};
 
 use rswebgl::buffer::BufferUsage;
 use rswebgl::context::{Context, ContextOptions};
@@ -12,7 +12,7 @@ use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
 use rswebgl::framebuffer::ClearMask;
 use rswebgl::pass::{Batch, Pass};
 use rswebgl::render_state::{DepthFunc, RenderState};
-use rswebgl::uniform_buffer::{Std140Type, UboLayout};
+use rswebgl::uniform_buffer::{Std140Type, UboLayout, UniformBuffer};
 use rswebgl::uniform_values::UniformValues;
 use rswebgl::vao_builder::{AttrKind, VaoBuilder};
 
@@ -41,20 +41,15 @@ void main() {
 }
 "#;
 
-fn main() {
-    let window = web_sys::window().expect("no window");
-    let document = window.document().expect("no document");
-    let canvas: HtmlCanvasElement = document
-        .get_element_by_id("c")
-        .expect("missing #c canvas")
-        .dyn_into()
-        .expect("not a canvas");
+// Everything that lives on the GPU. Built once at startup and again after a
+// context restore: handles from before a context loss are dead.
+struct Scene {
+    pass: Pass,
+    ubo: UniformBuffer,
+}
 
-    let mut options = ContextOptions::new();
-    options.antialias = true;
-    options.depth = true;
-    let ctx = Context::from_canvas(&canvas, &options).expect("ctx");
-    let program = ctx.create_program(VERT, FRAG).expect("program");
+fn build_scene(ctx: &Context) -> Result<Scene, String> {
+    let program = ctx.create_program(VERT, FRAG)?;
 
     #[rustfmt::skip]
     let positions: [f32; 24] = [
@@ -90,15 +85,79 @@ fn main() {
         3,7,6, 3,6,2, // top   (+y)
     ];
 
-    let mut vao_builder = VaoBuilder::new(&ctx);
+    let mut vao_builder = VaoBuilder::new(ctx);
     vao_builder.add_f32(0, AttrKind::F32x3, &positions);
     vao_builder.add_f32(1, AttrKind::F32x3, &colors);
     vao_builder.add_indices_u16(&indices);
-    let vao = vao_builder.build().expect("vao");
+    let vao = vao_builder.build()?;
 
     let mut render_state = RenderState::new();
     render_state.depth_test = true;
     render_state.depth_func = DepthFunc::Less;
+
+    let draw_cmd = DrawCommand::elements(DrawMode::Triangles, 36, IndexType::UnsignedShort, 0);
+
+    // One mat4 in a std140 block, updated each frame and bound by block name.
+    let layout = UboLayout::new().field("u_mvp", Std140Type::Mat4);
+    let ubo = ctx.create_uniform_buffer(&layout, BufferUsage::DynamicDraw)?;
+    let uniforms = UniformValues::new();
+    uniforms.set_uniform_block("Matrices", &ubo);
+
+    // One pass to the canvas, clearing first, with a single batch (program +
+    // state) holding one draw.
+    let mut pass = Pass::to_default();
+    pass.set_clear(ClearMask::color_depth());
+    let mut batch = Batch::new(&program, &render_state);
+    batch.draw(&vao, &uniforms, draw_cmd);
+    pass.add(batch);
+
+    Ok(Scene { pass, ubo })
+}
+
+fn main() {
+    let window = web_sys::window().expect("no window");
+    let document = window.document().expect("no document");
+    let canvas: HtmlCanvasElement = document
+        .get_element_by_id("c")
+        .expect("missing #c canvas")
+        .dyn_into()
+        .expect("not a canvas");
+
+    let mut options = ContextOptions::new();
+    options.antialias = true;
+    options.depth = true;
+    let ctx = Rc::new(Context::from_canvas(&canvas, &options).expect("ctx"));
+    let scene = Rc::new(RefCell::new(build_scene(&ctx).expect("scene")));
+
+    // On restore, rebuild every GPU resource. The callback lives inside the
+    // Context, so it holds it weakly (a strong Rc would be a cycle).
+    let weak_ctx = Rc::downgrade(&ctx);
+    let restore_scene = Rc::clone(&scene);
+    ctx.on_restored(move || {
+        let Some(ctx) = weak_ctx.upgrade() else {
+            return;
+        };
+        match build_scene(&ctx) {
+            Ok(s) => *restore_scene.borrow_mut() = s,
+            Err(e) => web_sys::console::error_1(&format!("rebuild failed: {e}").into()),
+        }
+    });
+
+    // Press L to simulate a context loss, and L again to restore it.
+    let key_ctx = Rc::clone(&ctx);
+    let on_key = Closure::<dyn FnMut(KeyboardEvent)>::new(move |e: KeyboardEvent| {
+        if e.key() == "l" || e.key() == "L" {
+            if key_ctx.is_lost() {
+                key_ctx.simulate_context_restore();
+            } else {
+                key_ctx.simulate_context_loss();
+            }
+        }
+    });
+    window
+        .add_event_listener_with_callback("keydown", on_key.as_ref().unchecked_ref())
+        .expect("keydown listener");
+    on_key.forget();
 
     let renderer = ctx.renderer();
     let default_fb = ctx.default_framebuffer();
@@ -109,26 +168,10 @@ fn main() {
 
     let view = Mat4::from_translation(Vec3::new(0.0, 0.0, -3.0));
 
-    let draw_cmd = DrawCommand::elements(DrawMode::Triangles, 36, IndexType::UnsignedShort, 0);
-
-    // One mat4 in a std140 block, updated each frame and bound by block name.
-    let layout = UboLayout::new().field("u_mvp", Std140Type::Mat4);
-    let ubo = ctx
-        .create_uniform_buffer(&layout, BufferUsage::DynamicDraw)
-        .expect("ubo");
-    let uniforms = UniformValues::new();
-    uniforms.set_uniform_block("Matrices", &ubo);
-
     // requestAnimationFrame loop with self-reference via Rc<RefCell<Option<Closure>>>.
     let f: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));
     let g = f.clone();
     let win = window.clone();
-
-    let mut pass = Pass::to_default();
-    pass.set_clear(ClearMask::color_depth());
-    let mut batch = Batch::new(&program, &render_state);
-    batch.draw(&vao, &uniforms, draw_cmd);
-    pass.add(batch);
 
     *g.borrow_mut() = Some(Closure::<dyn FnMut(f64)>::new(move |time: f64| {
         let t = time as f32 / 1000.0;
@@ -137,13 +180,13 @@ fn main() {
         let aspect = default_fb.width().max(1) as f32 / default_fb.height().max(1) as f32;
         let proj = Mat4::perspective_rh_gl(45f32.to_radians(), aspect, 0.1, 100.0);
         let mvp = proj * view * model;
+
+        let scene = scene.borrow();
         // Write into the block's staging buffer; the renderer flushes it (one
         // bufferSubData) and binds the block when the pass draws.
-        ubo.set_mat("u_mvp", &mvp.to_cols_array());
-
-        // Build the frame: one pass to the canvas, clearing first, with a single
-        // batch (program + state) holding one draw.
-        renderer.render(&pass);
+        scene.ubo.set_mat("u_mvp", &mvp.to_cols_array());
+        // A no-op while the context is lost.
+        renderer.render(&scene.pass);
 
         let _ = win.request_animation_frame(f.borrow().as_ref().unwrap().as_ref().unchecked_ref());
     }));

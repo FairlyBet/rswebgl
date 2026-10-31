@@ -142,6 +142,7 @@
 | Color space (drawingBufferColorSpace)   | ✅     | `src/framebuffer.rs`  |
 | Default FB auto-resize (ResizeObserver) | ✅     | `src/framebuffer.rs`  |
 | Extension registry                      | ✅     | `src/extension.rs`    |
+| Context loss / restore                  | ✅     | `src/context_loss.rs` |
 | KHR_parallel_compile                    | ✅     | `src/program.rs`      |
 | GL lifecycle (`Rc` handles, drop=delete)| ✅     | per object type       |
 
