@@ -102,6 +102,30 @@ macro_rules! typed_handle {
                 h.0
             }
         }
+
+        // Crosses wasm-bindgen as a plain `u32` (a JS `number`), not as a
+        // wrapper object: nothing to `free()` on the JS side.
+        impl $crate::__wasm_bindgen::describe::WasmDescribe for $name {
+            fn describe() {
+                <u32 as $crate::__wasm_bindgen::describe::WasmDescribe>::describe()
+            }
+        }
+
+        impl $crate::__wasm_bindgen::convert::IntoWasmAbi for $name {
+            type Abi = <u32 as $crate::__wasm_bindgen::convert::IntoWasmAbi>::Abi;
+            fn into_abi(self) -> Self::Abi {
+                $crate::__wasm_bindgen::convert::IntoWasmAbi::into_abi(self.to_raw())
+            }
+        }
+
+        impl $crate::__wasm_bindgen::convert::FromWasmAbi for $name {
+            type Abi = <u32 as $crate::__wasm_bindgen::convert::FromWasmAbi>::Abi;
+            unsafe fn from_abi(js: Self::Abi) -> Self {
+                Self::from_raw(unsafe {
+                    <u32 as $crate::__wasm_bindgen::convert::FromWasmAbi>::from_abi(js)
+                })
+            }
+        }
     };
 }
 

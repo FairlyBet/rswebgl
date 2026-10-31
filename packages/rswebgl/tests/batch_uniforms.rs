@@ -8,9 +8,10 @@ use wasm_bindgen_test::*;
 
 use rswebgl::context::Context;
 use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
+use rswebgl::ids::TextureId;
 use rswebgl::pass::Batch;
 use rswebgl::render_state::RenderState;
-use rswebgl::texture::{Texture, TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget};
+use rswebgl::texture::{TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget};
 use rswebgl::uniform_values::UniformValues;
 
 use common::*;
@@ -42,7 +43,7 @@ fn cmd() -> DrawCommand {
     DrawCommand::elements(DrawMode::Triangles, 6, IndexType::UnsignedShort, 0)
 }
 
-fn solid_texture(ctx: &Context, c: [u8; 4]) -> Texture {
+fn solid_texture(ctx: &Context, c: [u8; 4]) -> TextureId {
     let t = ctx
         .create_texture(
             TextureTarget::Texture2D,
@@ -50,8 +51,8 @@ fn solid_texture(ctx: &Context, c: [u8; 4]) -> Texture {
             TextureMagFilter::Nearest,
         )
         .expect("texture");
-    t.storage_2d(1, &TextureFormat::rgba8(), 1, 1);
-    t.sub_image_2d(0, 0, 0, 1, 1, &TextureFormat::rgba8(), &c);
+    ctx.texture_storage_2d(t, 1, &TextureFormat::rgba8(), 1, 1);
+    ctx.texture_sub_image_2d(t, 0, 0, 0, 1, 1, &TextureFormat::rgba8(), &c);
     t
 }
 
@@ -69,13 +70,13 @@ fn draw_override_does_not_leak_into_next_draw() {
 
     let shared = UniformValues::new();
     color(&shared, RED);
-    let mut batch = Batch::new(&program, &RenderState::new());
+    let mut batch = Batch::new(program, &RenderState::new());
     batch.set_uniforms(&shared);
-    batch.draw(&f.quad, &quad_uniforms(0, 0), cmd());
+    batch.draw(f.quad, &quad_uniforms(0, 0), cmd());
     let blue = quad_uniforms(1, 0);
     color(&blue, BLUE);
-    batch.draw(&f.quad, &blue, cmd());
-    batch.draw(&f.quad, &quad_uniforms(2, 0), cmd());
+    batch.draw(f.quad, &blue, cmd());
+    batch.draw(f.quad, &quad_uniforms(2, 0), cmd());
     render(&f, vec![batch]);
 
     assert_eq!(read_quads(&f.gl), [RED, BLUE, RED]);
@@ -89,9 +90,9 @@ fn batch_uniforms_are_a_live_handle() {
 
     let shared = UniformValues::new();
     color(&shared, RED);
-    let mut batch = Batch::new(&program, &RenderState::new());
+    let mut batch = Batch::new(program, &RenderState::new());
     batch.set_uniforms(&shared);
-    batch.draw(&f.quad, &quad_uniforms(1, 0), cmd());
+    batch.draw(f.quad, &quad_uniforms(1, 0), cmd());
     color(&shared, GREEN);
     render(&f, vec![batch]);
 
@@ -112,13 +113,13 @@ fn batch_and_draw_samplers_get_distinct_units() {
     let blue = solid_texture(&f.ctx, BLUE);
 
     let shared = UniformValues::new();
-    shared.set_sampler("u_a", &red);
-    let mut batch = Batch::new(&program, &RenderState::new());
+    shared.set_sampler("u_a", red);
+    let mut batch = Batch::new(program, &RenderState::new());
     batch.set_uniforms(&shared);
-    for (col, tex) in [(0, &blue), (1, &green), (2, &blue)] {
+    for (col, tex) in [(0, blue), (1, green), (2, blue)] {
         let u = quad_uniforms(col, 0);
         u.set_sampler("u_b", tex);
-        batch.draw(&f.quad, &u, cmd());
+        batch.draw(f.quad, &u, cmd());
     }
     render(&f, vec![batch]);
 
@@ -142,7 +143,7 @@ void main() {
 "#;
     let program = f.ctx.create_program(VERT, FRAG).expect("program");
     assert_eq!(
-        program.active_uniform_names(),
+        f.ctx.program_active_uniform_names(program),
         ["u_rect", "u_tex", "u_tint"]
     );
 }
@@ -152,13 +153,13 @@ void main() {
 fn unset_uniform_is_reported_once() {
     let f = fixture();
     let program = f.ctx.create_program(VERT, COLOR_FRAG).expect("program");
-    let mut batch = Batch::new(&program, &RenderState::new());
+    let mut batch = Batch::new(program, &RenderState::new());
     let first = quad_uniforms(0, 0);
     color(&first, RED);
-    batch.draw(&f.quad, &first, cmd());
+    batch.draw(f.quad, &first, cmd());
     // These two rely on the leaked u_color.
-    batch.draw(&f.quad, &quad_uniforms(1, 0), cmd());
-    batch.draw(&f.quad, &quad_uniforms(2, 0), cmd());
+    batch.draw(f.quad, &quad_uniforms(1, 0), cmd());
+    batch.draw(f.quad, &quad_uniforms(2, 0), cmd());
 
     let warnings = capture_console("warn", || render(&f, vec![batch]));
     let about_color: Vec<_> = warnings.iter().filter(|w| w.contains("u_color")).collect();

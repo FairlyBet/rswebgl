@@ -26,7 +26,8 @@ use wasm_bindgen::prelude::*;
 
 use rswebgl::console;
 use rswebgl::context::Context;
-use rswebgl::texture::{Texture, TextureMagFilter, TextureMinFilter, TextureTarget};
+use rswebgl::ids::TextureId;
+use rswebgl::texture::{TextureMagFilter, TextureMinFilter, TextureTarget};
 use rswebgl::texture_packer::{Channel, PackSpec, TexturePacker};
 
 use crate::textures::{build_texture, mag_filter, min_filter, srgb_texture_set, wrap};
@@ -42,7 +43,7 @@ pub fn build_texture_set(
     doc: &gltf::Document,
     buffers: &[Vec<u8>],
     base: &str,
-) -> (Vec<Texture>, Vec<i32>) {
+) -> (Vec<TextureId>, Vec<i32>) {
     let docs: Vec<gltf::Texture> = doc.textures().collect();
     let tex_count = docs.len();
 
@@ -67,7 +68,7 @@ pub fn build_texture_set(
     let srgb = srgb_texture_set(doc);
 
     let mut remap = vec![-1i32; tex_count];
-    let mut textures: Vec<Texture> = Vec::with_capacity(tex_count);
+    let mut textures: Vec<TextureId> = Vec::with_capacity(tex_count);
 
     // 1. Every texture not consumed by an ORM pack: load normally.
     for (i, t) in docs.iter().enumerate() {
@@ -180,12 +181,13 @@ fn plan_orm_pairs(doc: &gltf::Document, tex_count: usize) -> Vec<(usize, usize)>
 
 /// State shared between the two source-load callbacks of one ORM pack.
 struct OrmJoin {
+    ctx: Context,
     remaining: u32,
     w: i32,
     h: i32,
-    occ: Option<Texture>,
-    mr: Option<Texture>,
-    output: Texture,
+    occ: TextureId,
+    mr: TextureId,
+    output: TextureId,
 }
 
 /// Create the (empty) ORM output texture and kick the two source loads; the pack
@@ -198,7 +200,7 @@ fn build_packed_orm(
     occ_idx: usize,
     mr_idx: usize,
     packer: Rc<TexturePacker>,
-) -> Texture {
+) -> TextureId {
     // The output adopts the MR texture's sampler (wrap/filter); ORM is linear data.
     let mr_doc = &docs[mr_idx];
     let sampler = mr_doc.sampler();
@@ -207,16 +209,17 @@ fn build_packed_orm(
     let output = ctx
         .create_texture(TextureTarget::Texture2D, min, mag)
         .expect("create_texture");
-    output.set_wrap_s(wrap(sampler.wrap_s()));
-    output.set_wrap_t(wrap(sampler.wrap_t()));
+    ctx.texture_set_wrap_s(output, wrap(sampler.wrap_s()));
+    ctx.texture_set_wrap_t(output, wrap(sampler.wrap_t()));
 
     let join = Rc::new(RefCell::new(OrmJoin {
+        ctx: ctx.clone(),
         remaining: 2,
         w: 0,
         h: 0,
-        occ: None,
-        mr: None,
-        output: output.clone(),
+        occ: TextureId::NULL,
+        mr: TextureId::NULL,
+        output,
     }));
 
     // Sources are linear (occlusion/MR are data); load them as transient inputs.
@@ -242,8 +245,8 @@ fn build_packed_orm(
     // callbacks until both have run.
     {
         let mut j = join.borrow_mut();
-        j.occ = Some(occ_src);
-        j.mr = Some(mr_src);
+        j.occ = occ_src;
+        j.mr = mr_src;
     }
 
     output
@@ -271,38 +274,41 @@ fn on_source_loaded(join: &Rc<RefCell<OrmJoin>>, packer: &TexturePacker, w: i32,
         return;
     }
 
-    let (Some(occ), Some(mr), w, h, output) =
-        (j.occ.clone(), j.mr.clone(), j.w, j.h, j.output.clone())
-    else {
-        console::error("[rswebgl-gltf] ORM join missing a source texture");
-        return;
-    };
+    let (ctx, occ, mr, w, h, output) = (j.ctx.clone(), j.occ, j.mr, j.w, j.h, j.output);
     drop(j); // release the borrow before the GPU work
+
+    // The sources are transient: only the packed output is kept.
+    let free_sources = || {
+        ctx.destroy_texture(occ);
+        ctx.destroy_texture(mr);
+    };
 
     if w <= 0 || h <= 0 {
         console::error("[rswebgl-gltf] ORM sources failed to load; packed texture left empty");
+        free_sources();
         return;
     }
 
-    // These sources are transient — packed once here, then dropped — so forcing
-    // NEAREST is free and gives an exact texel copy when the output matches the
-    // source size (the common case; we never minify, since the output is the
-    // larger of the two). Revisit once sampler objects let the blit override
-    // filtering without mutating the texture (PROGRESS: "Sampler object ❌").
-    for t in [&occ, &mr] {
-        t.set_min_filter(TextureMinFilter::Nearest);
-        t.set_mag_filter(TextureMagFilter::Nearest);
+    // Since they're destroyed right after, forcing NEAREST is free and gives an
+    // exact texel copy when the output matches the source size (the common
+    // case; we never minify, since the output is the larger of the two).
+    // Revisit once sampler objects let the blit override filtering without
+    // mutating the texture (PROGRESS: "Sampler object ❌").
+    for t in [occ, mr] {
+        ctx.texture_set_min_filter(t, TextureMinFilter::Nearest);
+        ctx.texture_set_mag_filter(t, TextureMagFilter::Nearest);
     }
 
     let mut spec = PackSpec::new();
-    spec.set_source(Channel::R, &occ, Channel::R); // occlusion -> R
-    spec.set_source(Channel::G, &mr, Channel::G); // roughness  -> G
-    spec.set_source(Channel::B, &mr, Channel::B); // metallic   -> B
+    spec.set_source(Channel::R, occ, Channel::R); // occlusion -> R
+    spec.set_source(Channel::G, mr, Channel::G); // roughness  -> G
+    spec.set_source(Channel::B, mr, Channel::B); // metallic   -> B
     spec.set_constant(Channel::A, 1.0);
 
-    if let Err(e) = packer.pack_into(&output, &spec, w, h, false, true) {
+    if let Err(e) = packer.pack_into(output, &spec, w, h, false, true) {
         console::error(&format!("[rswebgl-gltf] ORM pack failed: {e}"));
     }
+    free_sources();
 }
 
 /// A nullary image-load callback for fire-and-forget textures.

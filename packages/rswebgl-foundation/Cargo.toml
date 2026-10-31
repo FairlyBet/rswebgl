@@ -11,3 +11,4 @@ js-sys = { workspace = true }
 # Browser tests: `wasm-pack test --headless --chrome packages/rswebgl-foundation`.
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
+wasm-bindgen = { workspace = true }

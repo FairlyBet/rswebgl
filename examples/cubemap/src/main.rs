@@ -115,7 +115,6 @@ fn main() {
     let options = ContextOptions::new();
     let ctx = Context::from_canvas(&canvas, &options).expect("ctx");
 
-    let renderer = ctx.renderer();
     let render_state = RenderState::new(); // depth test & culling off — fine for fullscreen passes
 
     // ---- the cubemap we render into, then sample -------------------------
@@ -129,7 +128,7 @@ fn main() {
             TextureMagFilter::Linear,
         )
         .expect("cube texture");
-    cube.storage_2d(1, &TextureFormat::rgba8(), CUBE_SIZE, CUBE_SIZE);
+    ctx.texture_storage_2d(cube, 1, &TextureFormat::rgba8(), CUBE_SIZE, CUBE_SIZE);
 
     // ---- phase 1: bake each face via an FBO ------------------------------
     let bake_program = ctx
@@ -152,20 +151,24 @@ fn main() {
     for (i, face) in faces.iter().enumerate() {
         // Point the FBO's color attachment at this face, then render into it. The
         // fullscreen triangle covers the whole face, so no clear is needed.
-        fbo.attach_color_cube_face(0, &cube, face.clone(), 0);
-        if i == 0 && !renderer.is_framebuffer_complete(&fbo) {
+        ctx.framebuffer_attach_color_cube_face(fbo, 0, cube, *face, 0);
+        if i == 0 && !ctx.is_framebuffer_complete(fbo) {
             web_sys::console::error_1(&"cubemap FBO incomplete".into());
         }
 
         let uniforms = UniformValues::new();
         uniforms.set_int("u_face", i as i32);
 
-        let mut pass = Pass::new(&fbo);
-        let mut batch = Batch::new(&bake_program, &render_state);
+        let mut pass = Pass::new(fbo);
+        let mut batch = Batch::new(bake_program, &render_state);
         batch.draw_vertexless(&uniforms, tri);
         pass.add(batch);
-        renderer.render(&pass);
+        ctx.render(&pass);
     }
+    // The bake is done: only the cubemap is needed from here on. Destroying the
+    // framebuffer also stops it using the cubemap.
+    ctx.destroy_framebuffer(fbo);
+    ctx.destroy_program(bake_program);
 
     // ---- phase 2: display the cubemap as a rotating skybox ---------------
     let sky_program = ctx.create_program(SKY_VERT, SKY_FRAG).expect("sky program");
@@ -173,7 +176,7 @@ fn main() {
     default_fb.enable_auto_resize().expect("auto-resize");
 
     let sky_uniforms = UniformValues::new();
-    sky_uniforms.set_sampler("u_sky", &cube);
+    sky_uniforms.set_sampler("u_sky", cube);
     sky_uniforms.set_float("u_tan_half_fov", (FOV_DEG.to_radians() * 0.5).tan());
 
     // requestAnimationFrame loop with self-reference via Rc<RefCell<Option<..>>>.
@@ -192,10 +195,10 @@ fn main() {
         sky_uniforms.set_float("u_aspect", aspect);
 
         let mut pass = Pass::to_default();
-        let mut batch = Batch::new(&sky_program, &render_state);
+        let mut batch = Batch::new(sky_program, &render_state);
         batch.draw_vertexless(&sky_uniforms, tri);
         pass.add(batch);
-        renderer.render(&pass);
+        ctx.render(&pass);
 
         let _ = win.request_animation_frame(f.borrow().as_ref().unwrap().as_ref().unchecked_ref());
     }));

@@ -29,10 +29,9 @@ pub use material::{AlphaMode, Material};
 
 use rswebgl::context::Context;
 use rswebgl::draw::DrawCommand;
+use rswebgl::ids::{TextureId, VertexArrayId};
 use rswebgl::render_state::RenderState;
-use rswebgl::texture::Texture;
 use rswebgl::uniform_values::UniformValues;
-use rswebgl::vao::VertexArray;
 use wasm_bindgen::prelude::*;
 
 /// One renderable primitive instance: its geometry, how to draw it, the
@@ -40,7 +39,7 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 #[derive(Clone)]
 pub struct DrawItem {
-    pub(crate) vao: VertexArray,
+    pub(crate) vao: VertexArrayId,
     pub(crate) draw: DrawCommand,
     pub(crate) state: RenderState,
     pub(crate) material: i32, // index into Model materials, or -1 (default)
@@ -49,8 +48,8 @@ pub struct DrawItem {
 
 #[wasm_bindgen]
 impl DrawItem {
-    pub fn vao(&self) -> VertexArray {
-        self.vao.clone()
+    pub fn vao(&self) -> VertexArrayId {
+        self.vao
     }
     pub fn draw_command(&self) -> DrawCommand {
         self.draw
@@ -80,7 +79,7 @@ impl DrawItem {
         uniforms.set_int("u_alpha_mode", m.alpha_mode as i32);
         if m.base_color_tex >= 0 {
             if let Some(tex) = model.textures.get(m.base_color_tex as usize) {
-                uniforms.set_sampler("u_base_color_tex", tex);
+                uniforms.set_sampler("u_base_color_tex", *tex);
             }
             uniforms.set_bool("u_has_base_color_tex", true);
         } else {
@@ -111,7 +110,7 @@ impl DrawItem {
 pub struct Model {
     pub(crate) items: Vec<DrawItem>,
     pub(crate) materials: Vec<Material>,
-    pub(crate) textures: Vec<Texture>,
+    pub(crate) textures: Vec<TextureId>,
     pub(crate) center: [f32; 3],
     pub(crate) radius: f32,
 }
@@ -133,8 +132,9 @@ impl Model {
     pub fn texture_count(&self) -> usize {
         self.textures.len()
     }
-    pub fn texture(&self, i: usize) -> Option<Texture> {
-        self.textures.get(i).cloned()
+    /// The texture at `i`, or `TextureId::NULL` if out of range.
+    pub fn texture(&self, i: usize) -> TextureId {
+        self.textures.get(i).copied().unwrap_or(TextureId::NULL)
     }
     /// World-space center of the model's bounding sphere (3 floats).
     pub fn center(&self) -> Vec<f32> {
@@ -143,6 +143,18 @@ impl Model {
     /// World-space radius of the model's bounding sphere.
     pub fn radius(&self) -> f32 {
         self.radius
+    }
+
+    /// Destroys every GPU resource the model created: its vertex arrays (with
+    /// their buffers) and textures. Draw items and texture handles from this
+    /// model are stale afterwards.
+    pub fn destroy(&self, ctx: &Context) {
+        for item in &self.items {
+            ctx.destroy_vertex_array(item.vao);
+        }
+        for &tex in &self.textures {
+            ctx.destroy_texture(tex);
+        }
     }
 }
 

@@ -1,13 +1,13 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use rswebgl_foundation::dirty::DirtyBits;
 use rswebgl_foundation::layout::{FieldType, Layout, LayoutBuilder, LayoutRule, Word};
+use rswebgl_foundation::pool::Destroyed;
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlBuffer};
 
-use crate::buffer::{Buffer, BufferKind, BufferUsage};
+use crate::buffer::{BufferKind, BufferUsage, Init, create_raw, write_raw};
 use crate::console;
+use crate::context::{Context, stale};
+use crate::ids::UniformBufferId;
 use crate::limits;
 
 // ---------------------------------------------------------------------------
@@ -159,8 +159,12 @@ const DIRTY_CHUNK: u32 = 16;
 // UniformBuffer — CPU-staged, std140-packed, GPU-backed uniform block.
 // ---------------------------------------------------------------------------
 
+/// A uniform block in the context's pool: writes land in a CPU-side byte buffer
+/// laid out per std140, and are flushed to its own GL buffer as one
+/// `bufferSubData` per changed run when the block is bound in a pass.
 #[derive(Debug)]
-struct UboState {
+pub(crate) struct UniformBufferObj {
+    pub(crate) raw: WebGlBuffer,
     data: Vec<u8>,
     layout: Layout,
     // Touched 16-byte chunks since the last flush; scattered writes upload as
@@ -168,160 +172,39 @@ struct UboState {
     dirty: DirtyBits,
 }
 
-/// A uniform block: writes land in a CPU-side byte buffer laid out per std140,
-/// and are flushed to the GL buffer as one `bufferSubData` per changed run.
-///
-/// You normally don't flush manually — the renderer uploads a dirty block when
-/// it's bound in a pass. Call `upload()` only to make the GPU copy current
-/// outside of rendering (e.g. before copying or reading the buffer).
-///
-/// Cloning yields another handle to the same block (shared CPU staging + GL
-/// buffer), like the other resource types.
-#[wasm_bindgen]
-#[derive(Debug)]
-pub struct UniformBuffer {
-    buffer: Buffer,
-    state: Rc<RefCell<UboState>>,
-}
-
-impl Clone for UniformBuffer {
-    fn clone(&self) -> Self {
-        Self {
-            buffer: self.buffer.clone(),
-            state: Rc::clone(&self.state),
-        }
-    }
-}
-
-impl PartialEq for UniformBuffer {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.state, &other.state)
-    }
-}
-
-impl UniformBuffer {
-    pub(crate) fn new(
-        gl: &WebGl2RenderingContext,
-        layout: &UboLayout,
-        usage: BufferUsage,
-    ) -> Result<Self, String> {
-        let layout = layout.builder.build(LayoutRule::Std140);
-        let size = layout.size();
-        validate_block_size(size, limits::max_uniform_block_size())?;
-        let buffer = Buffer::new_empty(gl, BufferKind::Generic, usage, size)?;
-        Ok(Self {
-            buffer,
-            state: Rc::new(RefCell::new(UboState {
-                data: vec![0u8; size as usize],
-                layout,
-                dirty: DirtyBits::new(size, DIRTY_CHUNK),
-            })),
-        })
+impl UniformBufferObj {
+    pub(crate) fn delete(self, gl: &WebGl2RenderingContext) {
+        gl.delete_buffer(Some(&self.raw));
     }
 
-    // Flush the dirty runs to the GL buffer (no-op if clean). Shared by the
-    // public `upload()` and the renderer's bind-time auto-upload.
-    pub(crate) fn flush(&self) {
-        let mut st = self.state.borrow_mut();
-        if !st.dirty.is_dirty() {
+    pub(crate) fn byte_size(&self) -> u32 {
+        self.data.len() as u32
+    }
+
+    // Flush the dirty runs to the GL buffer (no-op if clean).
+    pub(crate) fn flush(&mut self, gl: &WebGl2RenderingContext) {
+        if !self.dirty.is_dirty() {
             return;
         }
-        for run in st.dirty.take_runs() {
-            self.buffer.write(
+        for run in self.dirty.take_runs() {
+            write_raw(
+                gl,
+                BufferKind::Generic,
+                &self.raw,
                 run.start as i32,
-                &st.data[run.start as usize..run.end as usize],
+                &self.data[run.start as usize..run.end as usize],
             );
         }
     }
 
-    // The GL buffer, for binding to a uniform-buffer binding point.
-    pub(crate) fn buffer_raw(&self) -> &WebGlBuffer {
-        self.buffer.raw_gl()
-    }
-}
-
-#[wasm_bindgen]
-impl UniformBuffer {
-    /// Flush pending writes to the GL buffer. Normally unnecessary — see the
-    /// type docs; the renderer does this for blocks used in a pass.
-    pub fn upload(&self) {
-        self.flush();
-    }
-
-    /// Total std140 size of the block in bytes.
-    pub fn byte_size(&self) -> u32 {
-        self.state.borrow().data.len() as u32
-    }
-
-    /// A copy of the CPU-side staging bytes (std140-packed). Reflects writes
-    /// immediately, regardless of whether they've been uploaded.
-    pub fn data(&self) -> Vec<u8> {
-        self.state.borrow().data.clone()
-    }
-
-    // --- scalar / vector setters --------------------------------------------
-
-    pub fn set_f32(&self, path: &str, x: f32) {
-        self.put(path, Some(FieldType::F32), &[x]);
-    }
-    pub fn set_vec2(&self, path: &str, x: f32, y: f32) {
-        self.put(path, Some(FieldType::Vec2), &[x, y]);
-    }
-    pub fn set_vec3(&self, path: &str, x: f32, y: f32, z: f32) {
-        self.put(path, Some(FieldType::Vec3), &[x, y, z]);
-    }
-    pub fn set_vec4(&self, path: &str, x: f32, y: f32, z: f32, w: f32) {
-        self.put(path, Some(FieldType::Vec4), &[x, y, z, w]);
-    }
-
-    pub fn set_i32(&self, path: &str, x: i32) {
-        self.put(path, Some(FieldType::I32), &[x]);
-    }
-    pub fn set_ivec2(&self, path: &str, x: i32, y: i32) {
-        self.put(path, Some(FieldType::IVec2), &[x, y]);
-    }
-    pub fn set_ivec3(&self, path: &str, x: i32, y: i32, z: i32) {
-        self.put(path, Some(FieldType::IVec3), &[x, y, z]);
-    }
-    pub fn set_ivec4(&self, path: &str, x: i32, y: i32, z: i32, w: i32) {
-        self.put(path, Some(FieldType::IVec4), &[x, y, z, w]);
-    }
-
-    pub fn set_u32(&self, path: &str, x: u32) {
-        self.put(path, Some(FieldType::U32), &[x]);
-    }
-    pub fn set_uvec2(&self, path: &str, x: u32, y: u32) {
-        self.put(path, Some(FieldType::UVec2), &[x, y]);
-    }
-    pub fn set_uvec3(&self, path: &str, x: u32, y: u32, z: u32) {
-        self.put(path, Some(FieldType::UVec3), &[x, y, z]);
-    }
-    pub fn set_uvec4(&self, path: &str, x: u32, y: u32, z: u32, w: u32) {
-        self.put(path, Some(FieldType::UVec4), &[x, y, z, w]);
-    }
-
-    pub fn set_bool(&self, path: &str, value: bool) {
-        self.put(path, Some(FieldType::Bool), &[value as u32]);
-    }
-
-    /// Set a matrix field of any shape. `data` is column-major with exactly
-    /// `columns * rows` floats for the field's declared type (e.g. 9 for `Mat3`,
-    /// 16 for `Mat4`). std140 column padding is applied on write.
-    pub fn set_mat(&self, path: &str, data: &[f32]) {
-        self.put(path, None, data);
-    }
-}
-
-impl UniformBuffer {
     // Shared body for the setters: look up the field, type-check (`expect`;
     // None = any matrix), write the components into staging, mark the chunks.
-    fn put<T: Word>(&self, path: &str, expect: Option<FieldType>, vals: &[T]) {
-        let st = &mut *self.state.borrow_mut();
-        let Some(id) = st.layout.field_id(path) else {
+    fn put<T: Word>(&mut self, path: &str, expect: Option<FieldType>, vals: &[T]) {
+        let Some(id) = self.layout.field_id(path) else {
             console::warn_once(&format!("[rswebgl] UBO field not found: \"{path}\""));
             return;
         };
-        let ty = st.layout.field(id).ty;
+        let ty = self.layout.field(id).ty;
         let type_ok = match expect {
             Some(e) => e == ty,
             None => ty.is_matrix(),
@@ -333,12 +216,181 @@ impl UniformBuffer {
             ));
             return;
         }
-        match st.layout.write(&mut st.data, id, vals) {
-            Ok(range) => st.dirty.mark(range),
+        match self.layout.write(&mut self.data, id, vals) {
+            Ok(range) => self.dirty.mark(range),
             Err(e) => {
                 console::warn_once(&format!("[rswebgl] UBO field \"{path}\" ({ty:?}): {e:?}"))
             }
         }
+    }
+}
+
+impl Context {
+    fn ubo_put<T: Word>(
+        &self,
+        ubo: UniformBufferId,
+        op: &str,
+        path: &str,
+        expect: Option<FieldType>,
+        vals: &[T],
+    ) {
+        match self.res().uniform_buffers.get_mut(ubo.0) {
+            Some(u) => u.put(path, expect, vals),
+            None => stale("uniform buffer", op, ubo),
+        }
+    }
+}
+
+#[wasm_bindgen]
+impl Context {
+    /// Allocate a uniform block backed by a GL buffer, laid out per std140 from
+    /// `layout`. Fields are addressed by path (e.g. `"lights[2].color"`).
+    pub fn create_uniform_buffer(
+        &self,
+        layout: &UboLayout,
+        usage: BufferUsage,
+    ) -> Result<UniformBufferId, String> {
+        self.check_alive()?;
+        let layout = layout.builder.build(LayoutRule::Std140);
+        let size = layout.size();
+        validate_block_size(size, limits::max_uniform_block_size())?;
+        let buf = create_raw(self.gl(), BufferKind::Generic, usage, Init::Size(size))?;
+        let obj = UniformBufferObj {
+            raw: buf.raw,
+            data: vec![0u8; size as usize],
+            layout,
+            dirty: DirtyBits::new(size, DIRTY_CHUNK),
+        };
+        let mut res = self.res();
+        match res.uniform_buffers.insert(obj) {
+            Ok(h) => Ok(h.into()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    pub fn destroy_uniform_buffer(&self, ubo: UniformBufferId) {
+        let destroyed = self.res().uniform_buffers.destroy(ubo.0);
+        match destroyed {
+            Destroyed::Now(obj) => obj.delete(self.gl()),
+            Destroyed::Deferred => {}
+            Destroyed::Invalid => stale("uniform buffer", "destroy_uniform_buffer", ubo),
+        }
+    }
+
+    /// Flush pending writes to the GL buffer. Normally unnecessary: the renderer
+    /// does this for blocks bound in a pass. Use it to make the GPU copy current
+    /// outside of rendering.
+    pub fn ubo_upload(&self, ubo: UniformBufferId) {
+        let gl = self.gl();
+        match self.res().uniform_buffers.get_mut(ubo.0) {
+            Some(u) => u.flush(gl),
+            None => stale("uniform buffer", "ubo_upload", ubo),
+        }
+    }
+
+    /// Total std140 size of the block in bytes (0 for a stale handle).
+    pub fn ubo_byte_size(&self, ubo: UniformBufferId) -> u32 {
+        self.res()
+            .uniform_buffers
+            .get(ubo.0)
+            .map_or(0, |u| u.byte_size())
+    }
+
+    /// A copy of the CPU-side staging bytes (std140-packed). Reflects writes
+    /// immediately, regardless of whether they've been uploaded.
+    pub fn ubo_data(&self, ubo: UniformBufferId) -> Vec<u8> {
+        self.res()
+            .uniform_buffers
+            .get(ubo.0)
+            .map_or_else(Vec::new, |u| u.data.clone())
+    }
+
+    // --- scalar / vector setters --------------------------------------------
+
+    pub fn ubo_set_f32(&self, ubo: UniformBufferId, path: &str, x: f32) {
+        self.ubo_put(ubo, "ubo_set_f32", path, Some(FieldType::F32), &[x]);
+    }
+    pub fn ubo_set_vec2(&self, ubo: UniformBufferId, path: &str, x: f32, y: f32) {
+        self.ubo_put(ubo, "ubo_set_vec2", path, Some(FieldType::Vec2), &[x, y]);
+    }
+    pub fn ubo_set_vec3(&self, ubo: UniformBufferId, path: &str, x: f32, y: f32, z: f32) {
+        self.ubo_put(ubo, "ubo_set_vec3", path, Some(FieldType::Vec3), &[x, y, z]);
+    }
+    pub fn ubo_set_vec4(&self, ubo: UniformBufferId, path: &str, x: f32, y: f32, z: f32, w: f32) {
+        self.ubo_put(
+            ubo,
+            "ubo_set_vec4",
+            path,
+            Some(FieldType::Vec4),
+            &[x, y, z, w],
+        );
+    }
+
+    pub fn ubo_set_i32(&self, ubo: UniformBufferId, path: &str, x: i32) {
+        self.ubo_put(ubo, "ubo_set_i32", path, Some(FieldType::I32), &[x]);
+    }
+    pub fn ubo_set_ivec2(&self, ubo: UniformBufferId, path: &str, x: i32, y: i32) {
+        self.ubo_put(ubo, "ubo_set_ivec2", path, Some(FieldType::IVec2), &[x, y]);
+    }
+    pub fn ubo_set_ivec3(&self, ubo: UniformBufferId, path: &str, x: i32, y: i32, z: i32) {
+        self.ubo_put(
+            ubo,
+            "ubo_set_ivec3",
+            path,
+            Some(FieldType::IVec3),
+            &[x, y, z],
+        );
+    }
+    pub fn ubo_set_ivec4(&self, ubo: UniformBufferId, path: &str, x: i32, y: i32, z: i32, w: i32) {
+        self.ubo_put(
+            ubo,
+            "ubo_set_ivec4",
+            path,
+            Some(FieldType::IVec4),
+            &[x, y, z, w],
+        );
+    }
+
+    pub fn ubo_set_u32(&self, ubo: UniformBufferId, path: &str, x: u32) {
+        self.ubo_put(ubo, "ubo_set_u32", path, Some(FieldType::U32), &[x]);
+    }
+    pub fn ubo_set_uvec2(&self, ubo: UniformBufferId, path: &str, x: u32, y: u32) {
+        self.ubo_put(ubo, "ubo_set_uvec2", path, Some(FieldType::UVec2), &[x, y]);
+    }
+    pub fn ubo_set_uvec3(&self, ubo: UniformBufferId, path: &str, x: u32, y: u32, z: u32) {
+        self.ubo_put(
+            ubo,
+            "ubo_set_uvec3",
+            path,
+            Some(FieldType::UVec3),
+            &[x, y, z],
+        );
+    }
+    pub fn ubo_set_uvec4(&self, ubo: UniformBufferId, path: &str, x: u32, y: u32, z: u32, w: u32) {
+        self.ubo_put(
+            ubo,
+            "ubo_set_uvec4",
+            path,
+            Some(FieldType::UVec4),
+            &[x, y, z, w],
+        );
+    }
+
+    pub fn ubo_set_bool(&self, ubo: UniformBufferId, path: &str, value: bool) {
+        self.ubo_put(
+            ubo,
+            "ubo_set_bool",
+            path,
+            Some(FieldType::Bool),
+            &[value as u32],
+        );
+    }
+
+    /// Set a matrix field of any shape. `data` is column-major with exactly
+    /// `columns * rows` floats for the field's declared type (e.g. 9 for `Mat3`,
+    /// 16 for `Mat4`). std140 column padding is applied on write.
+    pub fn ubo_set_mat(&self, ubo: UniformBufferId, path: &str, data: &[f32]) {
+        self.ubo_put(ubo, "ubo_set_mat", path, None, data);
     }
 }
 

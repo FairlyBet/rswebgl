@@ -2,7 +2,7 @@
 //!
 //! Each texture is created empty with its sampler parameters set immediately;
 //! the image content arrives later through the browser's image decoder (rswebgl
-//! `Texture::load_image` / `load_bytes`), which sizes storage, uploads, and
+//! `Context::texture_load_image` / `texture_load_bytes`), which sizes storage, uploads, and
 //! generates mipmaps on `onload`. We deliberately don't await the images — the
 //! model is usable right away and textures pop in as they decode.
 //!
@@ -13,8 +13,9 @@ use std::collections::HashSet;
 
 use rswebgl::console;
 use rswebgl::context::Context;
+use rswebgl::ids::TextureId;
 use rswebgl::texture::{
-    Texture, TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget, TextureWrap,
+    TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget, TextureWrap,
 };
 
 use crate::buffers::{data_uri_mime, decode_data_uri};
@@ -33,7 +34,7 @@ pub(crate) fn build_texture(
     base: &str,
     srgb: bool,
     on_load: js_sys::Function,
-) -> Texture {
+) -> TextureId {
     let sampler = tex.sampler();
     let (min, generate_mipmaps) = min_filter(sampler.min_filter());
     let mag = mag_filter(sampler.mag_filter());
@@ -43,8 +44,8 @@ pub(crate) fn build_texture(
     let out = ctx
         .create_texture(TextureTarget::Texture2D, min, mag)
         .expect("create_texture");
-    out.set_wrap_s(wrap(sampler.wrap_s()));
-    out.set_wrap_t(wrap(sampler.wrap_t()));
+    ctx.texture_set_wrap_s(out, wrap(sampler.wrap_s()));
+    ctx.texture_set_wrap_t(out, wrap(sampler.wrap_t()));
 
     // baseColor/emissive are authored in sRGB; data textures stay linear.
     let format = if srgb {
@@ -66,13 +67,28 @@ pub(crate) fn build_texture(
                             .map(str::to_string)
                             .or_else(|| data_uri_mime(uri))
                             .unwrap_or_else(|| "image/png".to_string());
-                        out.load_bytes(&bytes, &mime, &format, generate_mipmaps, flip_y, on_load);
+                        ctx.texture_load_bytes(
+                            out,
+                            &bytes,
+                            &mime,
+                            &format,
+                            generate_mipmaps,
+                            flip_y,
+                            on_load,
+                        );
                     }
                     Err(e) => console::error(&format!("[rswebgl-gltf] image data URI: {e:?}")),
                 }
             } else {
                 match resolve_url(base, uri) {
-                    Ok(abs) => out.load_image(&abs, &format, generate_mipmaps, flip_y, on_load),
+                    Ok(abs) => ctx.texture_load_image(
+                        out,
+                        &abs,
+                        &format,
+                        generate_mipmaps,
+                        flip_y,
+                        on_load,
+                    ),
                     Err(e) => console::error(&format!("[rswebgl-gltf] image URL: {e:?}")),
                 }
             }
@@ -82,9 +98,15 @@ pub(crate) fn build_texture(
             let start = view.offset();
             let end = start + view.length();
             match buffers.get(buf).and_then(|b| b.get(start..end)) {
-                Some(data) => {
-                    out.load_bytes(data, mime_type, &format, generate_mipmaps, flip_y, on_load)
-                }
+                Some(data) => ctx.texture_load_bytes(
+                    out,
+                    data,
+                    mime_type,
+                    &format,
+                    generate_mipmaps,
+                    flip_y,
+                    on_load,
+                ),
                 None => console::error("[rswebgl-gltf] image bufferView out of range"),
             }
         }

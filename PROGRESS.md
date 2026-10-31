@@ -39,9 +39,9 @@
 
 | Entity                      | Status | File                    |
 |-----------------------------|--------|-------------------------|
-| Scalar (float, int, uint)   | ✅     | `src/uniforms.rs`       |
-| Vector (vec2–4, ivec, uvec) | ✅     | `src/uniforms.rs`       |
-| Matrix (mat2–4, non-square) | ✅     | `src/uniforms.rs`       |
+| Scalar (float, int, uint)   | ✅     | `src/uniform_values.rs` |
+| Vector (vec2–4, ivec, uvec) | ✅     | `src/uniform_values.rs` |
+| Matrix (mat2–4, non-square) | ✅     | `src/uniform_values.rs` |
 | Sampler binding             | ✅     | `src/uniform_values.rs` |
 | Batch-level uniforms        | ✅     | `src/pass.rs`           |
 | Unset-uniform check (debug) | ✅     | `src/program.rs`        |
@@ -146,7 +146,7 @@
 | Extension registry                      | ✅     | `src/extension.rs`    |
 | Context loss / restore                  | ✅     | `src/context_loss.rs` |
 | KHR_parallel_compile                    | ✅     | `src/program.rs`      |
-| GL lifecycle (`Rc` handles, drop=delete)| ✅     | per object type       |
+| Resource pools + numeric handles, explicit destroy, deferred destroy while in use | ✅ | `src/context.rs`, `src/ids.rs` |
 
 ## Asset loading
 

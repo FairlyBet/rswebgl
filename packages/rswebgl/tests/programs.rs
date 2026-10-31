@@ -63,14 +63,14 @@ fn renderer_skips_program_that_failed_to_link() {
         .expect("deferred: no error until the link completes");
     let good = f.ctx.create_program(VERT, RED_FRAG).expect("program");
 
-    let mut bad_batch = Batch::new(&broken, &RenderState::new());
-    bad_batch.draw(&f.quad, &quad_uniforms(0, 0), cmd());
-    let mut good_batch = Batch::new(&good, &RenderState::new());
-    good_batch.draw(&f.quad, &quad_uniforms(1, 0), cmd());
+    let mut bad_batch = Batch::new(broken, &RenderState::new());
+    bad_batch.draw(f.quad, &quad_uniforms(0, 0), cmd());
+    let mut good_batch = Batch::new(good, &RenderState::new());
+    good_batch.draw(f.quad, &quad_uniforms(1, 0), cmd());
     render(&f, vec![bad_batch, good_batch]);
 
     assert_eq!(read_quads(&f.gl), [BLACK, RED, BLACK]);
-    assert!(broken.is_ready());
-    assert!(!broken.is_valid());
-    assert!(good.is_valid());
+    assert!(f.ctx.program_is_ready(broken));
+    assert!(!f.ctx.program_is_valid(broken));
+    assert!(f.ctx.program_is_valid(good));
 }

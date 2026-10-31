@@ -15,3 +15,7 @@ pub mod dirty;
 pub mod handle;
 pub mod layout;
 pub mod pool;
+
+// For `typed_handle!` expansions in other crates.
+#[doc(hidden)]
+pub use wasm_bindgen as __wasm_bindgen;

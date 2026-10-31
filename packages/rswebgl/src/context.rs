@@ -1,22 +1,24 @@
+use std::cell::{Cell, RefCell, RefMut};
 use std::rc::Rc;
 
+use rswebgl_foundation::handle::Handle;
+use rswebgl_foundation::pool::Pool;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext, WebglLoseContext};
 
-use crate::buffer::{Buffer, BufferKind, BufferUsage};
+use crate::buffer::BufferObj;
 use crate::console;
 use crate::context_loss::{self, LossState};
 use crate::draw::Viewport;
 use crate::extension::Extension;
-use crate::framebuffer::{DefaultFramebuffer, Framebuffer};
+use crate::framebuffer::{DefaultFramebuffer, FramebufferObj};
 use crate::limits;
-use crate::program::{Program, Validation};
-use crate::renderbuffer::{Renderbuffer, RenderbufferFormat};
-use crate::renderer::Renderer;
-use crate::texture::{Texture, TextureMagFilter, TextureMinFilter, TextureTarget};
-use crate::uniform_buffer::{UboLayout, UniformBuffer};
-use crate::vao::VertexArray;
+use crate::program::{ProgramObj, Validation};
+use crate::renderbuffer::RenderbufferObj;
+use crate::texture::TextureObj;
+use crate::uniform_buffer::UniformBufferObj;
+use crate::vao::VertexArrayObj;
 
 // ---------------------------------------------------------------------------
 // Context creation options (WebGLContextAttributes)
@@ -127,15 +129,109 @@ impl ContextOptions {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Resources — every GL object lives in one of these pools.
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+pub(crate) struct Resources {
+    pub(crate) buffers: Pool<BufferObj>,
+    pub(crate) textures: Pool<TextureObj>,
+    pub(crate) renderbuffers: Pool<RenderbufferObj>,
+    pub(crate) framebuffers: Pool<FramebufferObj>,
+    pub(crate) programs: Pool<ProgramObj>,
+    pub(crate) vertex_arrays: Pool<VertexArrayObj>,
+    pub(crate) uniform_buffers: Pool<UniformBufferObj>,
+}
+
+impl Resources {
+    // After a context loss: every GPU object is already gone, so the values are
+    // dropped without GL delete calls, and every outstanding handle goes stale.
+    fn forget_all(&mut self) {
+        self.buffers.drain();
+        self.textures.drain();
+        self.renderbuffers.drain();
+        self.framebuffers.drain();
+        self.programs.drain();
+        self.vertex_arrays.drain();
+        self.uniform_buffers.drain();
+    }
+}
+
+/// Reports a handle that doesn't resolve (destroyed, from before a context loss,
+/// or never issued), once per message.
+pub(crate) fn stale(kind: &str, op: &str, h: impl Into<Handle>) {
+    // Between a context loss and the app rebuilding in `on_restored`, render
+    // loops keep touching old handles: expected, not worth reporting.
+    if LOST_CONTEXTS.get() > 0 {
+        return;
+    }
+    console::error_once(&format!(
+        "[rswebgl] {op}: {kind} {:?} is destroyed or invalid; ignored",
+        h.into()
+    ));
+}
+
+thread_local! {
+    // Contexts currently lost (set by the loss listeners).
+    static LOST_CONTEXTS: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Tracks loss/restore so `stale` stays quiet while a context is lost.
+pub(crate) fn note_lost(lost: bool) {
+    LOST_CONTEXTS.set(if lost {
+        LOST_CONTEXTS.get() + 1
+    } else {
+        LOST_CONTEXTS.get().saturating_sub(1)
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Core — the single shared root behind every Context handle.
+// ---------------------------------------------------------------------------
+
+pub(crate) struct Core {
+    pub(crate) gl: WebGl2RenderingContext,
+    res: RefCell<Resources>,
+    // Set by a context-loss event that arrived while `res` was borrowed; the
+    // pools are cleared on the next access instead.
+    forget_pending: Cell<bool>,
+    pub(crate) default_fb: DefaultFramebuffer,
+    pub(crate) validate: Cell<Validation>,
+    pub(crate) loss: LossState,
+}
+
+impl Core {
+    /// The resource pools. Not reentrant: never call user code while holding it.
+    pub(crate) fn res(&self) -> RefMut<'_, Resources> {
+        let mut res = self.res.borrow_mut();
+        if self.forget_pending.replace(false) {
+            res.forget_all();
+        }
+        res
+    }
+
+    pub(crate) fn forget_all(&self) {
+        match self.res.try_borrow_mut() {
+            Ok(mut res) => res.forget_all(),
+            Err(_) => self.forget_pending.set(true),
+        }
+    }
+}
+
+/// A WebGL2 context and every GPU object created on it.
+///
+/// Resources are created and used through the context and identified by
+/// numeric handles (`TextureId`, `BufferId`, …). A handle is just a number: copy
+/// it, store it, pass it to JS. The object lives until its `destroy_*` call;
+/// after that (or after a context loss) the handle is detected as stale.
+///
+/// `Context` itself is a cheap handle to shared state — clone it into render
+/// loops and callbacks.
 #[wasm_bindgen]
+#[derive(Clone)]
 pub struct Context {
-    gl: WebGl2RenderingContext,
-    // Enabled extensions + loss/restore callbacks, shared with the canvas listeners.
-    loss: Rc<LossState>,
-    renderer: Renderer,
-    default_fb: DefaultFramebuffer,
-    // Debug checks for programs created from now on; all on by default.
-    validate: Validation,
+    pub(crate) core: Rc<Core>,
 }
 
 #[wasm_bindgen]
@@ -160,24 +256,23 @@ impl Context {
         Ok(Context::new(gl, default_fb))
     }
 
-    /// Whether the context is currently lost. While it is, `Renderer::render`
-    /// does nothing and `create_*` return an error.
+    /// Whether the context is currently lost. While it is, `render` does
+    /// nothing and `create_*` return an error.
     pub fn is_lost(&self) -> bool {
-        self.gl.is_context_lost()
+        self.core.gl.is_context_lost()
     }
 
-    /// JS: called when the context is lost. Everything created so far is dead.
+    /// JS: called when the context is lost. Every handle is dead from here on.
     pub fn set_on_lost(&self, f: js_sys::Function) {
-        self.on_lost(move || {
+        self.on_lost(move |_| {
             let _ = f.call0(&JsValue::NULL);
         });
     }
 
     /// JS: called once the context is back (extensions already re-enabled).
-    /// Recreate every buffer, texture, program, … here and rebuild the passes;
-    /// handles from before the loss are dead and only safe to drop.
+    /// Recreate every resource here; handles from before the loss are stale.
     pub fn set_on_restored(&self, f: js_sys::Function) {
-        self.on_restored(move || {
+        self.on_restored(move |_| {
             let _ = f.call0(&JsValue::NULL);
         });
     }
@@ -186,6 +281,7 @@ impl Context {
     /// the restore path. Returns false if the extension isn't available.
     pub fn simulate_context_loss(&self) -> bool {
         let Some(ext) = self
+            .core
             .gl
             .get_extension(Extension::WebglLoseContext.name())
             .ok()
@@ -195,7 +291,7 @@ impl Context {
         };
         let ext: WebglLoseContext = ext.unchecked_into();
         ext.lose_context();
-        *self.loss.lose_ext.borrow_mut() = Some(ext);
+        *self.core.loss.lose_ext.borrow_mut() = Some(ext);
         true
     }
 
@@ -203,7 +299,8 @@ impl Context {
     /// restore (and `on_restored`) happens asynchronously. Returns false if no
     /// simulated loss is pending.
     pub fn simulate_context_restore(&self) -> bool {
-        match self.loss.lose_ext.borrow_mut().take() {
+        let ext = self.core.loss.lose_ext.borrow_mut().take();
+        match ext {
             Some(ext) => {
                 ext.restore_context();
                 true
@@ -216,24 +313,24 @@ impl Context {
     /// against the shader on first bind (a one-time introspection check per block;
     /// the per-frame upload path is never affected). On by default — turn off to
     /// skip the check in release builds.
-    pub fn set_validate_uniform_blocks(&mut self, on: bool) {
-        self.validate.blocks = on;
+    pub fn set_validate_uniform_blocks(&self, on: bool) {
+        let mut v = self.core.validate.get();
+        v.blocks = on;
+        self.core.validate.set(v);
     }
 
     /// Whether programs created from now on report (once per name) active
     /// uniforms that a draw gets from neither its batch nor itself — such a
     /// uniform silently keeps whatever an earlier draw left. Costs a lookup per
     /// active uniform per draw; on by default — turn off in release builds.
-    pub fn set_validate_uniforms(&mut self, on: bool) {
-        self.validate.uniforms = on;
-    }
-
-    pub fn renderer(&self) -> Renderer {
-        self.renderer.handle()
+    pub fn set_validate_uniforms(&self, on: bool) {
+        let mut v = self.core.validate.get();
+        v.uniforms = on;
+        self.core.validate.set(v);
     }
 
     pub fn default_framebuffer(&self) -> DefaultFramebuffer {
-        self.default_fb.handle()
+        self.core.default_fb.handle()
     }
 
     /// Enables an extension; it's re-enabled automatically after a context restore.
@@ -242,11 +339,17 @@ impl Context {
             return true;
         }
 
-        let available = self.gl.get_extension(ext.name()).ok().flatten().is_some();
+        let available = self
+            .core
+            .gl
+            .get_extension(ext.name())
+            .ok()
+            .flatten()
+            .is_some();
 
         if available {
             console::log(&format!("[rswebgl] extension enabled: {}", ext.name()));
-            self.loss.extensions.borrow_mut().push(ext);
+            self.core.loss.extensions.borrow_mut().push(ext);
         } else {
             console::warn(&format!(
                 "[rswebgl] extension not available: {}",
@@ -258,121 +361,54 @@ impl Context {
     }
 
     pub fn is_extension_enabled(&self, ext: Extension) -> bool {
-        self.loss.extensions.borrow().iter().any(|e| e == &ext)
-    }
-
-    pub fn create_buffer(&self, usage: BufferUsage, data: &[u8]) -> Result<Buffer, String> {
-        self.check_alive()?;
-        Buffer::new(&self.gl, BufferKind::Generic, usage, data)
-    }
-
-    pub fn create_empty_buffer(&self, usage: BufferUsage, size: u32) -> Result<Buffer, String> {
-        self.check_alive()?;
-        Buffer::new_empty(&self.gl, BufferKind::Generic, usage, size)
-    }
-
-    pub fn create_texture(
-        &self,
-        target: TextureTarget,
-        min_filter: TextureMinFilter,
-        mag_filter: TextureMagFilter,
-    ) -> Result<Texture, String> {
-        self.check_alive()?;
-        Texture::new(&self.gl, target, min_filter, mag_filter)
-    }
-
-    pub fn create_vertex_array(&self) -> Result<VertexArray, String> {
-        self.check_alive()?;
-        VertexArray::new(&self.gl)
-    }
-
-    /// Allocate a uniform block backed by a GL buffer, laid out per std140 from
-    /// `layout`. Fields are addressed by path (e.g. `"lights[2].color"`).
-    pub fn create_uniform_buffer(
-        &self,
-        layout: &UboLayout,
-        usage: BufferUsage,
-    ) -> Result<UniformBuffer, String> {
-        self.check_alive()?;
-        UniformBuffer::new(&self.gl, layout, usage)
-    }
-
-    pub fn create_framebuffer(&self, width: i32, height: i32) -> Result<Framebuffer, String> {
-        self.check_alive()?;
-        Framebuffer::new(&self.gl, width, height)
-    }
-
-    pub fn create_renderbuffer(
-        &self,
-        format: RenderbufferFormat,
-        width: i32,
-        height: i32,
-    ) -> Result<Renderbuffer, String> {
-        self.check_alive()?;
-        Renderbuffer::new(&self.gl, format, width, height)
-    }
-
-    pub fn create_renderbuffer_multisample(
-        &self,
-        format: RenderbufferFormat,
-        samples: i32,
-        width: i32,
-        height: i32,
-    ) -> Result<Renderbuffer, String> {
-        self.check_alive()?;
-        Renderbuffer::new_multisample(&self.gl, format, samples, width, height)
-    }
-
-    pub fn create_program(&self, vert_src: &str, frag_src: &str) -> Result<Program, String> {
-        self.check_alive()?;
-        let parallel = self.is_extension_enabled(Extension::KhrParallelShaderCompile);
-        Program::new(&self.gl, vert_src, frag_src, parallel, self.validate)
+        self.core.loss.extensions.borrow().iter().any(|e| e == &ext)
     }
 }
 
 impl Context {
     fn new(gl: WebGl2RenderingContext, default_fb: DefaultFramebuffer) -> Context {
         limits::init(&gl);
-        let loss = LossState::new();
-        context_loss::install(&gl, &loss);
-        let renderer = Renderer::new(gl.clone(), default_fb.handle());
-        Context {
+        let core = Rc::new(Core {
             gl,
-            loss,
-            renderer,
+            res: RefCell::new(Resources::default()),
+            forget_pending: Cell::new(false),
             default_fb,
-            validate: Validation {
+            validate: Cell::new(Validation {
                 blocks: true,
                 uniforms: true,
-            },
-        }
+            }),
+            loss: LossState::new(),
+        });
+        context_loss::install(&core);
+        Context { core }
     }
 
-    /// Called when the context is lost. Everything created so far is dead.
-    pub fn on_lost(&self, f: impl FnMut() + 'static) {
-        *self.loss.on_lost.borrow_mut() = Some(Box::new(f));
+    /// Called when the context is lost. Every handle is dead from here on.
+    pub fn on_lost(&self, f: impl FnMut(&Context) + 'static) {
+        *self.core.loss.on_lost.borrow_mut() = Some(Box::new(f));
     }
 
-    /// Called once the context is back (extensions already re-enabled). Recreate
-    /// every buffer, texture, program, … here and rebuild the passes; handles
-    /// from before the loss are dead and only safe to drop.
-    pub fn on_restored(&self, f: impl FnMut() + 'static) {
-        *self.loss.on_restored.borrow_mut() = Some(Box::new(f));
+    /// Called once the context is back (extensions already re-enabled), with the
+    /// context to recreate every resource on; handles from before the loss are
+    /// stale. Taking the context as an argument (rather than capturing a clone)
+    /// avoids a reference cycle through the context's own callback slot.
+    pub fn on_restored(&self, f: impl FnMut(&Context) + 'static) {
+        *self.core.loss.on_restored.borrow_mut() = Some(Box::new(f));
     }
 
-    fn check_alive(&self) -> Result<(), String> {
-        if self.gl.is_context_lost() {
+    pub(crate) fn check_alive(&self) -> Result<(), String> {
+        if self.core.gl.is_context_lost() {
             Err("WebGL context is lost".into())
         } else {
             Ok(())
         }
     }
 
-    // Internal raw-context accessor for builders within this crate. Deliberately
-    // not public: handing the live WebGl2RenderingContext to users would let them
-    // mutate global GL state behind the renderer's back — the desync hazard the
-    // pass-based renderer exists to remove.
-    pub(crate) fn gl(&self) -> WebGl2RenderingContext {
-        self.gl.clone()
+    pub(crate) fn gl(&self) -> &WebGl2RenderingContext {
+        &self.core.gl
+    }
+
+    pub(crate) fn res(&self) -> RefMut<'_, Resources> {
+        self.core.res()
     }
 }

@@ -3,11 +3,12 @@ use std::collections::BTreeSet;
 use wasm_bindgen::prelude::*;
 use web_sys::WebGl2RenderingContext;
 
-use crate::buffer::{Buffer, BufferKind, BufferUsage};
+use crate::buffer::BufferUsage;
 use crate::console;
 use crate::context::Context;
+use crate::ids::{BufferId, VertexArrayId};
 use crate::limits;
-use crate::vao::{VertexArray, VertexAttr};
+use crate::vao::VertexAttr;
 
 // ---------------------------------------------------------------------------
 // AttrKind
@@ -216,9 +217,12 @@ struct IndexEntry {
     data: Vec<u8>,
 }
 
+/// Builds a vertex array from per-attribute arrays: interleaves them into one
+/// vertex buffer (plus an optional index buffer) that the vertex array owns —
+/// `destroy_vertex_array` destroys them too.
 #[wasm_bindgen]
 pub struct VaoBuilder {
-    gl: WebGl2RenderingContext,
+    ctx: Context,
     attrs: Vec<AttrEntry>,
     indices: Option<IndexEntry>,
 }
@@ -234,7 +238,7 @@ impl VaoBuilder {
     #[wasm_bindgen(constructor)]
     pub fn new(ctx: &Context) -> Self {
         Self {
-            gl: ctx.gl(),
+            ctx: ctx.clone(),
             attrs: Vec::new(),
             indices: None,
         }
@@ -333,13 +337,19 @@ impl VaoBuilder {
         });
     }
 
-    pub fn build(self) -> Result<VertexArray, String> {
-        let vao = VertexArray::new(&self.gl)?;
-        self.build_into(&vao)?;
+    pub fn build(self) -> Result<VertexArrayId, String> {
+        let ctx = self.ctx.clone();
+        let vao = ctx.create_vertex_array()?;
+        if let Err(e) = self.build_into(vao) {
+            ctx.destroy_vertex_array(vao);
+            return Err(e);
+        }
         Ok(vao)
     }
 
-    pub fn build_into(self, vao: &VertexArray) -> Result<(), String> {
+    /// Configures an existing vertex array. The buffers created here are owned
+    /// by it and destroyed with it.
+    pub fn build_into(self, vao: VertexArrayId) -> Result<(), String> {
         // 1. Source type matches declared kind
         for e in &self.attrs {
             let expected = e.kind.desc().gl_type;
@@ -440,12 +450,9 @@ impl VaoBuilder {
         }
 
         // 6. Upload
-        let vbo = Buffer::new(
-            &self.gl,
-            BufferKind::Generic,
-            BufferUsage::StaticDraw,
-            &interleaved,
-        )?;
+        let ctx = &self.ctx;
+        let vbo = ctx.create_buffer(BufferUsage::StaticDraw, &interleaved)?;
+        ctx.own_buffer(vao, vbo);
 
         // 7. Configure attribs — one vertex_attrib_pointer per slot for matrices
         for (e, &off) in self.attrs.iter().zip(offsets.iter()) {
@@ -455,22 +462,27 @@ impl VaoBuilder {
             attr.stride = stride as i32;
             for s in 0..d.slots {
                 attr.offset = (off + s * slot_bytes) as i32;
-                vao.attr(e.index + s, &vbo, &attr);
+                ctx.vertex_array_attr(vao, e.index + s, vbo, &attr);
             }
         }
 
         // 8. Index buffer (optional)
         if let Some(idx) = &self.indices {
-            let ibo = Buffer::new(
-                &self.gl,
-                BufferKind::Index,
-                BufferUsage::StaticDraw,
-                &idx.data,
-            )?;
-            vao.set_index_buffer(&ibo);
+            let ibo = ctx.create_index_buffer(BufferUsage::StaticDraw, &idx.data)?;
+            ctx.own_buffer(vao, ibo);
+            ctx.vertex_array_set_index_buffer(vao, ibo);
             let _ = idx.gl_type; // tracked for future API (e.g. expose IndexType to caller)
         }
 
         Ok(())
+    }
+}
+
+impl Context {
+    // Makes `buffer` destroyed together with `vao`.
+    pub(crate) fn own_buffer(&self, vao: VertexArrayId, buffer: BufferId) {
+        if let Some(v) = self.res().vertex_arrays.get_mut(vao.0) {
+            v.owned.push(buffer);
+        }
     }
 }

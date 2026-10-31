@@ -1,17 +1,18 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use rswebgl_foundation::pool::{Destroyed, Pool};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, ResizeObserver, WebGl2RenderingContext, WebGlFramebuffer};
 
 use crate::console;
-use crate::context::ColorSpace;
-use crate::context_loss;
+use crate::context::{ColorSpace, Context, Resources, stale};
 use crate::draw::Viewport;
+use crate::ids::{FramebufferId, RenderbufferId, TextureId};
 use crate::limits;
-use crate::renderbuffer::Renderbuffer;
-use crate::texture::{CubeMapFace, Texture};
+use crate::renderbuffer::RenderbufferObj;
+use crate::texture::{CubeMapFace, TextureObj};
 
 // ---------------------------------------------------------------------------
 // ClearMask
@@ -342,59 +343,60 @@ impl DefaultFramebuffer {
 // ---------------------------------------------------------------------------
 //
 // Internal enums (wasm_bindgen can't carry data through variants, so the public
-// surface is builder methods on Framebuffer instead). Each variant *owns* a
-// clone of the texture/renderbuffer — the implicit "FBO references this object"
-// GL binding becomes explicit Rust ownership, and the resource lives at least as
-// long as the FBO via its shared handle. The three texture variants encode the only
-// three ways WebGL2 attaches a texture: a 2D image, a cube-map face, or a layer
-// of a 3D / 2D-array texture.
+// surface is `framebuffer_attach_*` methods instead). An attached texture or
+// renderbuffer is *in use* by the framebuffer (a use count in its pool):
+// destroying it while attached is deferred until the framebuffer lets go. The
+// three texture variants encode the only three ways WebGL2 attaches a texture:
+// a 2D image, a cube-map face, or a layer of a 3D / 2D-array texture.
 
+#[derive(Clone, Copy)]
 enum ColorAttachment {
     Texture2D {
-        tex: Texture,
+        tex: TextureId,
         level: i32,
     },
     CubeFace {
-        tex: Texture,
+        tex: TextureId,
         face: CubeMapFace,
         level: i32,
     },
     Layer {
-        tex: Texture,
+        tex: TextureId,
         level: i32,
         layer: i32,
     },
-    Renderbuffer(Renderbuffer),
+    Renderbuffer(RenderbufferId),
+}
+
+// What an attachment keeps in use.
+#[derive(Clone, Copy)]
+enum Source {
+    Texture(TextureId),
+    Renderbuffer(RenderbufferId),
 }
 
 impl ColorAttachment {
-    fn texture(&self) -> Option<Texture> {
-        match self {
+    fn source(&self) -> Source {
+        match *self {
             ColorAttachment::Texture2D { tex, .. }
             | ColorAttachment::CubeFace { tex, .. }
-            | ColorAttachment::Layer { tex, .. } => Some(tex.clone()),
-            ColorAttachment::Renderbuffer(_) => None,
-        }
-    }
-
-    fn renderbuffer(&self) -> Option<Renderbuffer> {
-        match self {
-            ColorAttachment::Renderbuffer(rb) => Some(rb.clone()),
-            _ => None,
+            | ColorAttachment::Layer { tex, .. } => Source::Texture(tex),
+            ColorAttachment::Renderbuffer(rb) => Source::Renderbuffer(rb),
         }
     }
 }
 
 // `stencil` flags a combined depth-stencil attachment (DEPTH_STENCIL_ATTACHMENT)
 // vs depth-only (DEPTH_ATTACHMENT).
+#[derive(Clone, Copy)]
 enum DepthAttachment {
     Texture {
-        tex: Texture,
+        tex: TextureId,
         level: i32,
         stencil: bool,
     },
     Renderbuffer {
-        rb: Renderbuffer,
+        rb: RenderbufferId,
         stencil: bool,
     },
 }
@@ -415,17 +417,51 @@ impl DepthAttachment {
         }
     }
 
-    fn texture(&self) -> Option<Texture> {
-        match self {
-            DepthAttachment::Texture { tex, .. } => Some(tex.clone()),
-            _ => None,
+    fn source(&self) -> Source {
+        match *self {
+            DepthAttachment::Texture { tex, .. } => Source::Texture(tex),
+            DepthAttachment::Renderbuffer { rb, .. } => Source::Renderbuffer(rb),
         }
     }
+}
 
-    fn renderbuffer(&self) -> Option<Renderbuffer> {
-        match self {
-            DepthAttachment::Renderbuffer { rb, .. } => Some(rb.clone()),
-            _ => None,
+// Starts using an attachment source; false if its handle is stale.
+fn retain(
+    src: Source,
+    textures: &mut Pool<TextureObj>,
+    renderbuffers: &mut Pool<RenderbufferObj>,
+    op: &str,
+) -> bool {
+    let ok = match src {
+        Source::Texture(t) => textures.retain(t.0),
+        Source::Renderbuffer(r) => renderbuffers.retain(r.0),
+    };
+    if !ok {
+        match src {
+            Source::Texture(t) => stale("texture", op, t),
+            Source::Renderbuffer(r) => stale("renderbuffer", op, r),
+        }
+    }
+    ok
+}
+
+// Stops using an attachment source; deletes it if it was destroyed meanwhile.
+fn release(
+    src: Source,
+    textures: &mut Pool<TextureObj>,
+    renderbuffers: &mut Pool<RenderbufferObj>,
+    gl: &WebGl2RenderingContext,
+) {
+    match src {
+        Source::Texture(t) => {
+            if let Some(obj) = textures.release(t.0) {
+                obj.delete(gl);
+            }
+        }
+        Source::Renderbuffer(r) => {
+            if let Some(obj) = renderbuffers.release(r.0) {
+                obj.delete(gl);
+            }
         }
     }
 }
@@ -450,14 +486,12 @@ impl Default for ColorClearValue {
     }
 }
 
-struct FramebufferInner {
-    gl: WebGl2RenderingContext,
-    raw: WebGlFramebuffer,
-    // Context generation it was created in (see context_loss).
-    generation: u32,
+/// A framebuffer in the context's pool.
+pub(crate) struct FramebufferObj {
+    pub(crate) raw: WebGlFramebuffer,
     width: i32,
     height: i32,
-    viewport: Viewport,
+    pub(crate) viewport: Viewport,
     color: Vec<Option<ColorAttachment>>,
     depth: Option<DepthAttachment>,
     // Indexed in lockstep with `color`; missing entries default to opaque black.
@@ -466,86 +500,92 @@ struct FramebufferInner {
     clear_stencil: i32,
 }
 
-impl Drop for FramebufferInner {
-    fn drop(&mut self) {
-        if context_loss::is_current(&self.gl, self.generation) {
-            self.gl.delete_framebuffer(Some(&self.raw));
-        }
-    }
-}
-
 // Attach/detach are eager: they bind this FBO and issue the GL call immediately,
 // leaving it bound. In WebGL *any* object mutates global state, so there is no
-// point pretending otherwise — instead the Renderer re-binds its target at the
+// point pretending otherwise — instead the renderer re-binds its target at the
 // start of every pass and trusts nothing carried over. The helpers below assume
 // the FBO is already bound; the public methods bind first.
 
-fn bind(inner: &FramebufferInner) {
-    inner
-        .gl
-        .bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&inner.raw));
-}
-
-fn apply_color(gl: &WebGl2RenderingContext, point: u32, att: &ColorAttachment) {
-    match att {
-        ColorAttachment::Texture2D { tex, level } => gl.framebuffer_texture_2d(
+fn apply_color(
+    gl: &WebGl2RenderingContext,
+    point: u32,
+    att: &ColorAttachment,
+    textures: &Pool<TextureObj>,
+    renderbuffers: &Pool<RenderbufferObj>,
+) {
+    let tex = |t: TextureId| textures.get(t.0).map(|o| &o.raw);
+    match *att {
+        ColorAttachment::Texture2D { tex: t, level } => gl.framebuffer_texture_2d(
             WebGl2RenderingContext::FRAMEBUFFER,
             point,
             WebGl2RenderingContext::TEXTURE_2D,
-            Some(tex.raw_gl()),
-            *level,
+            tex(t),
+            level,
         ),
-        ColorAttachment::CubeFace { tex, face, level } => gl.framebuffer_texture_2d(
+        ColorAttachment::CubeFace {
+            tex: t,
+            face,
+            level,
+        } => gl.framebuffer_texture_2d(
             WebGl2RenderingContext::FRAMEBUFFER,
             point,
             face.as_gl(),
-            Some(tex.raw_gl()),
-            *level,
+            tex(t),
+            level,
         ),
-        ColorAttachment::Layer { tex, level, layer } => gl.framebuffer_texture_layer(
+        ColorAttachment::Layer {
+            tex: t,
+            level,
+            layer,
+        } => gl.framebuffer_texture_layer(
             WebGl2RenderingContext::FRAMEBUFFER,
             point,
-            Some(tex.raw_gl()),
-            *level,
-            *layer,
+            tex(t),
+            level,
+            layer,
         ),
         ColorAttachment::Renderbuffer(rb) => gl.framebuffer_renderbuffer(
             WebGl2RenderingContext::FRAMEBUFFER,
             point,
             WebGl2RenderingContext::RENDERBUFFER,
-            Some(rb.raw_gl()),
+            renderbuffers.get(rb.0).map(|o| &o.raw),
         ),
     }
 }
 
-fn apply_depth(gl: &WebGl2RenderingContext, depth: &DepthAttachment) {
+fn apply_depth(
+    gl: &WebGl2RenderingContext,
+    depth: &DepthAttachment,
+    textures: &Pool<TextureObj>,
+    renderbuffers: &Pool<RenderbufferObj>,
+) {
     let point = depth.attachment_point();
-    match depth {
+    match *depth {
         DepthAttachment::Texture { tex, level, .. } => gl.framebuffer_texture_2d(
             WebGl2RenderingContext::FRAMEBUFFER,
             point,
             WebGl2RenderingContext::TEXTURE_2D,
-            Some(tex.raw_gl()),
-            *level,
+            textures.get(tex.0).map(|o| &o.raw),
+            level,
         ),
         DepthAttachment::Renderbuffer { rb, .. } => gl.framebuffer_renderbuffer(
             WebGl2RenderingContext::FRAMEBUFFER,
             point,
             WebGl2RenderingContext::RENDERBUFFER,
-            Some(rb.raw_gl()),
+            renderbuffers.get(rb.0).map(|o| &o.raw),
         ),
     }
 }
 
 // `draw_buffers` is per-FBO state, so it's part of realization too.
-fn sync_draw_buffers(inner: &FramebufferInner, gl: &WebGl2RenderingContext) {
+fn sync_draw_buffers(fb: &FramebufferObj, gl: &WebGl2RenderingContext) {
     let arr = js_sys::Array::new();
-    if inner.color.iter().all(|s| s.is_none()) {
+    if fb.color.iter().all(|s| s.is_none()) {
         // Depth/stencil-only (or empty) FBO: a single NONE tells GL there's no
         // color output, otherwise the default [COLOR_ATTACHMENT0] would dangle.
         arr.push(&JsValue::from(WebGl2RenderingContext::NONE));
     } else {
-        for (i, slot) in inner.color.iter().enumerate() {
+        for (i, slot) in fb.color.iter().enumerate() {
             let v = if slot.is_some() {
                 WebGl2RenderingContext::COLOR_ATTACHMENT0 + i as u32
             } else {
@@ -574,158 +614,60 @@ fn detach_depth_points(gl: &WebGl2RenderingContext) {
     );
 }
 
-// Binds the FBO and pushes color slot `index` (attach or detach) to GL, then
-// refreshes drawBuffers. The slot must already be set in `inner`.
-fn realize_color_slot(inner: &FramebufferInner, index: u32) {
-    bind(inner);
-    let point = WebGl2RenderingContext::COLOR_ATTACHMENT0 + index;
-    match inner.color.get(index as usize).and_then(|o| o.as_ref()) {
-        Some(att) => apply_color(&inner.gl, point, att),
-        None => inner.gl.framebuffer_texture_2d(
-            WebGl2RenderingContext::FRAMEBUFFER,
-            point,
-            WebGl2RenderingContext::TEXTURE_2D,
-            None,
-            0,
-        ),
-    }
-    sync_draw_buffers(inner, &inner.gl);
-}
-
-// Binds the FBO and pushes the current depth attachment (or its absence) to GL.
-fn realize_depth(inner: &FramebufferInner) {
-    bind(inner);
-    detach_depth_points(&inner.gl);
-    if let Some(depth) = &inner.depth {
-        apply_depth(&inner.gl, depth);
-    }
-}
-
-fn store_color(inner: &mut FramebufferInner, index: u32, att: ColorAttachment) {
-    let idx = index as usize;
-    if idx >= inner.color.len() {
-        inner.color.resize_with(idx + 1, || None);
-    }
-    inner.color[idx] = Some(att);
-}
-
-fn set_color_clear(inner: &mut FramebufferInner, index: u32, val: ColorClearValue) {
-    let idx = index as usize;
-    if idx >= inner.color_clear.len() {
-        inner
-            .color_clear
-            .resize(idx + 1, ColorClearValue::default());
-    }
-    inner.color_clear[idx] = val;
-}
-
-// Clears the bound FBO per-attachment with the correctly typed clearBuffer* call.
-// (Float/Int/Uint color, float depth, int stencil, fused depth-stencil.)
-fn clear_framebuffer(inner: &FramebufferInner, gl: &WebGl2RenderingContext, mask: ClearMask) {
-    if mask.color {
-        for (i, slot) in inner.color.iter().enumerate() {
-            if slot.is_none() {
-                continue;
-            }
-            let drawbuffer = i as i32;
-            match inner.color_clear.get(i).copied().unwrap_or_default() {
-                ColorClearValue::Float(v) => {
-                    gl.clear_bufferfv_with_f32_array(WebGl2RenderingContext::COLOR, drawbuffer, &v)
-                }
-                ColorClearValue::Int(v) => {
-                    gl.clear_bufferiv_with_i32_array(WebGl2RenderingContext::COLOR, drawbuffer, &v)
-                }
-                ColorClearValue::Uint(v) => {
-                    gl.clear_bufferuiv_with_u32_array(WebGl2RenderingContext::COLOR, drawbuffer, &v)
-                }
-            }
-        }
-    }
-    // One fused call when both are wanted (also correct for separate depth/stencil
-    // attachments); otherwise the individual typed clears.
-    if mask.depth && mask.stencil {
-        gl.clear_bufferfi(
-            WebGl2RenderingContext::DEPTH_STENCIL,
-            0,
-            inner.clear_depth,
-            inner.clear_stencil,
-        );
-    } else if mask.depth {
-        gl.clear_bufferfv_with_f32_array(WebGl2RenderingContext::DEPTH, 0, &[inner.clear_depth]);
-    } else if mask.stencil {
-        gl.clear_bufferiv_with_i32_array(
-            WebGl2RenderingContext::STENCIL,
-            0,
-            &[inner.clear_stencil],
-        );
-    }
-}
-
-#[wasm_bindgen]
-pub struct Framebuffer {
-    inner: Rc<RefCell<FramebufferInner>>,
-}
-
-impl Clone for Framebuffer {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Rc::clone(&self.inner),
-        }
-    }
-}
-
-impl PartialEq for Framebuffer {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.inner, &other.inner)
-    }
-}
-
-impl Eq for Framebuffer {}
-
-impl Framebuffer {
-    pub(crate) fn new(
-        gl: &WebGl2RenderingContext,
-        width: i32,
-        height: i32,
-    ) -> Result<Self, String> {
-        let raw = gl.create_framebuffer().ok_or("createFramebuffer failed")?;
-        Ok(Self {
-            inner: Rc::new(RefCell::new(FramebufferInner {
-                gl: gl.clone(),
-                raw,
-                generation: context_loss::generation(gl),
-                width,
-                height,
-                viewport: Viewport::new(0, 0, width, height),
-                color: Vec::new(),
-                depth: None,
-                color_clear: Vec::new(),
-                clear_depth: 1.0,
-                clear_stencil: 0,
-            })),
-        })
-    }
-
-    pub(crate) fn raw_gl(&self) -> WebGlFramebuffer {
-        self.inner.borrow().raw.clone()
-    }
-
-    pub(crate) fn viewport(&self) -> Viewport {
-        self.inner.borrow().viewport
-    }
-
+impl FramebufferObj {
     // Clears this FBO's attachments per the mask, using each attachment's typed
-    // clear value. The FBO must already be bound (the Renderer ensures this).
+    // clear value. The FBO must already be bound (the renderer ensures this).
     pub(crate) fn clear(&self, gl: &WebGl2RenderingContext, mask: ClearMask) {
-        clear_framebuffer(&self.inner.borrow(), gl, mask);
+        if mask.color {
+            for (i, slot) in self.color.iter().enumerate() {
+                if slot.is_none() {
+                    continue;
+                }
+                let drawbuffer = i as i32;
+                match self.color_clear.get(i).copied().unwrap_or_default() {
+                    ColorClearValue::Float(v) => gl.clear_bufferfv_with_f32_array(
+                        WebGl2RenderingContext::COLOR,
+                        drawbuffer,
+                        &v,
+                    ),
+                    ColorClearValue::Int(v) => gl.clear_bufferiv_with_i32_array(
+                        WebGl2RenderingContext::COLOR,
+                        drawbuffer,
+                        &v,
+                    ),
+                    ColorClearValue::Uint(v) => gl.clear_bufferuiv_with_u32_array(
+                        WebGl2RenderingContext::COLOR,
+                        drawbuffer,
+                        &v,
+                    ),
+                }
+            }
+        }
+        // One fused call when both are wanted (also correct for separate
+        // depth/stencil attachments); otherwise the individual typed clears.
+        if mask.depth && mask.stencil {
+            gl.clear_bufferfi(
+                WebGl2RenderingContext::DEPTH_STENCIL,
+                0,
+                self.clear_depth,
+                self.clear_stencil,
+            );
+        } else if mask.depth {
+            gl.clear_bufferfv_with_f32_array(WebGl2RenderingContext::DEPTH, 0, &[self.clear_depth]);
+        } else if mask.stencil {
+            gl.clear_bufferiv_with_i32_array(
+                WebGl2RenderingContext::STENCIL,
+                0,
+                &[self.clear_stencil],
+            );
+        }
     }
 
     // Pushes the GL attachment-point enums selected by `mask` (only those that
     // are actually attached) into `arr`, for invalidateFramebuffer.
     pub(crate) fn collect_invalidate_attachments(&self, arr: &js_sys::Array, mask: InvalidateMask) {
-        let s = self.inner.borrow();
         if mask.color {
-            for (i, slot) in s.color.iter().enumerate() {
+            for (i, slot) in self.color.iter().enumerate() {
                 if slot.is_some() {
                     arr.push(&JsValue::from(
                         WebGl2RenderingContext::COLOR_ATTACHMENT0 + i as u32,
@@ -733,7 +675,7 @@ impl Framebuffer {
                 }
             }
         }
-        if let Some(depth) = &s.depth {
+        if let Some(depth) = &self.depth {
             if depth.is_stencil() {
                 if mask.depth || mask.stencil {
                     arr.push(&JsValue::from(
@@ -745,218 +687,418 @@ impl Framebuffer {
             }
         }
     }
+
+    fn set_color_clear(&mut self, index: u32, val: ColorClearValue) {
+        let idx = index as usize;
+        if idx >= self.color_clear.len() {
+            self.color_clear.resize(idx + 1, ColorClearValue::default());
+        }
+        self.color_clear[idx] = val;
+    }
+}
+
+impl Context {
+    // Puts `att` in color slot `index` (None detaches): retains the new source,
+    // pushes the slot to GL, then releases the previous source.
+    fn set_color_slot(
+        &self,
+        fb: FramebufferId,
+        index: u32,
+        att: Option<ColorAttachment>,
+        op: &str,
+    ) {
+        if !color_index_in_range(index) {
+            return;
+        }
+        let gl = self.gl();
+        let res = &mut *self.res();
+        let Resources {
+            framebuffers,
+            textures,
+            renderbuffers,
+            ..
+        } = res;
+        let Some(f) = framebuffers.get_mut(fb.0) else {
+            return stale("framebuffer", op, fb);
+        };
+        if let Some(a) = &att
+            && !retain(a.source(), textures, renderbuffers, op)
+        {
+            return;
+        }
+
+        let idx = index as usize;
+        if idx >= f.color.len() {
+            f.color.resize(idx + 1, None);
+        }
+        let prev = std::mem::replace(&mut f.color[idx], att);
+
+        gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&f.raw));
+        let point = WebGl2RenderingContext::COLOR_ATTACHMENT0 + index;
+        match &f.color[idx] {
+            Some(a) => apply_color(gl, point, a, textures, renderbuffers),
+            None => gl.framebuffer_texture_2d(
+                WebGl2RenderingContext::FRAMEBUFFER,
+                point,
+                WebGl2RenderingContext::TEXTURE_2D,
+                None,
+                0,
+            ),
+        }
+        sync_draw_buffers(f, gl);
+
+        if let Some(p) = prev {
+            release(p.source(), textures, renderbuffers, gl);
+        }
+    }
+
+    // Same for the depth / depth-stencil slot.
+    fn set_depth_slot(&self, fb: FramebufferId, att: Option<DepthAttachment>, op: &str) {
+        let gl = self.gl();
+        let res = &mut *self.res();
+        let Resources {
+            framebuffers,
+            textures,
+            renderbuffers,
+            ..
+        } = res;
+        let Some(f) = framebuffers.get_mut(fb.0) else {
+            return stale("framebuffer", op, fb);
+        };
+        if let Some(a) = &att
+            && !retain(a.source(), textures, renderbuffers, op)
+        {
+            return;
+        }
+        let prev = std::mem::replace(&mut f.depth, att);
+
+        gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&f.raw));
+        detach_depth_points(gl);
+        if let Some(d) = &f.depth {
+            apply_depth(gl, d, textures, renderbuffers);
+        }
+
+        if let Some(p) = prev {
+            release(p.source(), textures, renderbuffers, gl);
+        }
+    }
+
+    fn with_framebuffer<T>(
+        &self,
+        fb: FramebufferId,
+        op: &str,
+        f: impl FnOnce(&mut FramebufferObj) -> T,
+    ) -> Option<T> {
+        let mut res = self.res();
+        match res.framebuffers.get_mut(fb.0) {
+            Some(obj) => Some(f(obj)),
+            None => {
+                stale("framebuffer", op, fb);
+                None
+            }
+        }
+    }
 }
 
 #[wasm_bindgen]
-impl Framebuffer {
-    pub fn width(&self) -> i32 {
-        self.inner.borrow().width
+impl Context {
+    pub fn create_framebuffer(&self, width: i32, height: i32) -> Result<FramebufferId, String> {
+        self.check_alive()?;
+        let raw = self
+            .gl()
+            .create_framebuffer()
+            .ok_or("createFramebuffer failed")?;
+        self.res()
+            .framebuffers
+            .insert(FramebufferObj {
+                raw,
+                width,
+                height,
+                viewport: Viewport::new(0, 0, width, height),
+                color: Vec::new(),
+                depth: None,
+                color_clear: Vec::new(),
+                clear_depth: 1.0,
+                clear_stencil: 0,
+            })
+            .map(Into::into)
+            .map_err(|e| e.to_string())
     }
 
-    pub fn height(&self) -> i32 {
-        self.inner.borrow().height
+    /// Deletes the framebuffer and stops using its attachments (textures and
+    /// renderbuffers destroyed while attached are deleted now).
+    pub fn destroy_framebuffer(&self, fb: FramebufferId) {
+        let gl = self.gl();
+        let res = &mut *self.res();
+        let obj = match res.framebuffers.destroy(fb.0) {
+            Destroyed::Now(obj) => obj,
+            Destroyed::Deferred => return,
+            Destroyed::Invalid => return stale("framebuffer", "destroy_framebuffer", fb),
+        };
+        gl.delete_framebuffer(Some(&obj.raw));
+        let sources = obj
+            .color
+            .iter()
+            .flatten()
+            .map(|a| a.source())
+            .chain(obj.depth.map(|d| d.source()));
+        for src in sources {
+            release(src, &mut res.textures, &mut res.renderbuffers, gl);
+        }
+    }
+
+    /// 0 for a stale handle.
+    pub fn framebuffer_width(&self, fb: FramebufferId) -> i32 {
+        self.with_framebuffer(fb, "framebuffer_width", |f| f.width)
+            .unwrap_or(0)
+    }
+
+    /// 0 for a stale handle.
+    pub fn framebuffer_height(&self, fb: FramebufferId) -> i32 {
+        self.with_framebuffer(fb, "framebuffer_height", |f| f.height)
+            .unwrap_or(0)
     }
 
     /// Viewport applied when this FBO is the render target (defaults to its full
     /// size). Set it to render into a sub-region.
-    pub fn set_viewport(&self, v: Viewport) {
-        self.inner.borrow_mut().viewport = v;
+    pub fn framebuffer_set_viewport(&self, fb: FramebufferId, v: Viewport) {
+        self.with_framebuffer(fb, "framebuffer_set_viewport", |f| f.viewport = v);
     }
 
     // --- color attachments (applied to GL immediately; FBO left bound) ---
 
-    pub fn attach_color_texture_2d(&self, index: u32, tex: &Texture, level: i32) {
-        if !color_index_in_range(index) {
-            return;
-        }
-        let mut s = self.inner.borrow_mut();
-        store_color(
-            &mut s,
+    pub fn framebuffer_attach_color_texture_2d(
+        &self,
+        fb: FramebufferId,
+        index: u32,
+        tex: TextureId,
+        level: i32,
+    ) {
+        self.set_color_slot(
+            fb,
             index,
-            ColorAttachment::Texture2D {
-                tex: tex.clone(),
-                level,
-            },
+            Some(ColorAttachment::Texture2D { tex, level }),
+            "framebuffer_attach_color_texture_2d",
         );
-        realize_color_slot(&s, index);
     }
 
-    pub fn attach_color_cube_face(&self, index: u32, tex: &Texture, face: CubeMapFace, level: i32) {
-        if !color_index_in_range(index) {
-            return;
-        }
-        let mut s = self.inner.borrow_mut();
-        store_color(
-            &mut s,
+    pub fn framebuffer_attach_color_cube_face(
+        &self,
+        fb: FramebufferId,
+        index: u32,
+        tex: TextureId,
+        face: CubeMapFace,
+        level: i32,
+    ) {
+        self.set_color_slot(
+            fb,
             index,
-            ColorAttachment::CubeFace {
-                tex: tex.clone(),
-                face,
-                level,
-            },
+            Some(ColorAttachment::CubeFace { tex, face, level }),
+            "framebuffer_attach_color_cube_face",
         );
-        realize_color_slot(&s, index);
     }
 
-    pub fn attach_color_layer(&self, index: u32, tex: &Texture, level: i32, layer: i32) {
-        if !color_index_in_range(index) {
-            return;
-        }
-        let mut s = self.inner.borrow_mut();
-        store_color(
-            &mut s,
+    pub fn framebuffer_attach_color_layer(
+        &self,
+        fb: FramebufferId,
+        index: u32,
+        tex: TextureId,
+        level: i32,
+        layer: i32,
+    ) {
+        self.set_color_slot(
+            fb,
             index,
-            ColorAttachment::Layer {
-                tex: tex.clone(),
-                level,
-                layer,
-            },
+            Some(ColorAttachment::Layer { tex, level, layer }),
+            "framebuffer_attach_color_layer",
         );
-        realize_color_slot(&s, index);
     }
 
-    pub fn attach_color_renderbuffer(&self, index: u32, rb: &Renderbuffer) {
-        if !color_index_in_range(index) {
-            return;
-        }
-        let mut s = self.inner.borrow_mut();
-        store_color(&mut s, index, ColorAttachment::Renderbuffer(rb.clone()));
-        realize_color_slot(&s, index);
+    pub fn framebuffer_attach_color_renderbuffer(
+        &self,
+        fb: FramebufferId,
+        index: u32,
+        rb: RenderbufferId,
+    ) {
+        self.set_color_slot(
+            fb,
+            index,
+            Some(ColorAttachment::Renderbuffer(rb)),
+            "framebuffer_attach_color_renderbuffer",
+        );
     }
 
-    pub fn detach_color(&self, index: u32) {
-        if !color_index_in_range(index) {
-            return;
-        }
-        let mut s = self.inner.borrow_mut();
-        let idx = index as usize;
-        if idx < s.color.len() {
-            s.color[idx] = None;
-        }
-        realize_color_slot(&s, index);
+    pub fn framebuffer_detach_color(&self, fb: FramebufferId, index: u32) {
+        self.set_color_slot(fb, index, None, "framebuffer_detach_color");
     }
 
     // --- depth / stencil attachments ---
 
-    pub fn attach_depth_texture(&self, tex: &Texture, level: i32) {
-        self.attach_depth_texture_impl(tex, level, false);
+    pub fn framebuffer_attach_depth_texture(&self, fb: FramebufferId, tex: TextureId, level: i32) {
+        self.set_depth_slot(
+            fb,
+            Some(DepthAttachment::Texture {
+                tex,
+                level,
+                stencil: false,
+            }),
+            "framebuffer_attach_depth_texture",
+        );
     }
 
-    pub fn attach_depth_stencil_texture(&self, tex: &Texture, level: i32) {
-        self.attach_depth_texture_impl(tex, level, true);
+    pub fn framebuffer_attach_depth_stencil_texture(
+        &self,
+        fb: FramebufferId,
+        tex: TextureId,
+        level: i32,
+    ) {
+        self.set_depth_slot(
+            fb,
+            Some(DepthAttachment::Texture {
+                tex,
+                level,
+                stencil: true,
+            }),
+            "framebuffer_attach_depth_stencil_texture",
+        );
     }
 
-    pub fn attach_depth_renderbuffer(&self, rb: &Renderbuffer) {
-        self.attach_depth_renderbuffer_impl(rb, false);
+    pub fn framebuffer_attach_depth_renderbuffer(&self, fb: FramebufferId, rb: RenderbufferId) {
+        self.set_depth_slot(
+            fb,
+            Some(DepthAttachment::Renderbuffer { rb, stencil: false }),
+            "framebuffer_attach_depth_renderbuffer",
+        );
     }
 
-    pub fn attach_depth_stencil_renderbuffer(&self, rb: &Renderbuffer) {
-        self.attach_depth_renderbuffer_impl(rb, true);
+    pub fn framebuffer_attach_depth_stencil_renderbuffer(
+        &self,
+        fb: FramebufferId,
+        rb: RenderbufferId,
+    ) {
+        self.set_depth_slot(
+            fb,
+            Some(DepthAttachment::Renderbuffer { rb, stencil: true }),
+            "framebuffer_attach_depth_stencil_renderbuffer",
+        );
     }
 
-    pub fn detach_depth(&self) {
-        let mut s = self.inner.borrow_mut();
-        s.depth = None;
-        realize_depth(&s);
+    pub fn framebuffer_detach_depth(&self, fb: FramebufferId) {
+        self.set_depth_slot(fb, None, "framebuffer_detach_depth");
     }
 
-    // --- getters (return owned clones; None if that slot holds the other kind) ---
+    // --- getters (NULL if the slot is empty or holds the other kind) ---
 
-    pub fn color_texture(&self, index: u32) -> Option<Texture> {
-        self.inner
-            .borrow()
-            .color
-            .get(index as usize)
-            .and_then(|o| o.as_ref())
-            .and_then(|a| a.texture())
+    pub fn framebuffer_color_texture(&self, fb: FramebufferId, index: u32) -> TextureId {
+        self.with_framebuffer(fb, "framebuffer_color_texture", |f| {
+            match f
+                .color
+                .get(index as usize)
+                .copied()
+                .flatten()
+                .map(|a| a.source())
+            {
+                Some(Source::Texture(t)) => t,
+                _ => TextureId::NULL,
+            }
+        })
+        .unwrap_or(TextureId::NULL)
     }
 
-    pub fn color_renderbuffer(&self, index: u32) -> Option<Renderbuffer> {
-        self.inner
-            .borrow()
-            .color
-            .get(index as usize)
-            .and_then(|o| o.as_ref())
-            .and_then(|a| a.renderbuffer())
+    pub fn framebuffer_color_renderbuffer(&self, fb: FramebufferId, index: u32) -> RenderbufferId {
+        self.with_framebuffer(fb, "framebuffer_color_renderbuffer", |f| {
+            match f
+                .color
+                .get(index as usize)
+                .copied()
+                .flatten()
+                .map(|a| a.source())
+            {
+                Some(Source::Renderbuffer(r)) => r,
+                _ => RenderbufferId::NULL,
+            }
+        })
+        .unwrap_or(RenderbufferId::NULL)
     }
 
-    pub fn depth_texture(&self) -> Option<Texture> {
-        self.inner.borrow().depth.as_ref().and_then(|d| d.texture())
+    pub fn framebuffer_depth_texture(&self, fb: FramebufferId) -> TextureId {
+        self.with_framebuffer(fb, "framebuffer_depth_texture", |f| {
+            match f.depth.map(|d| d.source()) {
+                Some(Source::Texture(t)) => t,
+                _ => TextureId::NULL,
+            }
+        })
+        .unwrap_or(TextureId::NULL)
     }
 
-    pub fn depth_renderbuffer(&self) -> Option<Renderbuffer> {
-        self.inner
-            .borrow()
-            .depth
-            .as_ref()
-            .and_then(|d| d.renderbuffer())
+    pub fn framebuffer_depth_renderbuffer(&self, fb: FramebufferId) -> RenderbufferId {
+        self.with_framebuffer(fb, "framebuffer_depth_renderbuffer", |f| {
+            match f.depth.map(|d| d.source()) {
+                Some(Source::Renderbuffer(r)) => r,
+                _ => RenderbufferId::NULL,
+            }
+        })
+        .unwrap_or(RenderbufferId::NULL)
     }
 
-    // --- clear values (applied per-attachment by Renderer::clear) ---
+    // --- clear values (applied per-attachment by the pass's clear) ---
 
     /// Float/normalized color clear for attachment `index` (the common case).
-    pub fn set_color_clear_f32(&self, index: u32, r: f32, g: f32, b: f32, a: f32) {
-        set_color_clear(
-            &mut self.inner.borrow_mut(),
-            index,
-            ColorClearValue::Float([r, g, b, a]),
-        );
+    pub fn framebuffer_set_color_clear_f32(
+        &self,
+        fb: FramebufferId,
+        index: u32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    ) {
+        self.with_framebuffer(fb, "framebuffer_set_color_clear_f32", |f| {
+            f.set_color_clear(index, ColorClearValue::Float([r, g, b, a]))
+        });
     }
 
     /// Signed-integer color clear, for attachments with an integer internal format.
-    pub fn set_color_clear_i32(&self, index: u32, r: i32, g: i32, b: i32, a: i32) {
-        set_color_clear(
-            &mut self.inner.borrow_mut(),
-            index,
-            ColorClearValue::Int([r, g, b, a]),
-        );
+    pub fn framebuffer_set_color_clear_i32(
+        &self,
+        fb: FramebufferId,
+        index: u32,
+        r: i32,
+        g: i32,
+        b: i32,
+        a: i32,
+    ) {
+        self.with_framebuffer(fb, "framebuffer_set_color_clear_i32", |f| {
+            f.set_color_clear(index, ColorClearValue::Int([r, g, b, a]))
+        });
     }
 
     /// Unsigned-integer color clear, for attachments with an unsigned integer format.
-    pub fn set_color_clear_u32(&self, index: u32, r: u32, g: u32, b: u32, a: u32) {
-        set_color_clear(
-            &mut self.inner.borrow_mut(),
-            index,
-            ColorClearValue::Uint([r, g, b, a]),
-        );
-    }
-
-    /// Shorthand for `set_color_clear_f32(0, ..)`.
-    pub fn set_clear_color(&self, r: f32, g: f32, b: f32, a: f32) {
-        set_color_clear(
-            &mut self.inner.borrow_mut(),
-            0,
-            ColorClearValue::Float([r, g, b, a]),
-        );
-    }
-
-    pub fn set_clear_depth(&self, d: f32) {
-        self.inner.borrow_mut().clear_depth = d;
-    }
-
-    pub fn set_clear_stencil(&self, s: i32) {
-        self.inner.borrow_mut().clear_stencil = s;
-    }
-}
-
-impl Framebuffer {
-    fn attach_depth_texture_impl(&self, tex: &Texture, level: i32, stencil: bool) {
-        let mut s = self.inner.borrow_mut();
-        s.depth = Some(DepthAttachment::Texture {
-            tex: tex.clone(),
-            level,
-            stencil,
+    pub fn framebuffer_set_color_clear_u32(
+        &self,
+        fb: FramebufferId,
+        index: u32,
+        r: u32,
+        g: u32,
+        b: u32,
+        a: u32,
+    ) {
+        self.with_framebuffer(fb, "framebuffer_set_color_clear_u32", |f| {
+            f.set_color_clear(index, ColorClearValue::Uint([r, g, b, a]))
         });
-        realize_depth(&s);
     }
 
-    fn attach_depth_renderbuffer_impl(&self, rb: &Renderbuffer, stencil: bool) {
-        let mut s = self.inner.borrow_mut();
-        s.depth = Some(DepthAttachment::Renderbuffer {
-            rb: rb.clone(),
-            stencil,
-        });
-        realize_depth(&s);
+    /// Shorthand for `framebuffer_set_color_clear_f32(fb, 0, ..)`.
+    pub fn framebuffer_set_clear_color(&self, fb: FramebufferId, r: f32, g: f32, b: f32, a: f32) {
+        self.framebuffer_set_color_clear_f32(fb, 0, r, g, b, a);
+    }
+
+    pub fn framebuffer_set_clear_depth(&self, fb: FramebufferId, d: f32) {
+        self.with_framebuffer(fb, "framebuffer_set_clear_depth", |f| f.clear_depth = d);
+    }
+
+    pub fn framebuffer_set_clear_stencil(&self, fb: FramebufferId, s: i32) {
+        self.with_framebuffer(fb, "framebuffer_set_clear_stencil", |f| f.clear_stencil = s);
     }
 }
 

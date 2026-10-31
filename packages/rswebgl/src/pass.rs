@@ -6,20 +6,19 @@
 //     Batch → one program + render state
 //       Draw → one VAO + uniforms + draw command
 //
-// The user builds this tree and hands it to `Renderer::render`. Because every
+// The user builds this tree and hands it to `Context::render`. Because every
 // draw carries everything it needs, there is no per-call ordering to get wrong:
-// the Renderer walks the tree and diffs state between consecutive items itself.
-// Each level *owns* clones of its GL objects (cheap ref-count bumps), so the tree
-// is self-contained and can outlive the locals it was built from.
+// the renderer walks the tree and diffs state between consecutive items itself.
+// Resources are referenced by handle; one destroyed after the pass was built is
+// reported and skipped when the pass runs.
 
 use wasm_bindgen::prelude::*;
 
 use crate::draw::{DrawCommand, Viewport};
-use crate::framebuffer::{ClearMask, Framebuffer, InvalidateMask};
-use crate::program::Program;
+use crate::framebuffer::{ClearMask, InvalidateMask};
+use crate::ids::{FramebufferId, ProgramId, VertexArrayId};
 use crate::render_state::RenderState;
 use crate::uniform_values::UniformValues;
-use crate::vao::VertexArray;
 
 // ---------------------------------------------------------------------------
 // Draw — innermost: geometry + bindings + the draw command.
@@ -27,8 +26,8 @@ use crate::vao::VertexArray;
 
 #[wasm_bindgen]
 pub struct Draw {
-    // None = no VAO bound (vertex-pulling shaders that use gl_VertexID etc.).
-    pub(crate) vao: Option<VertexArray>,
+    // NULL = no VAO bound (vertex-pulling shaders that use gl_VertexID etc.).
+    pub(crate) vao: VertexArrayId,
     pub(crate) uniforms: UniformValues,
     pub(crate) command: DrawCommand,
 }
@@ -43,7 +42,7 @@ pub struct Draw {
 // `Context::set_validate_uniforms`).
 #[wasm_bindgen]
 pub struct Batch {
-    pub(crate) program: Program,
+    pub(crate) program: ProgramId,
     pub(crate) render_state: RenderState,
     pub(crate) uniforms: UniformValues,
     pub(crate) draws: Vec<Draw>,
@@ -52,9 +51,9 @@ pub struct Batch {
 #[wasm_bindgen]
 impl Batch {
     #[wasm_bindgen(constructor)]
-    pub fn new(program: &Program, render_state: &RenderState) -> Self {
+    pub fn new(program: ProgramId, render_state: &RenderState) -> Self {
         Self {
-            program: program.clone(),
+            program,
             render_state: render_state.clone(),
             uniforms: UniformValues::new(),
             draws: Vec::new(),
@@ -70,9 +69,9 @@ impl Batch {
     }
 
     /// Adds a draw that binds `vao` for its geometry.
-    pub fn draw(&mut self, vao: &VertexArray, uniforms: &UniformValues, command: DrawCommand) {
+    pub fn draw(&mut self, vao: VertexArrayId, uniforms: &UniformValues, command: DrawCommand) {
         self.draws.push(Draw {
-            vao: Some(vao.clone()),
+            vao,
             uniforms: uniforms.clone(),
             command,
         });
@@ -82,7 +81,7 @@ impl Batch {
     /// from `gl_VertexID` (or bound buffers) rather than vertex attributes.
     pub fn draw_vertexless(&mut self, uniforms: &UniformValues, command: DrawCommand) {
         self.draws.push(Draw {
-            vao: None,
+            vao: VertexArrayId::NULL,
             uniforms: uniforms.clone(),
             command,
         });
@@ -99,8 +98,8 @@ impl Batch {
 
 #[wasm_bindgen]
 pub struct Pass {
-    // None = the default (canvas) framebuffer.
-    pub(crate) target: Option<Framebuffer>,
+    // NULL = the default (canvas) framebuffer.
+    pub(crate) target: FramebufferId,
     // None = the target's full size.
     pub(crate) viewport: Option<Viewport>,
     pub(crate) clear: ClearMask,
@@ -109,7 +108,7 @@ pub struct Pass {
 }
 
 impl Pass {
-    fn with_target(target: Option<Framebuffer>) -> Self {
+    fn with_target(target: FramebufferId) -> Self {
         Self {
             target,
             viewport: None,
@@ -124,13 +123,13 @@ impl Pass {
 impl Pass {
     /// A pass that renders into `target`.
     #[wasm_bindgen(constructor)]
-    pub fn new(target: &Framebuffer) -> Self {
-        Self::with_target(Some(target.clone()))
+    pub fn new(target: FramebufferId) -> Self {
+        Self::with_target(target)
     }
 
     /// A pass that renders into the default (canvas) framebuffer.
     pub fn to_default() -> Self {
-        Self::with_target(None)
+        Self::with_target(FramebufferId::NULL)
     }
 
     /// Restricts rendering to a sub-region; defaults to the target's full size.

@@ -1,12 +1,11 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
+use rswebgl_foundation::pool::Destroyed;
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlVertexArrayObject};
 
-use crate::buffer::Buffer;
+use crate::buffer::BufferKind;
 use crate::console;
-use crate::context_loss;
+use crate::context::{Context, Resources, stale};
+use crate::ids::{BufferId, VertexArrayId};
 use crate::limits;
 
 // ---------------------------------------------------------------------------
@@ -111,80 +110,94 @@ impl VertexAttr {
 // VertexArray
 // ---------------------------------------------------------------------------
 
-// The buffers a VAO keeps alive (so they outlive the GL VAO that references them)
-// belong to the GL object, not to a particular handle, so they sit in the shared
-// inner: configuring one clone is seen by all, and a buffer can't be freed while
-// the shared GL VAO still uses it.
+/// A vertex array in the context's pool. The buffers it reads are retained in
+/// the buffer pool (a use count, not ownership): destroying such a buffer is
+/// deferred until no vertex array uses it. Buffers in `owned` were created
+/// together with the vertex array (by `VaoBuilder`) and are destroyed with it.
 #[derive(Debug)]
-struct VertexArrayState {
-    attribs: Vec<Option<(Buffer, VertexAttr)>>,
-    index_buffer: Option<Buffer>,
+pub(crate) struct VertexArrayObj {
+    pub(crate) raw: WebGlVertexArrayObject,
+    attribs: Vec<Option<BufferId>>,
+    index_buffer: Option<BufferId>,
+    pub(crate) owned: Vec<BufferId>,
 }
 
-#[derive(Debug)]
-struct VertexArrayInner {
-    gl: WebGl2RenderingContext,
-    raw: WebGlVertexArrayObject,
-    // Context generation it was created in (see context_loss).
-    generation: u32,
-    state: RefCell<VertexArrayState>,
-}
-
-impl Drop for VertexArrayInner {
-    fn drop(&mut self) {
-        if context_loss::is_current(&self.gl, self.generation) {
-            self.gl.delete_vertex_array(Some(&self.raw));
-        }
+// Drops one use of a buffer; deletes it if that was the last use of a buffer
+// that was already destroyed.
+pub(crate) fn release_buffer(res: &mut Resources, gl: &WebGl2RenderingContext, id: BufferId) {
+    if let Some(obj) = res.buffers.release(id.0) {
+        obj.delete(gl);
     }
 }
 
-/// A shared handle to a GL vertex array: clones point at the same VAO, which is
-/// deleted when the last handle drops.
-#[wasm_bindgen]
-#[derive(Debug, Clone)]
-pub struct VertexArray {
-    inner: Rc<VertexArrayInner>,
+fn attr_index_in_range(index: u32) -> bool {
+    let max = limits::max_vertex_attribs();
+    if index >= max {
+        console::error(&format!(
+            "[rswebgl] vertex attribute index {index} is out of range (MAX_VERTEX_ATTRIBS = \
+             {max}); ignored"
+        ));
+    }
+    index < max
 }
 
-impl VertexArray {
-    pub(crate) fn new(gl: &WebGl2RenderingContext) -> Result<Self, String> {
-        let raw = gl.create_vertex_array().ok_or("createVertexArray failed")?;
-        Ok(Self {
-            inner: Rc::new(VertexArrayInner {
-                gl: gl.clone(),
-                raw,
-                generation: context_loss::generation(gl),
-                state: RefCell::new(VertexArrayState {
-                    attribs: Vec::new(),
-                    index_buffer: None,
-                }),
-            }),
-        })
-    }
-
-    pub(crate) fn raw_gl(&self) -> &WebGlVertexArrayObject {
-        &self.inner.raw
+impl Context {
+    pub(crate) fn insert_vertex_array(
+        &self,
+        raw: WebGlVertexArrayObject,
+    ) -> Result<VertexArrayId, String> {
+        let obj = VertexArrayObj {
+            raw,
+            attribs: Vec::new(),
+            index_buffer: None,
+            owned: Vec::new(),
+        };
+        self.res()
+            .vertex_arrays
+            .insert(obj)
+            .map(Into::into)
+            .map_err(|e| e.to_string())
     }
 }
-
-impl PartialEq for VertexArray {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.inner, &other.inner)
-    }
-}
-
-impl Eq for VertexArray {}
 
 #[wasm_bindgen]
-impl VertexArray {
-    pub fn attr(&self, index: u32, buffer: &Buffer, attr: &VertexAttr) {
+impl Context {
+    pub fn create_vertex_array(&self) -> Result<VertexArrayId, String> {
+        self.check_alive()?;
+        let raw = self
+            .gl()
+            .create_vertex_array()
+            .ok_or("createVertexArray failed")?;
+        self.insert_vertex_array(raw)
+    }
+
+    /// Reads attribute `index` from `buffer` (a vertex buffer). The vertex array
+    /// keeps using the buffer until the attribute is replaced or removed.
+    pub fn vertex_array_attr(
+        &self,
+        vao: VertexArrayId,
+        index: u32,
+        buffer: BufferId,
+        attr: &VertexAttr,
+    ) {
         if !attr_index_in_range(index) {
             return;
         }
-        let gl = &self.inner.gl;
-        gl.bind_vertex_array(Some(&self.inner.raw));
-        gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER, Some(buffer.raw_gl()));
+        let gl = self.gl();
+        let res = &mut *self.res();
+        let Some(v) = res.vertex_arrays.get(vao.0) else {
+            return stale("vertex array", "vertex_array_attr", vao);
+        };
+        let Some(b) = res.buffers.get(buffer.0) else {
+            return stale("buffer", "vertex_array_attr", buffer);
+        };
+        if b.kind != BufferKind::Generic {
+            console::error("[rswebgl] vertex_array_attr: an index buffer can't hold vertex data");
+            return;
+        }
 
+        gl.bind_vertex_array(Some(&v.raw));
+        gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER, Some(&b.raw));
         if attr.integer {
             gl.vertex_attrib_i_pointer_with_i32(
                 index,
@@ -203,73 +216,99 @@ impl VertexArray {
                 attr.offset,
             );
         }
-
         gl.enable_vertex_attrib_array(index);
         gl.vertex_attrib_divisor(index, attr.divisor);
         gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER, None);
         gl.bind_vertex_array(None);
 
+        res.buffers.retain(buffer.0);
+        let v = res.vertex_arrays.get_mut(vao.0).expect("checked above");
         let idx = index as usize;
-        let mut st = self.inner.state.borrow_mut();
-        if idx >= st.attribs.len() {
-            st.attribs.resize_with(idx + 1, || None);
+        if idx >= v.attribs.len() {
+            v.attribs.resize(idx + 1, None);
         }
-        st.attribs[idx] = Some((buffer.clone(), attr.clone()));
+        if let Some(prev) = v.attribs[idx].replace(buffer) {
+            release_buffer(res, gl, prev);
+        }
     }
 
-    pub fn remove_attr(&self, index: u32) {
+    pub fn vertex_array_remove_attr(&self, vao: VertexArrayId, index: u32) {
         if !attr_index_in_range(index) {
             return;
         }
-        let gl = &self.inner.gl;
-        gl.bind_vertex_array(Some(&self.inner.raw));
+        let gl = self.gl();
+        let res = &mut *self.res();
+        let Some(v) = res.vertex_arrays.get_mut(vao.0) else {
+            return stale("vertex array", "vertex_array_remove_attr", vao);
+        };
+        gl.bind_vertex_array(Some(&v.raw));
         gl.disable_vertex_attrib_array(index);
         gl.bind_vertex_array(None);
-
-        let idx = index as usize;
-        let mut st = self.inner.state.borrow_mut();
-        if idx < st.attribs.len() {
-            st.attribs[idx] = None;
+        if let Some(prev) = v.attribs.get_mut(index as usize).and_then(Option::take) {
+            release_buffer(res, gl, prev);
         }
     }
 
-    pub fn set_index_buffer(&self, buffer: &Buffer) {
-        let gl = &self.inner.gl;
-        gl.bind_vertex_array(Some(&self.inner.raw));
-        gl.bind_buffer(
-            WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER,
-            Some(buffer.raw_gl()),
-        );
+    /// Uses `buffer` (created with `create_index_buffer`) for indexed draws.
+    pub fn vertex_array_set_index_buffer(&self, vao: VertexArrayId, buffer: BufferId) {
+        let gl = self.gl();
+        let res = &mut *self.res();
+        let Some(v) = res.vertex_arrays.get(vao.0) else {
+            return stale("vertex array", "vertex_array_set_index_buffer", vao);
+        };
+        let Some(b) = res.buffers.get(buffer.0) else {
+            return stale("buffer", "vertex_array_set_index_buffer", buffer);
+        };
+        if b.kind != BufferKind::Index {
+            console::error(
+                "[rswebgl] vertex_array_set_index_buffer: buffer wasn't created with \
+                 create_index_buffer",
+            );
+            return;
+        }
+        gl.bind_vertex_array(Some(&v.raw));
+        gl.bind_buffer(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER, Some(&b.raw));
         gl.bind_vertex_array(None);
 
-        self.inner.state.borrow_mut().index_buffer = Some(buffer.clone());
+        res.buffers.retain(buffer.0);
+        let v = res.vertex_arrays.get_mut(vao.0).expect("checked above");
+        if let Some(prev) = v.index_buffer.replace(buffer) {
+            release_buffer(res, gl, prev);
+        }
     }
 
-    pub fn remove_index_buffer(&self) {
-        let gl = &self.inner.gl;
-        gl.bind_vertex_array(Some(&self.inner.raw));
+    pub fn vertex_array_remove_index_buffer(&self, vao: VertexArrayId) {
+        let gl = self.gl();
+        let res = &mut *self.res();
+        let Some(v) = res.vertex_arrays.get_mut(vao.0) else {
+            return stale("vertex array", "vertex_array_remove_index_buffer", vao);
+        };
+        gl.bind_vertex_array(Some(&v.raw));
         gl.bind_buffer(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER, None);
         gl.bind_vertex_array(None);
-
-        self.inner.state.borrow_mut().index_buffer = None;
+        if let Some(prev) = v.index_buffer.take() {
+            release_buffer(res, gl, prev);
+        }
     }
 
-    pub fn bind(&self) {
-        self.inner.gl.bind_vertex_array(Some(&self.inner.raw));
+    /// Deletes the vertex array, stops using its buffers, and destroys the
+    /// buffers it owns (the ones `VaoBuilder` created for it).
+    pub fn destroy_vertex_array(&self, vao: VertexArrayId) {
+        let gl = self.gl();
+        let res = &mut *self.res();
+        let obj = match res.vertex_arrays.destroy(vao.0) {
+            Destroyed::Now(obj) => obj,
+            Destroyed::Deferred => return,
+            Destroyed::Invalid => return stale("vertex array", "destroy_vertex_array", vao),
+        };
+        gl.delete_vertex_array(Some(&obj.raw));
+        for id in obj.attribs.into_iter().flatten().chain(obj.index_buffer) {
+            release_buffer(res, gl, id);
+        }
+        for id in obj.owned {
+            if let Destroyed::Now(b) = res.buffers.destroy(id.0) {
+                b.delete(gl);
+            }
+        }
     }
-
-    pub fn unbind(&self) {
-        self.inner.gl.bind_vertex_array(None);
-    }
-}
-
-fn attr_index_in_range(index: u32) -> bool {
-    let max = limits::max_vertex_attribs();
-    if index >= max {
-        console::error(&format!(
-            "[rswebgl] vertex attribute index {index} is out of range (MAX_VERTEX_ATTRIBS = \
-             {max}); ignored"
-        ));
-    }
-    index < max
 }

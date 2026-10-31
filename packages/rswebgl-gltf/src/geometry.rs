@@ -11,13 +11,13 @@
 use rswebgl::console;
 use rswebgl::context::Context;
 use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
-use rswebgl::vao::VertexArray;
+use rswebgl::ids::VertexArrayId;
 use rswebgl::vao_builder::{AttrKind, VaoBuilder};
 
 /// GPU geometry for one primitive plus its local-space axis-aligned bounds
 /// (used to frame the camera).
 pub struct PrimitiveGpu {
-    pub vao: VertexArray,
+    pub vao: VertexArrayId,
     pub draw: DrawCommand,
     pub aabb_min: [f32; 3],
     pub aabb_max: [f32; 3],

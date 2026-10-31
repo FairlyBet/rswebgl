@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use rswebgl_foundation::pool::Destroyed;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
@@ -11,13 +12,14 @@ use web_sys::{
 
 use crate::compressed_format::CompressedFormat;
 use crate::console;
-use crate::context_loss;
+use crate::context::{Context, stale};
+use crate::ids::TextureId;
 use crate::limits;
 use crate::pixel_unpack::PixelUnpack;
 use crate::render_state::DepthFunc;
 
 /// Self-referential slot for a one-shot image-load handler (see
-/// [`Texture::drive_image_load`]). The handler removes itself from the slot when
+/// [`Context::drive_image_load`]). The handler removes itself from the slot when
 /// it fires, breaking the `Rc` cycle that otherwise keeps it alive.
 type ImageLoadHandler = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
 
@@ -45,7 +47,7 @@ impl TextureTarget {
 // ---------------------------------------------------------------------------
 
 #[wasm_bindgen]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CubeMapFace {
     PositiveX = 34069, // TEXTURE_CUBE_MAP_POSITIVE_X
     NegativeX = 34070,
@@ -57,7 +59,7 @@ pub enum CubeMapFace {
 
 impl CubeMapFace {
     pub(crate) fn as_gl(&self) -> u32 {
-        self.clone() as u32
+        *self as u32
     }
 }
 
@@ -300,88 +302,27 @@ impl TextureFormat {
 // Texture
 // ---------------------------------------------------------------------------
 
+/// A texture in the context's pool.
 #[derive(Debug)]
-struct TextureInner {
-    gl: WebGl2RenderingContext,
-    raw: WebGlTexture,
-    // Context generation it was created in (see context_loss).
-    generation: u32,
-    target: TextureTarget,
+pub(crate) struct TextureObj {
+    pub(crate) raw: WebGlTexture,
+    pub(crate) target: TextureTarget,
 }
 
-impl Drop for TextureInner {
-    fn drop(&mut self) {
-        if context_loss::is_current(&self.gl, self.generation) {
-            self.gl.delete_texture(Some(&self.raw));
-        }
-    }
-}
-
-/// A shared handle to a GL texture: clones point at the same texture, which is
-/// deleted when the last handle drops.
-#[wasm_bindgen]
-#[derive(Debug, Clone)]
-pub struct Texture {
-    inner: Rc<TextureInner>,
-}
-
-impl Texture {
-    pub(crate) fn new(
-        gl: &WebGl2RenderingContext,
-        target: TextureTarget,
-        min_filter: TextureMinFilter,
-        mag_filter: TextureMagFilter,
-    ) -> Result<Self, String> {
-        let raw = gl.create_texture().ok_or("createTexture failed")?;
-        let t = target.as_gl();
-
-        gl.bind_texture(t, Some(&raw));
-        gl.tex_parameteri(
-            t,
-            WebGl2RenderingContext::TEXTURE_MIN_FILTER,
-            min_filter as i32,
-        );
-        gl.tex_parameteri(
-            t,
-            WebGl2RenderingContext::TEXTURE_MAG_FILTER,
-            mag_filter as i32,
-        );
-        gl.tex_parameteri(
-            t,
-            WebGl2RenderingContext::TEXTURE_WRAP_S,
-            TextureWrap::ClampToEdge as i32,
-        );
-        gl.tex_parameteri(
-            t,
-            WebGl2RenderingContext::TEXTURE_WRAP_T,
-            TextureWrap::ClampToEdge as i32,
-        );
-        gl.tex_parameteri(
-            t,
-            WebGl2RenderingContext::TEXTURE_WRAP_R,
-            TextureWrap::ClampToEdge as i32,
-        );
-        gl.bind_texture(t, None);
-
-        Ok(Self {
-            inner: Rc::new(TextureInner {
-                gl: gl.clone(),
-                raw,
-                generation: context_loss::generation(gl),
-                target,
-            }),
-        })
+impl TextureObj {
+    pub(crate) fn delete(self, gl: &WebGl2RenderingContext) {
+        gl.delete_texture(Some(&self.raw));
     }
 
-    pub(crate) fn raw_gl(&self) -> &WebGlTexture {
-        &self.inner.raw
+    pub(crate) fn target_gl(&self) -> u32 {
+        self.target.as_gl()
     }
 
     // Checks a texStorage request against the implementation limits for this
     // target (`depth` is 1 for 2D / cube). Reports and returns false if it
     // can't be allocated, so the caller skips the GL call.
     fn storage_fits(&self, levels: i32, width: i32, height: i32, depth: i32) -> bool {
-        let (max_wh, max_d, what) = match self.inner.target {
+        let (max_wh, max_d, what) = match self.target {
             TextureTarget::Texture2D => (limits::max_texture_size(), 1, "MAX_TEXTURE_SIZE"),
             TextureTarget::TextureCubeMap => (
                 limits::max_cube_map_texture_size(),
@@ -420,24 +361,6 @@ impl Texture {
         }
         problem.is_none()
     }
-
-    pub(crate) fn target_gl(&self) -> u32 {
-        self.inner.target.as_gl()
-    }
-
-    fn set_param_i(&self, pname: u32, value: i32) {
-        let t = self.inner.target.as_gl();
-        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
-        self.inner.gl.tex_parameteri(t, pname, value);
-        self.inner.gl.bind_texture(t, None);
-    }
-
-    fn set_param_f(&self, pname: u32, value: f32) {
-        let t = self.inner.target.as_gl();
-        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
-        self.inner.gl.tex_parameterf(t, pname, value);
-        self.inner.gl.bind_texture(t, None);
-    }
 }
 
 /// Full mip-chain length for a base size: `floor(log2(max(w,h))) + 1`.
@@ -446,104 +369,176 @@ pub(crate) fn mip_levels(w: i32, h: i32) -> i32 {
     (32 - max.leading_zeros()) as i32
 }
 
-impl PartialEq for Texture {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.inner, &other.inner)
+impl Context {
+    // Resolves `tex`, binds it to its target, runs `f`, unbinds. Reports a
+    // stale handle (as `op`) and returns None instead.
+    fn with_texture<T>(
+        &self,
+        tex: TextureId,
+        op: &str,
+        f: impl FnOnce(&WebGl2RenderingContext, u32, &TextureObj) -> T,
+    ) -> Option<T> {
+        let res = self.res();
+        let Some(obj) = res.textures.get(tex.0) else {
+            stale("texture", op, tex);
+            return None;
+        };
+        let gl = self.gl();
+        let t = obj.target_gl();
+        gl.bind_texture(t, Some(&obj.raw));
+        let out = f(gl, t, obj);
+        gl.bind_texture(t, None);
+        Some(out)
+    }
+
+    fn set_param_i(&self, tex: TextureId, op: &str, pname: u32, value: i32) {
+        self.with_texture(tex, op, |gl, t, _| gl.tex_parameteri(t, pname, value));
+    }
+
+    fn set_param_f(&self, tex: TextureId, op: &str, pname: u32, value: f32) {
+        self.with_texture(tex, op, |gl, t, _| gl.tex_parameterf(t, pname, value));
     }
 }
 
-impl Eq for Texture {}
-
 // Storage-first model (MDN-recommended for WebGL2): allocate immutable storage
-// once with `storage_*`, then fill levels with `sub_image_*`. `texImage2D` (the
-// mutable, define-each-level-independently path) is deliberately not exposed —
-// it defers validation to draw time and can make drivers over-allocate.
+// once with `texture_storage_*`, then fill levels with `texture_sub_image_*`.
+// `texImage2D` (the mutable, define-each-level-independently path) is
+// deliberately not exposed — it defers validation to draw time and can make
+// drivers over-allocate.
 #[wasm_bindgen]
-impl Texture {
+impl Context {
+    pub fn create_texture(
+        &self,
+        target: TextureTarget,
+        min_filter: TextureMinFilter,
+        mag_filter: TextureMagFilter,
+    ) -> Result<TextureId, String> {
+        self.check_alive()?;
+        let gl = self.gl();
+        let raw = gl.create_texture().ok_or("createTexture failed")?;
+        let t = target.as_gl();
+        gl.bind_texture(t, Some(&raw));
+        gl.tex_parameteri(
+            t,
+            WebGl2RenderingContext::TEXTURE_MIN_FILTER,
+            min_filter as i32,
+        );
+        gl.tex_parameteri(
+            t,
+            WebGl2RenderingContext::TEXTURE_MAG_FILTER,
+            mag_filter as i32,
+        );
+        for wrap in [
+            WebGl2RenderingContext::TEXTURE_WRAP_S,
+            WebGl2RenderingContext::TEXTURE_WRAP_T,
+            WebGl2RenderingContext::TEXTURE_WRAP_R,
+        ] {
+            gl.tex_parameteri(t, wrap, TextureWrap::ClampToEdge as i32);
+        }
+        gl.bind_texture(t, None);
+        self.res()
+            .textures
+            .insert(TextureObj { raw, target })
+            .map(Into::into)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Deletes the texture. If a framebuffer still has it attached, its handle
+    /// is invalid right away and the GL texture goes when the framebuffer lets
+    /// go of it.
+    pub fn destroy_texture(&self, tex: TextureId) {
+        let destroyed = self.res().textures.destroy(tex.0);
+        match destroyed {
+            Destroyed::Now(obj) => obj.delete(self.gl()),
+            Destroyed::Deferred => {}
+            Destroyed::Invalid => stale("texture", "destroy_texture", tex),
+        }
+    }
+
+    /// The texture's target, or None for a stale handle.
+    pub fn texture_target(&self, tex: TextureId) -> Option<TextureTarget> {
+        self.res().textures.get(tex.0).map(|t| t.target.clone())
+    }
+
     // --- immutable storage allocation ---------------------------------------
 
     /// Allocate immutable storage (`texStorage2D`). For TEXTURE_2D and
     /// TEXTURE_CUBE_MAP (the latter allocates all six faces). `levels` is the
     /// mip count (≥1). Can only be called once per texture.
-    pub fn storage_2d(&self, levels: i32, format: &TextureFormat, width: i32, height: i32) {
-        if !self.storage_fits(levels, width, height, 1) {
-            return;
-        }
-        let t = self.inner.target.as_gl();
-        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
-        self.inner
-            .gl
-            .tex_storage_2d(t, levels, format.internal as u32, width, height);
-        self.inner.gl.bind_texture(t, None);
+    pub fn texture_storage_2d(
+        &self,
+        tex: TextureId,
+        levels: i32,
+        format: &TextureFormat,
+        width: i32,
+        height: i32,
+    ) {
+        self.with_texture(tex, "texture_storage_2d", |gl, t, obj| {
+            if obj.storage_fits(levels, width, height, 1) {
+                gl.tex_storage_2d(t, levels, format.internal as u32, width, height);
+            }
+        });
     }
 
     /// Allocate immutable storage (`texStorage3D`). For TEXTURE_3D and
     /// TEXTURE_2D_ARRAY (where `depth` is the layer count).
-    pub fn storage_3d(
+    pub fn texture_storage_3d(
         &self,
+        tex: TextureId,
         levels: i32,
         format: &TextureFormat,
         width: i32,
         height: i32,
         depth: i32,
     ) {
-        if !self.storage_fits(levels, width, height, depth) {
-            return;
-        }
-        let t = self.inner.target.as_gl();
-        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
-        self.inner
-            .gl
-            .tex_storage_3d(t, levels, format.internal as u32, width, height, depth);
-        self.inner.gl.bind_texture(t, None);
+        self.with_texture(tex, "texture_storage_3d", |gl, t, obj| {
+            if obj.storage_fits(levels, width, height, depth) {
+                gl.tex_storage_3d(t, levels, format.internal as u32, width, height, depth);
+            }
+        });
     }
 
     /// Allocate immutable storage with a compressed sized internal format.
     /// Requires the matching extension enabled (see `CompressedFormat`).
-    pub fn compressed_storage_2d(
+    pub fn texture_compressed_storage_2d(
         &self,
+        tex: TextureId,
         levels: i32,
         format: &CompressedFormat,
         width: i32,
         height: i32,
     ) {
-        if !self.storage_fits(levels, width, height, 1) {
-            return;
-        }
-        let t = self.inner.target.as_gl();
-        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
-        self.inner
-            .gl
-            .tex_storage_2d(t, levels, format.as_gl(), width, height);
-        self.inner.gl.bind_texture(t, None);
+        self.with_texture(tex, "texture_compressed_storage_2d", |gl, t, obj| {
+            if obj.storage_fits(levels, width, height, 1) {
+                gl.tex_storage_2d(t, levels, format.as_gl(), width, height);
+            }
+        });
     }
 
     /// Compressed immutable storage for TEXTURE_3D / TEXTURE_2D_ARRAY.
-    pub fn compressed_storage_3d(
+    pub fn texture_compressed_storage_3d(
         &self,
+        tex: TextureId,
         levels: i32,
         format: &CompressedFormat,
         width: i32,
         height: i32,
         depth: i32,
     ) {
-        if !self.storage_fits(levels, width, height, depth) {
-            return;
-        }
-        let t = self.inner.target.as_gl();
-        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
-        self.inner
-            .gl
-            .tex_storage_3d(t, levels, format.as_gl(), width, height, depth);
-        self.inner.gl.bind_texture(t, None);
+        self.with_texture(tex, "texture_compressed_storage_3d", |gl, t, obj| {
+            if obj.storage_fits(levels, width, height, depth) {
+                gl.tex_storage_3d(t, levels, format.as_gl(), width, height, depth);
+            }
+        });
     }
 
     // --- fill from raw bytes (texSubImage) ----------------------------------
 
     /// Fill a region of an allocated 2D level from raw bytes. Default unpack.
     #[allow(clippy::too_many_arguments)]
-    pub fn sub_image_2d(
+    pub fn texture_sub_image_2d(
         &self,
+        tex: TextureId,
         level: i32,
         x: i32,
         y: i32,
@@ -552,7 +547,8 @@ impl Texture {
         format: &TextureFormat,
         data: &[u8],
     ) {
-        self.sub_image_2d_with(
+        self.texture_sub_image_2d_with(
+            tex,
             level,
             x,
             y,
@@ -564,10 +560,12 @@ impl Texture {
         );
     }
 
-    /// `sub_image_2d` with explicit pixel-unpack settings (flip_y, alignment…).
+    /// `texture_sub_image_2d` with explicit pixel-unpack settings (flip_y,
+    /// alignment…).
     #[allow(clippy::too_many_arguments)]
-    pub fn sub_image_2d_with(
+    pub fn texture_sub_image_2d_with(
         &self,
+        tex: TextureId,
         level: i32,
         x: i32,
         y: i32,
@@ -577,31 +575,30 @@ impl Texture {
         data: &[u8],
         unpack: &PixelUnpack,
     ) {
-        let t = self.inner.target.as_gl();
-        let gl = &self.inner.gl;
-        gl.bind_texture(t, Some(&self.inner.raw));
-        unpack.apply(gl);
-        if let Err(e) = gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(
-            t,
-            level,
-            x,
-            y,
-            width,
-            height,
-            format.format,
-            format.data_type,
-            Some(data),
-        ) {
-            console::error(&format!("[rswebgl] texSubImage2D failed: {e:?}"));
-        }
-        PixelUnpack::reset(gl);
-        gl.bind_texture(t, None);
+        self.with_texture(tex, "texture_sub_image_2d", |gl, t, _| {
+            unpack.apply(gl);
+            if let Err(e) = gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(
+                t,
+                level,
+                x,
+                y,
+                width,
+                height,
+                format.format,
+                format.data_type,
+                Some(data),
+            ) {
+                console::error(&format!("[rswebgl] texSubImage2D failed: {e:?}"));
+            }
+            PixelUnpack::reset(gl);
+        });
     }
 
     /// Fill a region of an allocated 3D / 2D-array level from raw bytes.
     #[allow(clippy::too_many_arguments)]
-    pub fn sub_image_3d(
+    pub fn texture_sub_image_3d(
         &self,
+        tex: TextureId,
         level: i32,
         x: i32,
         y: i32,
@@ -612,7 +609,8 @@ impl Texture {
         format: &TextureFormat,
         data: &[u8],
     ) {
-        self.sub_image_3d_with(
+        self.texture_sub_image_3d_with(
+            tex,
             level,
             x,
             y,
@@ -626,10 +624,11 @@ impl Texture {
         );
     }
 
-    /// `sub_image_3d` with explicit pixel-unpack settings.
+    /// `texture_sub_image_3d` with explicit pixel-unpack settings.
     #[allow(clippy::too_many_arguments)]
-    pub fn sub_image_3d_with(
+    pub fn texture_sub_image_3d_with(
         &self,
+        tex: TextureId,
         level: i32,
         x: i32,
         y: i32,
@@ -641,33 +640,32 @@ impl Texture {
         data: &[u8],
         unpack: &PixelUnpack,
     ) {
-        let t = self.inner.target.as_gl();
-        let gl = &self.inner.gl;
-        gl.bind_texture(t, Some(&self.inner.raw));
-        unpack.apply(gl);
-        if let Err(e) = gl.tex_sub_image_3d_with_opt_u8_array(
-            t,
-            level,
-            x,
-            y,
-            z,
-            width,
-            height,
-            depth,
-            format.format,
-            format.data_type,
-            Some(data),
-        ) {
-            console::error(&format!("[rswebgl] texSubImage3D failed: {e:?}"));
-        }
-        PixelUnpack::reset(gl);
-        gl.bind_texture(t, None);
+        self.with_texture(tex, "texture_sub_image_3d", |gl, t, _| {
+            unpack.apply(gl);
+            if let Err(e) = gl.tex_sub_image_3d_with_opt_u8_array(
+                t,
+                level,
+                x,
+                y,
+                z,
+                width,
+                height,
+                depth,
+                format.format,
+                format.data_type,
+                Some(data),
+            ) {
+                console::error(&format!("[rswebgl] texSubImage3D failed: {e:?}"));
+            }
+            PixelUnpack::reset(gl);
+        });
     }
 
     /// Fill a region of one cube-map face from raw bytes.
     #[allow(clippy::too_many_arguments)]
-    pub fn sub_image_cube_face(
+    pub fn texture_sub_image_cube_face(
         &self,
+        tex: TextureId,
         face: CubeMapFace,
         level: i32,
         x: i32,
@@ -677,31 +675,30 @@ impl Texture {
         format: &TextureFormat,
         data: &[u8],
     ) {
-        let t = self.inner.target.as_gl();
-        let gl = &self.inner.gl;
-        gl.bind_texture(t, Some(&self.inner.raw));
-        if let Err(e) = gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(
-            face.as_gl(),
-            level,
-            x,
-            y,
-            width,
-            height,
-            format.format,
-            format.data_type,
-            Some(data),
-        ) {
-            console::error(&format!("[rswebgl] texSubImage2D cube face failed: {e:?}"));
-        }
-        gl.bind_texture(t, None);
+        self.with_texture(tex, "texture_sub_image_cube_face", |gl, _, _| {
+            if let Err(e) = gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(
+                face.as_gl(),
+                level,
+                x,
+                y,
+                width,
+                height,
+                format.format,
+                format.data_type,
+                Some(data),
+            ) {
+                console::error(&format!("[rswebgl] texSubImage2D cube face failed: {e:?}"));
+            }
+        });
     }
 
     // --- fill from compressed bytes (compressedTexSubImage) -----------------
 
     /// Fill a region of an allocated 2D level with compressed block data.
     #[allow(clippy::too_many_arguments)]
-    pub fn compressed_sub_image_2d(
+    pub fn texture_compressed_sub_image_2d(
         &self,
+        tex: TextureId,
         level: i32,
         x: i32,
         y: i32,
@@ -710,29 +707,28 @@ impl Texture {
         format: &CompressedFormat,
         data: &[u8],
     ) {
-        let t = self.inner.target.as_gl();
-        let gl = &self.inner.gl;
-        gl.bind_texture(t, Some(&self.inner.raw));
-        // SAFETY: the view borrows wasm memory only for this call; the GL copy
-        // happens synchronously and we don't allocate while it's alive.
-        let view = unsafe { js_sys::Uint8Array::view(data) };
-        gl.compressed_tex_sub_image_2d_with_array_buffer_view(
-            t,
-            level,
-            x,
-            y,
-            width,
-            height,
-            format.as_gl(),
-            &view,
-        );
-        gl.bind_texture(t, None);
+        self.with_texture(tex, "texture_compressed_sub_image_2d", |gl, t, _| {
+            // SAFETY: the view borrows wasm memory only for this call; the GL copy
+            // happens synchronously and we don't allocate while it's alive.
+            let view = unsafe { js_sys::Uint8Array::view(data) };
+            gl.compressed_tex_sub_image_2d_with_array_buffer_view(
+                t,
+                level,
+                x,
+                y,
+                width,
+                height,
+                format.as_gl(),
+                &view,
+            );
+        });
     }
 
     /// Fill a region of an allocated 3D / 2D-array level with compressed data.
     #[allow(clippy::too_many_arguments)]
-    pub fn compressed_sub_image_3d(
+    pub fn texture_compressed_sub_image_3d(
         &self,
+        tex: TextureId,
         level: i32,
         x: i32,
         y: i32,
@@ -743,31 +739,31 @@ impl Texture {
         format: &CompressedFormat,
         data: &[u8],
     ) {
-        let t = self.inner.target.as_gl();
-        let gl = &self.inner.gl;
-        gl.bind_texture(t, Some(&self.inner.raw));
-        // SAFETY: see compressed_sub_image_2d.
-        let view = unsafe { js_sys::Uint8Array::view(data) };
-        gl.compressed_tex_sub_image_3d_with_array_buffer_view(
-            t,
-            level,
-            x,
-            y,
-            z,
-            width,
-            height,
-            depth,
-            format.as_gl(),
-            &view,
-        );
-        gl.bind_texture(t, None);
+        self.with_texture(tex, "texture_compressed_sub_image_3d", |gl, t, _| {
+            // SAFETY: see texture_compressed_sub_image_2d.
+            let view = unsafe { js_sys::Uint8Array::view(data) };
+            gl.compressed_tex_sub_image_3d_with_array_buffer_view(
+                t,
+                level,
+                x,
+                y,
+                z,
+                width,
+                height,
+                depth,
+                format.as_gl(),
+                &view,
+            );
+        });
     }
 
     // --- fill from DOM sources (texSubImage) --------------------------------
 
     /// Fill a 2D level from an `HtmlImageElement` (must be loaded & CORS-clean).
-    pub fn sub_image_2d_from_image(
+    #[allow(clippy::too_many_arguments)]
+    pub fn texture_sub_image_2d_from_image(
         &self,
+        tex: TextureId,
         level: i32,
         x: i32,
         y: i32,
@@ -775,28 +771,28 @@ impl Texture {
         format: &TextureFormat,
         unpack: &PixelUnpack,
     ) {
-        let t = self.inner.target.as_gl();
-        let gl = &self.inner.gl;
-        gl.bind_texture(t, Some(&self.inner.raw));
-        unpack.apply(gl);
-        if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_html_image_element(
-            t,
-            level,
-            x,
-            y,
-            format.format,
-            format.data_type,
-            image,
-        ) {
-            console::error(&format!("[rswebgl] texSubImage2D(image) failed: {e:?}"));
-        }
-        PixelUnpack::reset(gl);
-        gl.bind_texture(t, None);
+        self.with_texture(tex, "texture_sub_image_2d_from_image", |gl, t, _| {
+            unpack.apply(gl);
+            if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_html_image_element(
+                t,
+                level,
+                x,
+                y,
+                format.format,
+                format.data_type,
+                image,
+            ) {
+                console::error(&format!("[rswebgl] texSubImage2D(image) failed: {e:?}"));
+            }
+            PixelUnpack::reset(gl);
+        });
     }
 
     /// Fill a 2D level from an `ImageBitmap`.
-    pub fn sub_image_2d_from_bitmap(
+    #[allow(clippy::too_many_arguments)]
+    pub fn texture_sub_image_2d_from_bitmap(
         &self,
+        tex: TextureId,
         level: i32,
         x: i32,
         y: i32,
@@ -804,28 +800,28 @@ impl Texture {
         format: &TextureFormat,
         unpack: &PixelUnpack,
     ) {
-        let t = self.inner.target.as_gl();
-        let gl = &self.inner.gl;
-        gl.bind_texture(t, Some(&self.inner.raw));
-        unpack.apply(gl);
-        if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_image_bitmap(
-            t,
-            level,
-            x,
-            y,
-            format.format,
-            format.data_type,
-            bitmap,
-        ) {
-            console::error(&format!("[rswebgl] texSubImage2D(bitmap) failed: {e:?}"));
-        }
-        PixelUnpack::reset(gl);
-        gl.bind_texture(t, None);
+        self.with_texture(tex, "texture_sub_image_2d_from_bitmap", |gl, t, _| {
+            unpack.apply(gl);
+            if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_image_bitmap(
+                t,
+                level,
+                x,
+                y,
+                format.format,
+                format.data_type,
+                bitmap,
+            ) {
+                console::error(&format!("[rswebgl] texSubImage2D(bitmap) failed: {e:?}"));
+            }
+            PixelUnpack::reset(gl);
+        });
     }
 
     /// Fill a 2D level from the current frame of an `HtmlVideoElement`.
-    pub fn sub_image_2d_from_video(
+    #[allow(clippy::too_many_arguments)]
+    pub fn texture_sub_image_2d_from_video(
         &self,
+        tex: TextureId,
         level: i32,
         x: i32,
         y: i32,
@@ -833,28 +829,28 @@ impl Texture {
         format: &TextureFormat,
         unpack: &PixelUnpack,
     ) {
-        let t = self.inner.target.as_gl();
-        let gl = &self.inner.gl;
-        gl.bind_texture(t, Some(&self.inner.raw));
-        unpack.apply(gl);
-        if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_html_video_element(
-            t,
-            level,
-            x,
-            y,
-            format.format,
-            format.data_type,
-            video,
-        ) {
-            console::error(&format!("[rswebgl] texSubImage2D(video) failed: {e:?}"));
-        }
-        PixelUnpack::reset(gl);
-        gl.bind_texture(t, None);
+        self.with_texture(tex, "texture_sub_image_2d_from_video", |gl, t, _| {
+            unpack.apply(gl);
+            if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_html_video_element(
+                t,
+                level,
+                x,
+                y,
+                format.format,
+                format.data_type,
+                video,
+            ) {
+                console::error(&format!("[rswebgl] texSubImage2D(video) failed: {e:?}"));
+            }
+            PixelUnpack::reset(gl);
+        });
     }
 
     /// Fill a 2D level from an `HtmlCanvasElement`.
-    pub fn sub_image_2d_from_canvas(
+    #[allow(clippy::too_many_arguments)]
+    pub fn texture_sub_image_2d_from_canvas(
         &self,
+        tex: TextureId,
         level: i32,
         x: i32,
         y: i32,
@@ -862,28 +858,28 @@ impl Texture {
         format: &TextureFormat,
         unpack: &PixelUnpack,
     ) {
-        let t = self.inner.target.as_gl();
-        let gl = &self.inner.gl;
-        gl.bind_texture(t, Some(&self.inner.raw));
-        unpack.apply(gl);
-        if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_html_canvas_element(
-            t,
-            level,
-            x,
-            y,
-            format.format,
-            format.data_type,
-            canvas,
-        ) {
-            console::error(&format!("[rswebgl] texSubImage2D(canvas) failed: {e:?}"));
-        }
-        PixelUnpack::reset(gl);
-        gl.bind_texture(t, None);
+        self.with_texture(tex, "texture_sub_image_2d_from_canvas", |gl, t, _| {
+            unpack.apply(gl);
+            if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_html_canvas_element(
+                t,
+                level,
+                x,
+                y,
+                format.format,
+                format.data_type,
+                canvas,
+            ) {
+                console::error(&format!("[rswebgl] texSubImage2D(canvas) failed: {e:?}"));
+            }
+            PixelUnpack::reset(gl);
+        });
     }
 
     /// Fill a 2D level from `ImageData`.
-    pub fn sub_image_2d_from_image_data(
+    #[allow(clippy::too_many_arguments)]
+    pub fn texture_sub_image_2d_from_image_data(
         &self,
+        tex: TextureId,
         level: i32,
         x: i32,
         y: i32,
@@ -891,41 +887,41 @@ impl Texture {
         format: &TextureFormat,
         unpack: &PixelUnpack,
     ) {
-        let t = self.inner.target.as_gl();
-        let gl = &self.inner.gl;
-        gl.bind_texture(t, Some(&self.inner.raw));
-        unpack.apply(gl);
-        if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_image_data(
-            t,
-            level,
-            x,
-            y,
-            format.format,
-            format.data_type,
-            image_data,
-        ) {
-            console::error(&format!("[rswebgl] texSubImage2D(imageData) failed: {e:?}"));
-        }
-        PixelUnpack::reset(gl);
-        gl.bind_texture(t, None);
+        self.with_texture(tex, "texture_sub_image_2d_from_image_data", |gl, t, _| {
+            unpack.apply(gl);
+            if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_image_data(
+                t,
+                level,
+                x,
+                y,
+                format.format,
+                format.data_type,
+                image_data,
+            ) {
+                console::error(&format!("[rswebgl] texSubImage2D(imageData) failed: {e:?}"));
+            }
+            PixelUnpack::reset(gl);
+        });
     }
 
     // --- convenience: load an image URL and upload it on `onload` -----------
 
-    /// Load an image from `url` and upload it into this texture once it loads.
+    /// Load an image from `url` and upload it into `tex` once it loads.
     ///
     /// On load it allocates immutable storage sized to the image, fills level 0,
     /// optionally builds mipmaps, then invokes `on_load` (a JS callback) to
     /// signal the texture is ready to sample. Until then the texture is empty.
     /// `on_load` is called as `on_load(width, height)` — the decoded size, or
     /// `(0, 0)` if the image failed to load; callbacks that don't need the size
-    /// can ignore the arguments.
+    /// can ignore the arguments. If the texture is destroyed before the image
+    /// arrives, the upload is skipped.
     ///
     /// The texture must be freshly created (storage is immutable / one-shot).
     /// The image is requested with `crossOrigin = "anonymous"` so the result is
     /// CORS-clean and usable as a texture.
-    pub fn load_image(
+    pub fn texture_load_image(
         &self,
+        tex: TextureId,
         url: &str,
         format: &TextureFormat,
         generate_mipmaps: bool,
@@ -941,6 +937,7 @@ impl Texture {
         };
         img.set_cross_origin(Some("anonymous"));
         self.drive_image_load(
+            tex,
             img,
             url,
             format.clone(),
@@ -952,15 +949,17 @@ impl Texture {
     }
 
     /// Load an encoded image (PNG/JPEG/…) from raw `bytes` and upload it into
-    /// this texture once it decodes — the in-memory counterpart of `load_image`.
+    /// `tex` once it decodes — the in-memory counterpart of `texture_load_image`.
     ///
     /// The bytes are wrapped in a `Blob` (tagged with `mime`, e.g. `"image/png"`)
     /// and handed to the browser's image decoder via an object URL, which is
     /// revoked once decoding finishes. Same storage/mipmap/`on_load` semantics as
-    /// `load_image`. Useful for images embedded in a container (e.g. a glTF
-    /// `bufferView`) where no URL exists.
-    pub fn load_bytes(
+    /// `texture_load_image`. Useful for images embedded in a container (e.g. a
+    /// glTF `bufferView`) where no URL exists.
+    #[allow(clippy::too_many_arguments)]
+    pub fn texture_load_bytes(
         &self,
+        tex: TextureId,
         bytes: &[u8],
         mime: &str,
         format: &TextureFormat,
@@ -1001,6 +1000,7 @@ impl Texture {
         };
         let revoke = url.clone();
         self.drive_image_load(
+            tex,
             img,
             &url,
             format.clone(),
@@ -1011,15 +1011,143 @@ impl Texture {
         );
     }
 
-    /// Shared decode machinery for `load_image`/`load_bytes`. One closure handles
-    /// both `onload` and `onerror`: on success it sizes immutable storage to the
-    /// image, fills level 0, optionally builds mipmaps; on failure it logs. Either
-    /// way it revokes a transient object URL, fires `on_load`, and tears itself
-    /// down — so a failed/aborted load leaks neither the closure (and its captured
-    /// texture handle) nor the object URL.
+    // --- LOD / sampler parameters -------------------------------------------
+
+    /// `TEXTURE_BASE_LEVEL` — lowest mip level used when sampling.
+    pub fn texture_set_base_level(&self, tex: TextureId, level: i32) {
+        self.set_param_i(
+            tex,
+            "texture_set_base_level",
+            WebGl2RenderingContext::TEXTURE_BASE_LEVEL,
+            level,
+        );
+    }
+
+    /// `TEXTURE_MAX_LEVEL` — highest mip level used when sampling.
+    pub fn texture_set_max_level(&self, tex: TextureId, level: i32) {
+        self.set_param_i(
+            tex,
+            "texture_set_max_level",
+            WebGl2RenderingContext::TEXTURE_MAX_LEVEL,
+            level,
+        );
+    }
+
+    /// `TEXTURE_MIN_LOD` — clamp the minimum level-of-detail.
+    pub fn texture_set_min_lod(&self, tex: TextureId, lod: f32) {
+        self.set_param_f(
+            tex,
+            "texture_set_min_lod",
+            WebGl2RenderingContext::TEXTURE_MIN_LOD,
+            lod,
+        );
+    }
+
+    /// `TEXTURE_MAX_LOD` — clamp the maximum level-of-detail.
+    pub fn texture_set_max_lod(&self, tex: TextureId, lod: f32) {
+        self.set_param_f(
+            tex,
+            "texture_set_max_lod",
+            WebGl2RenderingContext::TEXTURE_MAX_LOD,
+            lod,
+        );
+    }
+
+    /// `TEXTURE_COMPARE_MODE` — enable depth comparison (shadow sampling).
+    pub fn texture_set_compare_mode(&self, tex: TextureId, mode: TextureCompareMode) {
+        self.set_param_i(
+            tex,
+            "texture_set_compare_mode",
+            WebGl2RenderingContext::TEXTURE_COMPARE_MODE,
+            mode as i32,
+        );
+    }
+
+    /// `TEXTURE_COMPARE_FUNC` — comparison used when compare mode is enabled.
+    pub fn texture_set_compare_func(&self, tex: TextureId, func: DepthFunc) {
+        self.set_param_i(
+            tex,
+            "texture_set_compare_func",
+            WebGl2RenderingContext::TEXTURE_COMPARE_FUNC,
+            func.as_gl() as i32,
+        );
+    }
+
+    /// `TEXTURE_MAX_ANISOTROPY_EXT` — anisotropic filtering level (≥1.0).
+    /// Requires `ExtTextureFilterAnisotropic` to be enabled.
+    pub fn texture_set_max_anisotropy(&self, tex: TextureId, value: f32) {
+        const TEXTURE_MAX_ANISOTROPY_EXT: u32 = 0x84FE;
+        self.set_param_f(
+            tex,
+            "texture_set_max_anisotropy",
+            TEXTURE_MAX_ANISOTROPY_EXT,
+            value,
+        );
+    }
+
+    pub fn texture_set_min_filter(&self, tex: TextureId, filter: TextureMinFilter) {
+        self.set_param_i(
+            tex,
+            "texture_set_min_filter",
+            WebGl2RenderingContext::TEXTURE_MIN_FILTER,
+            filter as i32,
+        );
+    }
+
+    pub fn texture_set_mag_filter(&self, tex: TextureId, filter: TextureMagFilter) {
+        self.set_param_i(
+            tex,
+            "texture_set_mag_filter",
+            WebGl2RenderingContext::TEXTURE_MAG_FILTER,
+            filter as i32,
+        );
+    }
+
+    pub fn texture_set_wrap_s(&self, tex: TextureId, wrap: TextureWrap) {
+        self.set_param_i(
+            tex,
+            "texture_set_wrap_s",
+            WebGl2RenderingContext::TEXTURE_WRAP_S,
+            wrap as i32,
+        );
+    }
+
+    pub fn texture_set_wrap_t(&self, tex: TextureId, wrap: TextureWrap) {
+        self.set_param_i(
+            tex,
+            "texture_set_wrap_t",
+            WebGl2RenderingContext::TEXTURE_WRAP_T,
+            wrap as i32,
+        );
+    }
+
+    pub fn texture_set_wrap_r(&self, tex: TextureId, wrap: TextureWrap) {
+        self.set_param_i(
+            tex,
+            "texture_set_wrap_r",
+            WebGl2RenderingContext::TEXTURE_WRAP_R,
+            wrap as i32,
+        );
+    }
+
+    pub fn texture_generate_mipmaps(&self, tex: TextureId) {
+        self.with_texture(tex, "texture_generate_mipmaps", |gl, t, _| {
+            gl.generate_mipmap(t)
+        });
+    }
+}
+
+impl Context {
+    /// Shared decode machinery for `texture_load_image`/`texture_load_bytes`.
+    /// One closure handles both `onload` and `onerror`: on success it sizes
+    /// immutable storage to the image, fills level 0, optionally builds mipmaps;
+    /// on failure it logs. Either way it revokes a transient object URL, fires
+    /// `on_load`, and tears itself down — so a failed/aborted load leaks neither
+    /// the closure nor the object URL.
     #[allow(clippy::too_many_arguments)]
     fn drive_image_load(
         &self,
+        tex: TextureId,
         img: HtmlImageElement,
         src: &str,
         format: TextureFormat,
@@ -1028,7 +1156,7 @@ impl Texture {
         on_load: js_sys::Function,
         revoke_url: Option<String>,
     ) {
-        let tex = self.clone();
+        let ctx = self.clone();
         let img_cb = img.clone();
         let src_owned = src.to_string(); // moved into the closure for error logs
         // The closure is stored in this slot and captures a clone of the same
@@ -1057,14 +1185,14 @@ impl Texture {
                 } else {
                     1
                 };
-                tex.storage_2d(levels, &format, w, h);
+                ctx.texture_storage_2d(tex, levels, &format, w, h);
                 let unpack = PixelUnpack {
                     flip_y,
                     ..PixelUnpack::default()
                 };
-                tex.sub_image_2d_from_image(0, 0, 0, &img_cb, &format, &unpack);
+                ctx.texture_sub_image_2d_from_image(tex, 0, 0, 0, &img_cb, &format, &unpack);
                 if generate_mipmaps {
-                    tex.generate_mipmaps();
+                    ctx.texture_generate_mipmaps(tex);
                 }
                 (w, h)
             } else {
@@ -1085,103 +1213,5 @@ impl Texture {
         img.set_onerror(Some(cb.as_ref().unchecked_ref()));
         *slot.borrow_mut() = Some(cb);
         img.set_src(src);
-    }
-
-    // --- LOD / sampler parameters -------------------------------------------
-
-    /// `TEXTURE_BASE_LEVEL` — lowest mip level used when sampling.
-    pub fn set_base_level(&self, level: i32) {
-        self.set_param_i(WebGl2RenderingContext::TEXTURE_BASE_LEVEL, level);
-    }
-
-    /// `TEXTURE_MAX_LEVEL` — highest mip level used when sampling.
-    pub fn set_max_level(&self, level: i32) {
-        self.set_param_i(WebGl2RenderingContext::TEXTURE_MAX_LEVEL, level);
-    }
-
-    /// `TEXTURE_MIN_LOD` — clamp the minimum level-of-detail.
-    pub fn set_min_lod(&self, lod: f32) {
-        self.set_param_f(WebGl2RenderingContext::TEXTURE_MIN_LOD, lod);
-    }
-
-    /// `TEXTURE_MAX_LOD` — clamp the maximum level-of-detail.
-    pub fn set_max_lod(&self, lod: f32) {
-        self.set_param_f(WebGl2RenderingContext::TEXTURE_MAX_LOD, lod);
-    }
-
-    /// `TEXTURE_COMPARE_MODE` — enable depth comparison (shadow sampling).
-    pub fn set_compare_mode(&self, mode: TextureCompareMode) {
-        self.set_param_i(WebGl2RenderingContext::TEXTURE_COMPARE_MODE, mode as i32);
-    }
-
-    /// `TEXTURE_COMPARE_FUNC` — comparison used when compare mode is enabled.
-    pub fn set_compare_func(&self, func: DepthFunc) {
-        self.set_param_i(
-            WebGl2RenderingContext::TEXTURE_COMPARE_FUNC,
-            func.as_gl() as i32,
-        );
-    }
-
-    /// `TEXTURE_MAX_ANISOTROPY_EXT` — anisotropic filtering level (≥1.0).
-    /// Requires `ExtTextureFilterAnisotropic` to be enabled.
-    pub fn set_max_anisotropy(&self, value: f32) {
-        const TEXTURE_MAX_ANISOTROPY_EXT: u32 = 0x84FE;
-        self.set_param_f(TEXTURE_MAX_ANISOTROPY_EXT, value);
-    }
-
-    pub fn set_min_filter(&self, filter: TextureMinFilter) {
-        let t = self.inner.target.as_gl();
-        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
-        self.inner
-            .gl
-            .tex_parameteri(t, WebGl2RenderingContext::TEXTURE_MIN_FILTER, filter as i32);
-        self.inner.gl.bind_texture(t, None);
-    }
-
-    pub fn set_mag_filter(&self, filter: TextureMagFilter) {
-        let t = self.inner.target.as_gl();
-        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
-        self.inner
-            .gl
-            .tex_parameteri(t, WebGl2RenderingContext::TEXTURE_MAG_FILTER, filter as i32);
-        self.inner.gl.bind_texture(t, None);
-    }
-
-    pub fn set_wrap_s(&self, wrap: TextureWrap) {
-        let t = self.inner.target.as_gl();
-        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
-        self.inner
-            .gl
-            .tex_parameteri(t, WebGl2RenderingContext::TEXTURE_WRAP_S, wrap as i32);
-        self.inner.gl.bind_texture(t, None);
-    }
-
-    pub fn set_wrap_t(&self, wrap: TextureWrap) {
-        let t = self.inner.target.as_gl();
-        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
-        self.inner
-            .gl
-            .tex_parameteri(t, WebGl2RenderingContext::TEXTURE_WRAP_T, wrap as i32);
-        self.inner.gl.bind_texture(t, None);
-    }
-
-    pub fn set_wrap_r(&self, wrap: TextureWrap) {
-        let t = self.inner.target.as_gl();
-        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
-        self.inner
-            .gl
-            .tex_parameteri(t, WebGl2RenderingContext::TEXTURE_WRAP_R, wrap as i32);
-        self.inner.gl.bind_texture(t, None);
-    }
-
-    pub fn generate_mipmaps(&self) {
-        let t = self.inner.target.as_gl();
-        self.inner.gl.bind_texture(t, Some(&self.inner.raw));
-        self.inner.gl.generate_mipmap(t);
-        self.inner.gl.bind_texture(t, None);
-    }
-
-    pub fn target(&self) -> TextureTarget {
-        self.inner.target.clone()
     }
 }

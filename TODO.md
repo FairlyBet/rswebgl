@@ -78,13 +78,14 @@ treatment instead of "enable it yourself":
 
 ## Context loss
 
-Handled (`src/context_loss.rs`): the renderer idles while lost, extensions are
-re-enabled on restore, `on_lost` / `on_restored` callbacks, and stale handles
-skip their delete. Recreating resources is the app's job (see the cube
-example). Possible follow-ups:
+Handled (`src/context_loss.rs`): a loss clears the resource pools (every handle
+goes stale, nothing tries to delete dead objects), the renderer idles while
+lost, extensions are re-enabled on restore, and `on_lost` / `on_restored(ctx)`
+are called. Stale-handle reports are muted while a context is lost. Recreating
+resources is the app's job (see the cube example). Possible follow-ups:
 
-- **Automatic restore** of objects the library itself owns (e.g. the
-  `TexturePacker` program and quad), so apps don't have to rebuild them.
+- **Automatic restore** of objects the library itself owns (e.g. a
+  `TexturePacker` has to be recreated after a restore).
 - glTF `Model` has no "reload" path; an app has to call `load_model` again.
 - No JS example of `set_on_restored` yet.
 

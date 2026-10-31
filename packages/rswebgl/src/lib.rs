@@ -1,5 +1,9 @@
-//! WebGL2 wrapper: GL objects as shared handles, and a declarative
-//! Pass → Batch → Draw renderer that diffs GL state between draws.
+//! WebGL2 wrapper: GL objects live in pools owned by a [`context::Context`] and
+//! are addressed by numeric handles ([`ids`]) with explicit `destroy_*`; a
+//! declarative Pass → Batch → Draw renderer diffs GL state between draws.
+//!
+//! Handles are generational: using one after its object was destroyed (or
+//! after a context loss) is detected and reported, never undefined behavior.
 //!
 //! # Errors
 //!
@@ -28,6 +32,7 @@ pub(crate) mod context_loss;
 pub mod draw;
 pub mod extension;
 pub mod framebuffer;
+pub mod ids;
 pub mod limits;
 pub mod pass;
 pub mod pixel_unpack;
@@ -41,6 +46,5 @@ pub mod uniform_buffer;
 pub(crate) mod uniform_cache;
 pub(crate) mod uniform_value;
 pub mod uniform_values;
-pub mod uniforms;
 pub mod vao;
 pub mod vao_builder;

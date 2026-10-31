@@ -1,12 +1,13 @@
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
+use rswebgl_foundation::pool::Destroyed;
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlProgram, WebGlShader, WebGlUniformLocation};
 
 use crate::console;
-use crate::context_loss;
+use crate::context::{Context, stale};
+use crate::extension::Extension;
+use crate::ids::ProgramId;
 use crate::limits;
 use crate::uniform_cache::UniformCache;
 use crate::uniform_values::UniformValues;
@@ -15,18 +16,26 @@ const COMPLETION_STATUS_KHR: u32 = 0x91B1;
 // getUniformBlockIndex returns this for a name that isn't an active uniform block.
 const INVALID_INDEX: u32 = 0xFFFF_FFFF;
 
-// Everything that changes after construction. It lives in the shared inner, so
-// all clones of a Program see one finalize / one uniform-location cache, and the
-// mutating methods take `&self` (a Program held inside a render `Batch` needs no
-// `&mut`).
-//
-// Texture units and uniform-buffer binding points are assigned here, per program
-// and by name, in order of first use: the sampler's uniform1i / the block's
-// uniformBlockBinding is then written once for the program's lifetime, and
-// samplers/blocks coming from different UniformValues (batch + draw) can never
-// collide on a slot. `None` = no such active sampler/block in the shader.
+/// Debug checks a program runs while drawing (each reported once).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Validation {
+    /// Uniform-block size vs our std140 layout, on first bind.
+    pub blocks: bool,
+    /// Active uniforms that neither the batch nor the draw sets.
+    pub uniforms: bool,
+}
+
+/// A program in the context's pool.
+///
+/// Texture units and uniform-buffer binding points are assigned here, per program
+/// and by name, in order of first use: the sampler's uniform1i / the block's
+/// uniformBlockBinding is then written once for the program's lifetime, and
+/// samplers/blocks coming from different UniformValues (batch + draw) can never
+/// collide on a slot. `None` = no such active sampler/block in the shader.
 #[derive(Debug)]
-struct ProgramState {
+pub(crate) struct ProgramObj {
+    pub(crate) raw: WebGlProgram,
+    validate: Validation,
     vert: Option<WebGlShader>,
     frag: Option<WebGlShader>,
     ready: bool,
@@ -40,53 +49,14 @@ struct ProgramState {
     reported_unset: HashSet<String>,
 }
 
-#[derive(Debug)]
-struct ProgramInner {
-    gl: WebGl2RenderingContext,
-    raw: WebGlProgram,
-    // Context generation it was created in (see context_loss).
-    generation: u32,
-    validate: Validation,
-    state: RefCell<ProgramState>,
-}
-
-/// Debug checks a program runs while drawing (each reported once).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Validation {
-    /// Uniform-block size vs our std140 layout, on first bind.
-    pub blocks: bool,
-    /// Active uniforms that neither the batch nor the draw sets.
-    pub uniforms: bool,
-}
-
-impl Drop for ProgramInner {
-    fn drop(&mut self) {
-        if !context_loss::is_current(&self.gl, self.generation) {
-            return;
-        }
-        let st = self.state.get_mut();
-        self.gl.delete_shader(st.vert.take().as_ref());
-        self.gl.delete_shader(st.frag.take().as_ref());
-        self.gl.delete_program(Some(&self.raw));
-    }
-}
-
-/// A shared handle to a linked GL program: clones point at the same program,
-/// which is deleted when the last handle drops.
-#[wasm_bindgen]
-#[derive(Debug, Clone)]
-pub struct Program {
-    inner: Rc<ProgramInner>,
-}
-
-impl Program {
-    pub(crate) fn new(
+impl ProgramObj {
+    fn new(
         gl: &WebGl2RenderingContext,
         vert_src: &str,
         frag_src: &str,
         parallel: bool,
         validate: Validation,
-    ) -> Result<Program, String> {
+    ) -> Result<ProgramObj, String> {
         let vert = create_shader(gl, WebGl2RenderingContext::VERTEX_SHADER, vert_src)?;
         let frag = create_shader(gl, WebGl2RenderingContext::FRAGMENT_SHADER, frag_src)?;
 
@@ -95,47 +65,47 @@ impl Program {
         gl.attach_shader(&raw, &frag);
         gl.link_program(&raw);
 
-        let program = Program {
-            inner: Rc::new(ProgramInner {
-                gl: gl.clone(),
-                raw,
-                generation: context_loss::generation(gl),
-                validate,
-                state: RefCell::new(ProgramState {
-                    vert: Some(vert),
-                    frag: Some(frag),
-                    ready: false,
-                    valid: false,
-                    cache: UniformCache::new(),
-                    sampler_units: HashMap::new(),
-                    block_points: HashMap::new(),
-                    active: None,
-                    reported_unset: HashSet::new(),
-                }),
-            }),
+        let mut program = ProgramObj {
+            raw,
+            validate,
+            vert: Some(vert),
+            frag: Some(frag),
+            ready: false,
+            valid: false,
+            cache: UniformCache::new(),
+            sampler_units: HashMap::new(),
+            block_points: HashMap::new(),
+            active: None,
+            reported_unset: HashSet::new(),
         };
 
         // Without parallel compile the first status query blocks on the link
         // anyway, so do it now and hand compile/link errors back to the caller.
         // With it, the link finishes in the background; `is_ready` polls it
         // without blocking, and the renderer waits on it at first draw.
-        if !parallel {
-            program.finalize()?;
+        if !parallel && let Err(e) = program.finalize(gl) {
+            program.delete(gl);
+            return Err(e);
         }
         Ok(program)
+    }
+
+    pub(crate) fn delete(self, gl: &WebGl2RenderingContext) {
+        gl.delete_shader(self.vert.as_ref());
+        gl.delete_shader(self.frag.as_ref());
+        gl.delete_program(Some(&self.raw));
     }
 
     // The texture unit sampler `name` reads from. Assigned and written to the
     // sampler uniform (uniform1i) the first time it's asked for, so the program
     // must be in use then.
-    pub(crate) fn sampler_unit(&self, name: &str) -> Option<u32> {
-        if let Some(unit) = self.inner.state.borrow().sampler_units.get(name) {
+    pub(crate) fn sampler_unit(&mut self, gl: &WebGl2RenderingContext, name: &str) -> Option<u32> {
+        if let Some(unit) = self.sampler_units.get(name) {
             return *unit;
         }
-        let loc = self.loc(name);
-        let mut st = self.inner.state.borrow_mut();
+        let loc = self.loc(gl, name);
         let unit = loc.and_then(|loc| {
-            let next = st.sampler_units.values().flatten().count() as u32;
+            let next = self.sampler_units.values().flatten().count() as u32;
             let max = limits::max_combined_texture_units();
             if next >= max {
                 console::warn(&format!(
@@ -143,10 +113,10 @@ impl Program {
                 ));
                 return None;
             }
-            self.inner.gl.uniform1i(Some(&loc), next as i32);
+            gl.uniform1i(Some(&loc), next as i32);
             Some(next)
         });
-        st.sampler_units.insert(name.to_string(), unit);
+        self.sampler_units.insert(name.to_string(), unit);
         unit
     }
 
@@ -154,22 +124,24 @@ impl Program {
     // block is resolved, linked to its point (uniformBlockBinding) and, if
     // validation is on, its shader-reported size checked against `expected_size`
     // (our computed std140 size).
-    pub(crate) fn block_point(&self, name: &str, expected_size: u32) -> Option<u32> {
-        if let Some(point) = self.inner.state.borrow().block_points.get(name) {
+    pub(crate) fn block_point(
+        &mut self,
+        gl: &WebGl2RenderingContext,
+        name: &str,
+        expected_size: u32,
+    ) -> Option<u32> {
+        if let Some(point) = self.block_points.get(name) {
             return *point;
         }
-        let gl = &self.inner.gl;
-        let raw = &self.inner.raw;
-        let mut st = self.inner.state.borrow_mut();
-        let index = gl.get_uniform_block_index(raw, name);
+        let index = gl.get_uniform_block_index(&self.raw, name);
         let point = if index == INVALID_INDEX {
             console::warn(&format!("[rswebgl] uniform block not found: \"{name}\""));
             None
         } else {
-            if self.inner.validate.blocks {
-                validate_block_size(gl, raw, index, name, expected_size);
+            if self.validate.blocks {
+                validate_block_size(gl, &self.raw, index, name, expected_size);
             }
-            let next = st.block_points.values().flatten().count() as u32;
+            let next = self.block_points.values().flatten().count() as u32;
             let max = limits::max_uniform_buffer_bindings();
             if next >= max {
                 console::warn(&format!(
@@ -177,25 +149,27 @@ impl Program {
                 ));
                 None
             } else {
-                gl.uniform_block_binding(raw, index, next);
+                gl.uniform_block_binding(&self.raw, index, next);
                 Some(next)
             }
         };
-        st.block_points.insert(name.to_string(), point);
+        self.block_points.insert(name.to_string(), point);
         point
     }
 
     // Reports (once per name) active uniforms that none of `sources` sets: such a
     // uniform silently keeps whatever an earlier draw of this program left in it.
-    pub(crate) fn check_uniforms_set(&self, sources: &[&UniformValues]) {
-        if !self.inner.validate.uniforms {
+    pub(crate) fn check_uniforms_set(
+        &mut self,
+        gl: &WebGl2RenderingContext,
+        sources: &[&UniformValues],
+    ) {
+        if !self.validate.uniforms {
             return;
         }
-        self.ensure_active();
-        let mut st = self.inner.state.borrow_mut();
-        let st = &mut *st;
-        for name in st.active.iter().flatten() {
-            if st.reported_unset.contains(name) || sources.iter().any(|u| u.contains(name)) {
+        self.ensure_active(gl);
+        for name in self.active.iter().flatten() {
+            if self.reported_unset.contains(name) || sources.iter().any(|u| u.contains(name)) {
                 continue;
             }
             console::warn(&format!(
@@ -203,65 +177,52 @@ impl Program {
                  keeps the value an earlier draw of this program left. Set it on the Batch to \
                  share it across draws."
             ));
-            st.reported_unset.insert(name.clone());
+            self.reported_unset.insert(name.clone());
         }
     }
 
-    fn ensure_active(&self) {
-        if self.inner.state.borrow().active.is_some() {
-            return;
+    fn ensure_active(&mut self, gl: &WebGl2RenderingContext) {
+        if self.active.is_none() {
+            self.active = Some(active_uniforms(gl, &self.raw));
         }
-        let names = active_uniforms(&self.inner.gl, &self.inner.raw);
-        self.inner.state.borrow_mut().active = Some(names);
     }
 
-    pub(crate) fn gl(&self) -> &WebGl2RenderingContext {
-        &self.inner.gl
-    }
-
-    pub(crate) fn raw_gl(&self) -> &WebGlProgram {
-        &self.inner.raw
-    }
-
-    pub(crate) fn loc(&self, name: &str) -> Option<WebGlUniformLocation> {
-        self.inner
-            .state
-            .borrow_mut()
-            .cache
-            .get(&self.inner.gl, &self.inner.raw, name)
-            .cloned()
+    pub(crate) fn loc(
+        &mut self,
+        gl: &WebGl2RenderingContext,
+        name: &str,
+    ) -> Option<WebGlUniformLocation> {
+        self.cache.get(gl, &self.raw, name).cloned()
     }
 
     // Waits for the link if it's still running (blocking), reporting a failure
     // once. Returns whether the program is usable.
-    pub(crate) fn ensure_linked(&self) -> bool {
-        if !self.inner.state.borrow().ready
-            && let Err(msg) = self.finalize()
+    pub(crate) fn ensure_linked(&mut self, gl: &WebGl2RenderingContext) -> bool {
+        if !self.ready
+            && let Err(msg) = self.finalize(gl)
         {
             console::error(&format!("[rswebgl] {msg}"));
         }
-        self.inner.state.borrow().valid
+        self.valid
     }
 
     // Reads the link status once the link has completed, frees the shader
     // objects, and returns the compile/link logs on failure.
-    fn finalize(&self) -> Result<(), String> {
-        let gl = &self.inner.gl;
-        let mut st = self.inner.state.borrow_mut();
-        st.ready = true;
-        st.valid = gl
-            .get_program_parameter(&self.inner.raw, WebGl2RenderingContext::LINK_STATUS)
+    fn finalize(&mut self, gl: &WebGl2RenderingContext) -> Result<(), String> {
+        self.ready = true;
+        self.valid = gl
+            .get_program_parameter(&self.raw, WebGl2RenderingContext::LINK_STATUS)
             .as_bool()
             .unwrap_or(false);
 
-        let result = if st.valid {
+        let result = if self.valid {
             Ok(())
         } else {
             let prog_log = gl
-                .get_program_info_log(&self.inner.raw)
+                .get_program_info_log(&self.raw)
                 .unwrap_or_else(|| "unknown error".into());
             let mut msg = format!("program link failed: {}", prog_log.trim());
-            for (stage, shader) in [("vertex", &st.vert), ("fragment", &st.frag)] {
+            for (stage, shader) in [("vertex", &self.vert), ("fragment", &self.frag)] {
                 let log = shader
                     .as_ref()
                     .and_then(|s| gl.get_shader_info_log(s))
@@ -273,60 +234,90 @@ impl Program {
             Err(msg)
         };
 
-        gl.delete_shader(st.vert.take().as_ref());
-        gl.delete_shader(st.frag.take().as_ref());
+        gl.delete_shader(self.vert.take().as_ref());
+        gl.delete_shader(self.frag.take().as_ref());
         result
     }
 }
 
 #[wasm_bindgen]
-impl Program {
+impl Context {
+    /// Compiles and links a program. Without `KHR_parallel_shader_compile` a
+    /// compile or link error comes back here, with the shader logs; with it,
+    /// creation doesn't block and errors are reported when the link completes.
+    pub fn create_program(&self, vert_src: &str, frag_src: &str) -> Result<ProgramId, String> {
+        self.check_alive()?;
+        let parallel = self.is_extension_enabled(Extension::KhrParallelShaderCompile);
+        let obj = ProgramObj::new(
+            self.gl(),
+            vert_src,
+            frag_src,
+            parallel,
+            self.core.validate.get(),
+        )?;
+        let mut res = self.res();
+        match res.programs.insert(obj) {
+            Ok(h) => Ok(h.into()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    pub fn destroy_program(&self, program: ProgramId) {
+        let destroyed = self.res().programs.destroy(program.0);
+        match destroyed {
+            Destroyed::Now(obj) => obj.delete(self.gl()),
+            Destroyed::Deferred => {}
+            Destroyed::Invalid => stale("program", "destroy_program", program),
+        }
+    }
+
     /// Whether the link has finished. Always true unless the program was created
     /// with `KHR_parallel_shader_compile` enabled; then it polls without blocking
     /// (the renderer would otherwise wait on the link at first draw), and a failed
-    /// link is logged to the console once, when it completes.
-    pub fn is_ready(&self) -> bool {
-        if self.inner.state.borrow().ready {
+    /// link is logged to the console once, when it completes. False for a stale
+    /// handle.
+    pub fn program_is_ready(&self, program: ProgramId) -> bool {
+        let gl = self.gl();
+        let mut res = self.res();
+        let Some(p) = res.programs.get_mut(program.0) else {
+            return false;
+        };
+        if p.ready {
             return true;
         }
         // A lost context reports every link as complete and failed.
-        if self.inner.gl.is_context_lost() {
+        if gl.is_context_lost() {
             return false;
         }
-
-        let complete = self
-            .inner
-            .gl
-            .get_program_parameter(&self.inner.raw, COMPLETION_STATUS_KHR)
+        let complete = gl
+            .get_program_parameter(&p.raw, COMPLETION_STATUS_KHR)
             .as_bool()
             .unwrap_or(false);
-
         if complete {
-            self.ensure_linked();
+            p.ensure_linked(gl);
         }
-
-        self.inner.state.borrow().ready
+        p.ready
     }
 
-    pub fn is_valid(&self) -> bool {
-        self.inner.state.borrow().valid
+    /// Whether the program linked successfully (false while still linking, or
+    /// for a stale handle).
+    pub fn program_is_valid(&self, program: ProgramId) -> bool {
+        self.res().programs.get(program.0).is_some_and(|p| p.valid)
     }
 
     /// Names of the program's active uniforms outside uniform blocks (samplers
     /// included; arrays as their base name, without `[0]`), sorted.
-    pub fn active_uniform_names(&self) -> Vec<String> {
-        self.ensure_active();
-        self.inner.state.borrow().active.clone().unwrap_or_default()
+    pub fn program_active_uniform_names(&self, program: ProgramId) -> Vec<String> {
+        let gl = self.gl();
+        let mut res = self.res();
+        let Some(p) = res.programs.get_mut(program.0) else {
+            stale("program", "program_active_uniform_names", program);
+            return Vec::new();
+        };
+        p.ensure_active(gl);
+        p.active.clone().unwrap_or_default()
     }
 }
-
-impl PartialEq for Program {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.inner, &other.inner)
-    }
-}
-
-impl Eq for Program {}
 
 // Compares the shader's reported block size (UNIFORM_BLOCK_DATA_SIZE) against our
 // computed std140 size. A mismatch means the layout drifted from the GLSL block

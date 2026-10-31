@@ -1,9 +1,9 @@
-use std::rc::Rc;
-
+use rswebgl_foundation::pool::Destroyed;
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlRenderbuffer};
 
-use crate::context_loss;
+use crate::context::{Context, stale};
+use crate::ids::RenderbufferId;
 use crate::limits;
 
 // ---------------------------------------------------------------------------
@@ -42,121 +42,126 @@ impl RenderbufferFormat {
 // Renderbuffer
 // ---------------------------------------------------------------------------
 
+/// A renderbuffer in the context's pool.
 #[derive(Debug)]
-struct RenderbufferInner {
-    gl: WebGl2RenderingContext,
-    raw: WebGlRenderbuffer,
-    // Context generation it was created in (see context_loss).
-    generation: u32,
+pub(crate) struct RenderbufferObj {
+    pub(crate) raw: WebGlRenderbuffer,
     width: i32,
     height: i32,
     samples: i32,
     format: RenderbufferFormat,
 }
 
-impl Drop for RenderbufferInner {
-    fn drop(&mut self) {
-        if context_loss::is_current(&self.gl, self.generation) {
-            self.gl.delete_renderbuffer(Some(&self.raw));
-        }
+impl RenderbufferObj {
+    pub(crate) fn delete(self, gl: &WebGl2RenderingContext) {
+        gl.delete_renderbuffer(Some(&self.raw));
     }
 }
 
-/// A shared handle to a GL renderbuffer: clones point at the same renderbuffer,
-/// which is deleted when the last handle drops.
-#[wasm_bindgen]
-#[derive(Debug, Clone)]
-pub struct Renderbuffer {
-    inner: Rc<RenderbufferInner>,
-}
-
-impl Renderbuffer {
-    pub(crate) fn new(
-        gl: &WebGl2RenderingContext,
-        format: RenderbufferFormat,
-        width: i32,
-        height: i32,
-    ) -> Result<Self, String> {
-        check_size(width, height, 0)?;
-        let raw = gl
-            .create_renderbuffer()
-            .ok_or("createRenderbuffer failed")?;
-        gl.bind_renderbuffer(WebGl2RenderingContext::RENDERBUFFER, Some(&raw));
-        gl.renderbuffer_storage(
-            WebGl2RenderingContext::RENDERBUFFER,
-            format.as_gl(),
-            width,
-            height,
-        );
-        gl.bind_renderbuffer(WebGl2RenderingContext::RENDERBUFFER, None);
-        Ok(Self {
-            inner: Rc::new(RenderbufferInner {
-                gl: gl.clone(),
-                raw,
-                generation: context_loss::generation(gl),
-                width,
-                height,
-                samples: 0,
-                format,
-            }),
-        })
-    }
-
-    pub(crate) fn new_multisample(
-        gl: &WebGl2RenderingContext,
+impl Context {
+    fn new_renderbuffer(
+        &self,
         format: RenderbufferFormat,
         samples: i32,
         width: i32,
         height: i32,
-    ) -> Result<Self, String> {
+    ) -> Result<RenderbufferId, String> {
+        self.check_alive()?;
         check_size(width, height, samples)?;
+        let gl = self.gl();
         let raw = gl
             .create_renderbuffer()
             .ok_or("createRenderbuffer failed")?;
         gl.bind_renderbuffer(WebGl2RenderingContext::RENDERBUFFER, Some(&raw));
-        gl.renderbuffer_storage_multisample(
-            WebGl2RenderingContext::RENDERBUFFER,
-            samples,
-            format.as_gl(),
-            width,
-            height,
-        );
+        if samples > 0 {
+            gl.renderbuffer_storage_multisample(
+                WebGl2RenderingContext::RENDERBUFFER,
+                samples,
+                format.as_gl(),
+                width,
+                height,
+            );
+        } else {
+            gl.renderbuffer_storage(
+                WebGl2RenderingContext::RENDERBUFFER,
+                format.as_gl(),
+                width,
+                height,
+            );
+        }
         gl.bind_renderbuffer(WebGl2RenderingContext::RENDERBUFFER, None);
-        Ok(Self {
-            inner: Rc::new(RenderbufferInner {
-                gl: gl.clone(),
+        self.res()
+            .renderbuffers
+            .insert(RenderbufferObj {
                 raw,
-                generation: context_loss::generation(gl),
                 width,
                 height,
                 samples,
                 format,
-            }),
-        })
+            })
+            .map(Into::into)
+            .map_err(|e| e.to_string())
     }
 
-    pub(crate) fn raw_gl(&self) -> &WebGlRenderbuffer {
-        &self.inner.raw
+    fn renderbuffer_obj<T>(
+        &self,
+        rb: RenderbufferId,
+        f: impl FnOnce(&RenderbufferObj) -> T,
+    ) -> Option<T> {
+        self.res().renderbuffers.get(rb.0).map(f)
     }
 }
 
 #[wasm_bindgen]
-impl Renderbuffer {
-    pub fn width(&self) -> i32 {
-        self.inner.width
+impl Context {
+    pub fn create_renderbuffer(
+        &self,
+        format: RenderbufferFormat,
+        width: i32,
+        height: i32,
+    ) -> Result<RenderbufferId, String> {
+        self.new_renderbuffer(format, 0, width, height)
     }
 
-    pub fn height(&self) -> i32 {
-        self.inner.height
+    pub fn create_renderbuffer_multisample(
+        &self,
+        format: RenderbufferFormat,
+        samples: i32,
+        width: i32,
+        height: i32,
+    ) -> Result<RenderbufferId, String> {
+        self.new_renderbuffer(format, samples.max(1), width, height)
     }
 
-    /// 0 for a non-multisampled renderbuffer.
-    pub fn samples(&self) -> i32 {
-        self.inner.samples
+    /// 0 for a stale handle.
+    pub fn renderbuffer_width(&self, rb: RenderbufferId) -> i32 {
+        self.renderbuffer_obj(rb, |r| r.width).unwrap_or(0)
     }
 
-    pub fn format(&self) -> RenderbufferFormat {
-        self.inner.format
+    /// 0 for a stale handle.
+    pub fn renderbuffer_height(&self, rb: RenderbufferId) -> i32 {
+        self.renderbuffer_obj(rb, |r| r.height).unwrap_or(0)
+    }
+
+    /// 0 for a non-multisampled renderbuffer (or a stale handle).
+    pub fn renderbuffer_samples(&self, rb: RenderbufferId) -> i32 {
+        self.renderbuffer_obj(rb, |r| r.samples).unwrap_or(0)
+    }
+
+    pub fn renderbuffer_format(&self, rb: RenderbufferId) -> Option<RenderbufferFormat> {
+        self.renderbuffer_obj(rb, |r| r.format)
+    }
+
+    /// Deletes the renderbuffer. If a framebuffer still has it attached, its
+    /// handle is invalid right away and the GL object goes when the
+    /// framebuffer lets go of it.
+    pub fn destroy_renderbuffer(&self, rb: RenderbufferId) {
+        let destroyed = self.res().renderbuffers.destroy(rb.0);
+        match destroyed {
+            Destroyed::Now(obj) => obj.delete(self.gl()),
+            Destroyed::Deferred => {}
+            Destroyed::Invalid => stale("renderbuffer", "destroy_renderbuffer", rb),
+        }
     }
 }
 

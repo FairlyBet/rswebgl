@@ -50,10 +50,10 @@ async fn wait_for(cond: impl Fn() -> bool) -> bool {
     cond()
 }
 
-fn red_middle_quad(f: &Fixture, program: &rswebgl::program::Program) -> Batch {
+fn red_middle_quad(f: &Fixture, program: rswebgl::ids::ProgramId) -> Batch {
     let mut b = Batch::new(program, &RenderState::new());
     let cmd = DrawCommand::elements(DrawMode::Triangles, 6, IndexType::UnsignedShort, 0);
-    b.draw(&f.quad, &quad_uniforms(1, 0), cmd);
+    b.draw(f.quad, &quad_uniforms(1, 0), cmd);
     b
 }
 
@@ -69,21 +69,22 @@ async fn lose_and_restore_then_recreate() {
     let lost = Rc::new(Cell::new(0));
     let restored = Rc::new(Cell::new(0));
     let l = Rc::clone(&lost);
-    f.ctx.on_lost(move || l.set(l.get() + 1));
+    f.ctx.on_lost(move |_| l.set(l.get() + 1));
     let r = Rc::clone(&restored);
-    f.ctx.on_restored(move || r.set(r.get() + 1));
+    f.ctx.on_restored(move |_| r.set(r.get() + 1));
 
     let old_program = f.ctx.create_program(VERT, RED_FRAG).expect("program");
-    render(&f, vec![red_middle_quad(&f, &old_program)]);
+    render(&f, vec![red_middle_quad(&f, old_program)]);
     assert_eq!(read_quads(&f.gl), [BLACK, RED, BLACK]);
 
     // --- lose ---
     assert!(f.ctx.simulate_context_loss());
     assert!(wait_for(|| lost.get() == 1).await, "on_lost not called");
     assert!(f.ctx.is_lost());
-    // Rendering is a no-op and must not poison the program; creation fails cleanly.
-    render(&f, vec![red_middle_quad(&f, &old_program)]);
-    assert!(old_program.is_valid());
+    // Every handle is stale from the loss on; rendering is a no-op, and
+    // creation fails cleanly.
+    assert!(!f.ctx.program_is_valid(old_program));
+    render(&f, vec![red_middle_quad(&f, old_program)]);
     let err = f.ctx.create_program(VERT, RED_FRAG).expect_err("lost");
     assert!(err.contains("lost"), "{err}");
     assert_eq!(restored.get(), 0);
@@ -97,8 +98,14 @@ async fn lose_and_restore_then_recreate() {
     assert!(!f.ctx.is_lost());
     assert_eq!(lost.get(), 1);
 
-    // Old objects are dead; dropping them must not raise GL errors.
-    drop(old_program);
+    // Handles from before the loss are stale: queries say so, and destroying
+    // one is reported (by the library) rather than reaching GL.
+    assert!(!f.ctx.program_is_valid(old_program));
+    let errors = capture_console("error", || f.ctx.destroy_program(old_program));
+    assert!(
+        errors.iter().any(|e| e.contains("destroyed or invalid")),
+        "{errors:?}"
+    );
     let mut vb = VaoBuilder::new(&f.ctx);
     vb.add_f32(
         0,
@@ -111,7 +118,7 @@ async fn lose_and_restore_then_recreate() {
 
     // Recreated resources render normally.
     let program = f.ctx.create_program(VERT, RED_FRAG).expect("program");
-    assert!(wait_for(|| program.is_ready()).await);
-    render(&f, vec![red_middle_quad(&f, &program)]);
+    assert!(wait_for(|| f.ctx.program_is_ready(program)).await);
+    render(&f, vec![red_middle_quad(&f, program)]);
     assert_eq!(read_quads(&f.gl), [BLACK, RED, BLACK]);
 }

@@ -45,7 +45,10 @@ fn vertex_attr_beyond_limit_is_rejected() {
         .create_buffer(BufferUsage::StaticDraw, &[0; 16])
         .unwrap();
     let max = limits::max_vertex_attribs();
-    let errors = capture_console("error", || vao.attr(max, &buf, &VertexAttr::float(4)));
+    let errors = capture_console("error", || {
+        f.ctx
+            .vertex_array_attr(vao, max, buf, &VertexAttr::float(4))
+    });
     assert!(
         errors.iter().any(|e| e.contains("MAX_VERTEX_ATTRIBS")),
         "{errors:?}"
@@ -71,9 +74,11 @@ fn texture_storage_beyond_limit_is_rejected() {
         .unwrap();
     let too_big = limits::max_texture_size() as i32 + 1;
     let errors = capture_console("error", || {
-        tex.storage_2d(1, &TextureFormat::rgba8(), too_big, 4);
+        f.ctx
+            .texture_storage_2d(tex, 1, &TextureFormat::rgba8(), too_big, 4);
         // 4x4 has 3 mip levels at most.
-        tex.storage_2d(4, &TextureFormat::rgba8(), 4, 4);
+        f.ctx
+            .texture_storage_2d(tex, 4, &TextureFormat::rgba8(), 4, 4);
     });
     assert_eq!(errors.len(), 2, "{errors:?}");
     assert!(errors[0].contains("MAX_TEXTURE_SIZE"), "{errors:?}");
@@ -81,7 +86,8 @@ fn texture_storage_beyond_limit_is_rejected() {
     assert_no_gl_error(&f);
 
     // A valid request still goes through.
-    tex.storage_2d(3, &TextureFormat::rgba8(), 4, 4);
+    f.ctx
+        .texture_storage_2d(tex, 3, &TextureFormat::rgba8(), 4, 4);
     assert_no_gl_error(&f);
 }
 
@@ -94,7 +100,9 @@ fn color_attachment_beyond_limit_is_rejected() {
         .create_renderbuffer(RenderbufferFormat::Rgba8, 4, 4)
         .unwrap();
     let index = limits::max_color_attachments().min(limits::max_draw_buffers());
-    let errors = capture_console("error", || fb.attach_color_renderbuffer(index, &rb));
+    let errors = capture_console("error", || {
+        f.ctx.framebuffer_attach_color_renderbuffer(fb, index, rb)
+    });
     assert!(
         errors.iter().any(|e| e.contains("MAX_COLOR_ATTACHMENTS")),
         "{errors:?}"
@@ -140,8 +148,8 @@ void main() {
     let warnings = capture_console("warn", || {
         for frame in 0..3 {
             u.set_float("u_no_such_uniform", frame as f32);
-            let mut batch = Batch::new(&program, &RenderState::new());
-            batch.draw(&f.quad, &u, cmd);
+            let mut batch = Batch::new(program, &RenderState::new());
+            batch.draw(f.quad, &u, cmd);
             render(&f, vec![batch]);
         }
     });

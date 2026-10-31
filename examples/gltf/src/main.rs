@@ -97,13 +97,12 @@ fn main() {
 
 /// One renderable item: its spinning UBO and static world matrix.
 struct Item {
-    ubo: rswebgl::uniform_buffer::UniformBuffer,
+    ubo: rswebgl::ids::UniformBufferId,
     world: Mat4,
 }
 
 fn run(ctx: Context, model: Model) {
     let program = ctx.create_program(VERT, FRAG).expect("program");
-    let renderer = ctx.renderer();
     let default_fb = ctx.default_framebuffer();
     default_fb.set_clear_color(0.05, 0.05, 0.08, 1.0);
     default_fb.enable_auto_resize().expect("auto-resize");
@@ -130,11 +129,11 @@ fn run(ctx: Context, model: Model) {
             .create_uniform_buffer(&layout, BufferUsage::DynamicDraw)
             .expect("ubo");
         let uniforms = UniformValues::new();
-        uniforms.set_uniform_block("Matrices", &ubo);
+        uniforms.set_uniform_block("Matrices", ubo);
         di.write_uniforms(&model, &uniforms);
 
-        let mut batch = Batch::new(&program, &di.render_state());
-        batch.draw(&di.vao(), &uniforms, di.draw_command());
+        let mut batch = Batch::new(program, &di.render_state());
+        batch.draw(di.vao(), &uniforms, di.draw_command());
         pass.add(batch);
 
         items.push(Item {
@@ -172,11 +171,11 @@ fn run(ctx: Context, model: Model) {
         for item in &items {
             let model_mat = spin * item.world;
             let mvp = proj * view * model_mat;
-            item.ubo.set_mat("u_mvp", &mvp.to_cols_array());
-            item.ubo.set_mat("u_model", &model_mat.to_cols_array());
+            ctx.ubo_set_mat(item.ubo, "u_mvp", &mvp.to_cols_array());
+            ctx.ubo_set_mat(item.ubo, "u_model", &model_mat.to_cols_array());
         }
 
-        renderer.render(&pass);
+        ctx.render(&pass);
         let _ = win.request_animation_frame(f.borrow().as_ref().unwrap().as_ref().unchecked_ref());
     }));
 

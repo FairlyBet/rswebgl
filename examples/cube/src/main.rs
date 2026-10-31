@@ -10,9 +10,10 @@ use rswebgl::buffer::BufferUsage;
 use rswebgl::context::{Context, ContextOptions};
 use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
 use rswebgl::framebuffer::ClearMask;
+use rswebgl::ids::UniformBufferId;
 use rswebgl::pass::{Batch, Pass};
 use rswebgl::render_state::{DepthFunc, RenderState};
-use rswebgl::uniform_buffer::{Std140Type, UboLayout, UniformBuffer};
+use rswebgl::uniform_buffer::{Std140Type, UboLayout};
 use rswebgl::uniform_values::UniformValues;
 use rswebgl::vao_builder::{AttrKind, VaoBuilder};
 
@@ -45,7 +46,7 @@ void main() {
 // context restore: handles from before a context loss are dead.
 struct Scene {
     pass: Pass,
-    ubo: UniformBuffer,
+    ubo: UniformBufferId,
 }
 
 fn build_scene(ctx: &Context) -> Result<Scene, String> {
@@ -101,14 +102,14 @@ fn build_scene(ctx: &Context) -> Result<Scene, String> {
     let layout = UboLayout::new().field("u_mvp", Std140Type::Mat4);
     let ubo = ctx.create_uniform_buffer(&layout, BufferUsage::DynamicDraw)?;
     let uniforms = UniformValues::new();
-    uniforms.set_uniform_block("Matrices", &ubo);
+    uniforms.set_uniform_block("Matrices", ubo);
 
     // One pass to the canvas, clearing first, with a single batch (program +
     // state) holding one draw.
     let mut pass = Pass::to_default();
     pass.set_clear(ClearMask::color_depth());
-    let mut batch = Batch::new(&program, &render_state);
-    batch.draw(&vao, &uniforms, draw_cmd);
+    let mut batch = Batch::new(program, &render_state);
+    batch.draw(vao, &uniforms, draw_cmd);
     pass.add(batch);
 
     Ok(Scene { pass, ubo })
@@ -126,25 +127,19 @@ fn main() {
     let mut options = ContextOptions::new();
     options.antialias = true;
     options.depth = true;
-    let ctx = Rc::new(Context::from_canvas(&canvas, &options).expect("ctx"));
+    let ctx = Context::from_canvas(&canvas, &options).expect("ctx");
     let scene = Rc::new(RefCell::new(build_scene(&ctx).expect("scene")));
 
-    // On restore, rebuild every GPU resource. The callback lives inside the
-    // Context, so it holds it weakly (a strong Rc would be a cycle).
-    let weak_ctx = Rc::downgrade(&ctx);
+    // On restore, rebuild every GPU resource: handles from before the loss are
+    // stale. The callback gets the context as an argument.
     let restore_scene = Rc::clone(&scene);
-    ctx.on_restored(move || {
-        let Some(ctx) = weak_ctx.upgrade() else {
-            return;
-        };
-        match build_scene(&ctx) {
-            Ok(s) => *restore_scene.borrow_mut() = s,
-            Err(e) => web_sys::console::error_1(&format!("rebuild failed: {e}").into()),
-        }
+    ctx.on_restored(move |ctx| match build_scene(ctx) {
+        Ok(s) => *restore_scene.borrow_mut() = s,
+        Err(e) => web_sys::console::error_1(&format!("rebuild failed: {e}").into()),
     });
 
     // Press L to simulate a context loss, and L again to restore it.
-    let key_ctx = Rc::clone(&ctx);
+    let key_ctx = ctx.clone();
     let on_key = Closure::<dyn FnMut(KeyboardEvent)>::new(move |e: KeyboardEvent| {
         if e.key() == "l" || e.key() == "L" {
             if key_ctx.is_lost() {
@@ -159,7 +154,6 @@ fn main() {
         .expect("keydown listener");
     on_key.forget();
 
-    let renderer = ctx.renderer();
     let default_fb = ctx.default_framebuffer();
     default_fb.set_clear_color(0.05, 0.05, 0.08, 1.0);
     // Track the canvas's CSS size × devicePixelRatio: keeps the drawing buffer and
@@ -184,9 +178,9 @@ fn main() {
         let scene = scene.borrow();
         // Write into the block's staging buffer; the renderer flushes it (one
         // bufferSubData) and binds the block when the pass draws.
-        scene.ubo.set_mat("u_mvp", &mvp.to_cols_array());
+        ctx.ubo_set_mat(scene.ubo, "u_mvp", &mvp.to_cols_array());
         // A no-op while the context is lost.
-        renderer.render(&scene.pass);
+        ctx.render(&scene.pass);
 
         let _ = win.request_animation_frame(f.borrow().as_ref().unwrap().as_ref().unchecked_ref());
     }));

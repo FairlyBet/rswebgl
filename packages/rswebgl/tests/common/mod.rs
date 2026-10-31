@@ -7,9 +7,9 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
 use rswebgl::context::{Context, ContextOptions};
 use rswebgl::framebuffer::ClearMask;
+use rswebgl::ids::VertexArrayId;
 use rswebgl::pass::{Batch, Pass};
 use rswebgl::uniform_values::UniformValues;
-use rswebgl::vao::VertexArray;
 use rswebgl::vao_builder::{AttrKind, VaoBuilder};
 
 pub const W: i32 = 300;
@@ -33,7 +33,7 @@ void main() {
 pub struct Fixture {
     pub ctx: Context,
     pub gl: WebGl2RenderingContext,
-    pub quad: VertexArray,
+    pub quad: VertexArrayId,
 }
 
 pub fn fixture() -> Fixture {
@@ -84,7 +84,7 @@ pub fn render(f: &Fixture, batches: Vec<Batch>) {
     for b in batches {
         pass.add(b);
     }
-    f.ctx.renderer().render(&pass);
+    f.ctx.render(&pass);
 }
 
 // Center pixel of each of the three quads. Also asserts no GL error is pending.

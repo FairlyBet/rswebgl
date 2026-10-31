@@ -52,3 +52,29 @@ fn reallocation_changes_layout_version() {
     c.resize(100_000);
     assert_ne!(c.layout_version(), v);
 }
+
+// Typed handles cross wasm-bindgen as plain numbers.
+mod abi {
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen_test::*;
+
+    rswebgl_foundation::typed_handle!(pub struct ThingId);
+
+    #[wasm_bindgen]
+    pub fn echo_thing(id: ThingId) -> ThingId {
+        ThingId::from_raw(id.to_raw() + 1)
+    }
+
+    #[wasm_bindgen(inline_js = "export function call_echo(f, x) { return f(x); }")]
+    extern "C" {
+        fn call_echo(f: &js_sys::Function, x: u32) -> JsValue;
+    }
+
+    #[wasm_bindgen_test]
+    fn typed_handle_is_a_js_number() {
+        // Through a real JS round trip: Rust → JS number → Rust.
+        let f = Closure::<dyn Fn(u32) -> ThingId>::new(|x| echo_thing(ThingId::from_raw(x)));
+        let out = call_echo(f.as_ref().unchecked_ref(), 41);
+        assert_eq!(out.as_f64(), Some(42.0));
+    }
+}

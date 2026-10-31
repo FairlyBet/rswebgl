@@ -93,19 +93,18 @@ fn main() {
             TextureMagFilter::Nearest,
         )
         .expect("texture");
-    tex.storage_2d(1, &TextureFormat::rgba8(), 8, 8);
-    tex.sub_image_2d(0, 0, 0, 8, 8, &TextureFormat::rgba8(), &checkerboard());
+    ctx.texture_storage_2d(tex, 1, &TextureFormat::rgba8(), 8, 8);
+    ctx.texture_sub_image_2d(tex, 0, 0, 0, 8, 8, &TextureFormat::rgba8(), &checkerboard());
 
     // (DOM path, for reference — loads asynchronously and uploads on `onload`:)
     //   let cb = Closure::<dyn FnMut()>::new(|| {}).into_js_value();
-    //   tex.load_image("./photo.png", &TextureFormat::rgba8(), true, true, cb.into());
+    //   ctx.texture_load_image(tex, "./photo.png", &TextureFormat::rgba8(), true, true, cb.into());
 
     let uniforms = UniformValues::new();
-    uniforms.set_sampler("u_tex", &tex);
+    uniforms.set_sampler("u_tex", tex);
 
     let render_state = RenderState::new();
 
-    let renderer = ctx.renderer();
     let default_fb = ctx.default_framebuffer();
     default_fb.set_clear_color(0.05, 0.05, 0.08, 1.0);
     default_fb.enable_auto_resize().expect("auto-resize");
@@ -114,8 +113,8 @@ fn main() {
 
     let mut pass = Pass::to_default();
     pass.set_clear(ClearMask::color());
-    let mut batch = Batch::new(&program, &render_state);
-    batch.draw(&vao, &uniforms, draw_cmd);
+    let mut batch = Batch::new(program, &render_state);
+    batch.draw(vao, &uniforms, draw_cmd);
     pass.add(batch);
 
     // Re-render each frame so the quad tracks the auto-resized buffer.
@@ -123,7 +122,7 @@ fn main() {
     let g = f.clone();
     let win = window.clone();
     *g.borrow_mut() = Some(Closure::<dyn FnMut(f64)>::new(move |_time: f64| {
-        renderer.render(&pass);
+        ctx.render(&pass);
         let _ = win.request_animation_frame(f.borrow().as_ref().unwrap().as_ref().unchecked_ref());
     }));
     let _ = window.request_animation_frame(g.borrow().as_ref().unwrap().as_ref().unchecked_ref());

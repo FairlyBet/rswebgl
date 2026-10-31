@@ -1,9 +1,9 @@
-use std::rc::Rc;
-
+use rswebgl_foundation::pool::Destroyed;
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlBuffer};
 
-use crate::context_loss;
+use crate::context::{Context, stale};
+use crate::ids::BufferId;
 
 #[wasm_bindgen]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,7 +25,7 @@ impl BufferTarget {
 }
 
 #[wasm_bindgen]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BufferUsage {
     StaticDraw = 35044,  // STATIC_DRAW
     DynamicDraw = 35048, // DYNAMIC_DRAW
@@ -40,7 +40,7 @@ pub enum BufferUsage {
 
 impl BufferUsage {
     pub(crate) fn as_gl(&self) -> u32 {
-        self.clone() as u32
+        *self as u32
     }
 }
 
@@ -57,30 +57,18 @@ pub(crate) enum BufferKind {
     Index,
 }
 
+/// A buffer in the context's pool.
 #[derive(Debug)]
-struct BufferInner {
-    gl: WebGl2RenderingContext,
-    raw: WebGlBuffer,
-    // Context generation it was created in (see context_loss).
-    generation: u32,
-    size: u32,
-    kind: BufferKind,
+pub(crate) struct BufferObj {
+    pub(crate) raw: WebGlBuffer,
+    pub(crate) size: u32,
+    pub(crate) kind: BufferKind,
 }
 
-impl Drop for BufferInner {
-    fn drop(&mut self) {
-        if context_loss::is_current(&self.gl, self.generation) {
-            self.gl.delete_buffer(Some(&self.raw));
-        }
+impl BufferObj {
+    pub(crate) fn delete(self, gl: &WebGl2RenderingContext) {
+        gl.delete_buffer(Some(&self.raw));
     }
-}
-
-/// A shared handle to a GL buffer: clones point at the same buffer, which is
-/// deleted when the last handle drops.
-#[wasm_bindgen]
-#[derive(Debug, Clone)]
-pub struct Buffer {
-    inner: Rc<BufferInner>,
 }
 
 // The scratch slot a data transfer binds to. Generic buffers use COPY_WRITE_BUFFER:
@@ -106,67 +94,109 @@ fn bind_for_upload(gl: &WebGl2RenderingContext, kind: BufferKind, raw: &WebGlBuf
     t
 }
 
-impl Buffer {
-    pub(crate) fn raw_gl(&self) -> &WebGlBuffer {
-        &self.inner.raw
-    }
+/// Initial contents of a new buffer.
+pub(crate) enum Init<'a> {
+    Data(&'a [u8]),
+    Size(u32),
+}
 
-    pub(crate) fn new(
-        gl: &WebGl2RenderingContext,
-        kind: BufferKind,
-        usage: BufferUsage,
-        data: &[u8],
-    ) -> Result<Buffer, String> {
-        let raw = gl.create_buffer().ok_or("createBuffer failed")?;
-        let t = bind_for_upload(gl, kind, &raw);
-        gl.buffer_data_with_u8_array(t, data, usage.as_gl());
-        gl.bind_buffer(t, None);
-        Ok(Self {
-            inner: Rc::new(BufferInner {
-                gl: gl.clone(),
-                raw,
-                generation: context_loss::generation(gl),
-                size: data.len() as u32,
-                kind,
-            }),
-        })
-    }
+/// Creates a GL buffer of `kind` with `init` contents (not pooled).
+pub(crate) fn create_raw(
+    gl: &WebGl2RenderingContext,
+    kind: BufferKind,
+    usage: BufferUsage,
+    init: Init<'_>,
+) -> Result<BufferObj, String> {
+    let raw = gl.create_buffer().ok_or("createBuffer failed")?;
+    let t = bind_for_upload(gl, kind, &raw);
+    let size = match init {
+        Init::Data(data) => {
+            gl.buffer_data_with_u8_array(t, data, usage.as_gl());
+            data.len() as u32
+        }
+        Init::Size(size) => {
+            gl.buffer_data_with_i32(t, size as i32, usage.as_gl());
+            size
+        }
+    };
+    gl.bind_buffer(t, None);
+    Ok(BufferObj { raw, size, kind })
+}
 
-    pub(crate) fn new_empty(
-        gl: &WebGl2RenderingContext,
-        kind: BufferKind,
-        usage: BufferUsage,
-        size: u32,
-    ) -> Result<Buffer, String> {
-        let raw = gl.create_buffer().ok_or("createBuffer failed")?;
-        let t = bind_for_upload(gl, kind, &raw);
-        gl.buffer_data_with_i32(t, size as i32, usage.as_gl());
-        gl.bind_buffer(t, None);
-        Ok(Self {
-            inner: Rc::new(BufferInner {
-                gl: gl.clone(),
-                raw,
-                generation: context_loss::generation(gl),
-                size,
-                kind,
-            }),
-        })
+/// `bufferSubData` through the buffer's scratch binding, so it never disturbs
+/// vertex or other generic buffer bindings.
+pub(crate) fn write_raw(
+    gl: &WebGl2RenderingContext,
+    kind: BufferKind,
+    raw: &WebGlBuffer,
+    offset: i32,
+    data: &[u8],
+) {
+    let t = bind_for_upload(gl, kind, raw);
+    gl.buffer_sub_data_with_i32_and_u8_array(t, offset, data);
+    gl.bind_buffer(t, None);
+}
+
+impl Context {
+    pub(crate) fn insert_buffer(&self, obj: BufferObj) -> Result<BufferId, String> {
+        let mut res = self.res();
+        match res.buffers.insert(obj) {
+            Ok(h) => Ok(h.into()),
+            Err(e) => {
+                drop(res);
+                Err(e.to_string())
+            }
+        }
     }
 }
 
 #[wasm_bindgen]
-impl Buffer {
-    /// Overwrite a region of the buffer's data store (`bufferSubData`). Goes
-    /// through the buffer's scratch binding, so it never disturbs vertex or other
-    /// generic buffer bindings.
-    pub fn write(&self, offset: i32, data: &[u8]) {
-        let gl = &self.inner.gl;
-        let t = bind_for_upload(gl, self.inner.kind, &self.inner.raw);
-        gl.buffer_sub_data_with_i32_and_u8_array(t, offset, data);
-        gl.bind_buffer(t, None);
+impl Context {
+    /// A vertex / uniform / generic buffer filled with `data`.
+    pub fn create_buffer(&self, usage: BufferUsage, data: &[u8]) -> Result<BufferId, String> {
+        self.check_alive()?;
+        let obj = create_raw(self.gl(), BufferKind::Generic, usage, Init::Data(data))?;
+        self.insert_buffer(obj)
     }
 
-    pub fn size(&self) -> u32 {
-        self.inner.size
+    /// A vertex / uniform / generic buffer of `size` zeroed bytes.
+    pub fn create_empty_buffer(&self, usage: BufferUsage, size: u32) -> Result<BufferId, String> {
+        self.check_alive()?;
+        let obj = create_raw(self.gl(), BufferKind::Generic, usage, Init::Size(size))?;
+        self.insert_buffer(obj)
+    }
+
+    /// An index buffer filled with `data` (raw bytes of u8/u16/u32 indices).
+    /// WebGL never lets an index buffer be bound as anything else, so it's a
+    /// separate kind.
+    pub fn create_index_buffer(&self, usage: BufferUsage, data: &[u8]) -> Result<BufferId, String> {
+        self.check_alive()?;
+        let obj = create_raw(self.gl(), BufferKind::Index, usage, Init::Data(data))?;
+        self.insert_buffer(obj)
+    }
+
+    /// Overwrite a region of the buffer's data store (`bufferSubData`).
+    pub fn buffer_write(&self, buffer: BufferId, offset: i32, data: &[u8]) {
+        let res = self.res();
+        let Some(b) = res.buffers.get(buffer.0) else {
+            return stale("buffer", "buffer_write", buffer);
+        };
+        write_raw(self.gl(), b.kind, &b.raw, offset, data);
+    }
+
+    /// Size in bytes; 0 for a stale handle.
+    pub fn buffer_size(&self, buffer: BufferId) -> u32 {
+        self.res().buffers.get(buffer.0).map_or(0, |b| b.size)
+    }
+
+    /// Deletes the buffer. If vertex arrays still use it, its handle is invalid
+    /// right away and the GL buffer goes when the last of them is destroyed.
+    pub fn destroy_buffer(&self, buffer: BufferId) {
+        let destroyed = self.res().buffers.destroy(buffer.0);
+        match destroyed {
+            Destroyed::Now(obj) => obj.delete(self.gl()),
+            Destroyed::Deferred => {}
+            Destroyed::Invalid => stale("buffer", "destroy_buffer", buffer),
+        }
     }
 }

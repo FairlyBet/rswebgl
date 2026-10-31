@@ -15,26 +15,23 @@
 //! ```ignore
 //! let packer = TexturePacker::new(&ctx)?;
 //! let mut spec = PackSpec::new();
-//! spec.set_source(Channel::R, &ao,  Channel::R); // occlusion -> R
-//! spec.set_source(Channel::G, &mr,  Channel::G); // roughness -> G
-//! spec.set_source(Channel::B, &mr,  Channel::B); // metallic  -> B
+//! spec.set_source(Channel::R, ao, Channel::R); // occlusion -> R
+//! spec.set_source(Channel::G, mr, Channel::G); // roughness -> G
+//! spec.set_source(Channel::B, mr, Channel::B); // metallic  -> B
 //! spec.set_constant(Channel::A, 1.0);
 //! let orm = packer.pack(&spec, 1024, 1024, false, true)?;
 //! ```
 
 use wasm_bindgen::prelude::*;
-use web_sys::WebGl2RenderingContext;
 
 use crate::console;
 use crate::context::Context;
 use crate::draw::{DrawCommand, DrawMode, Viewport};
-use crate::framebuffer::Framebuffer;
+use crate::ids::{FramebufferId, ProgramId, TextureId};
 use crate::pass::{Batch, Pass};
-use crate::program::Program;
 use crate::render_state::RenderState;
-use crate::renderer::Renderer;
 use crate::texture::{
-    Texture, TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget, mip_levels,
+    TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget, mip_levels,
 };
 use crate::uniform_values::UniformValues;
 
@@ -55,7 +52,7 @@ pub enum Channel {
 #[wasm_bindgen]
 pub struct PackSpec {
     // Distinct source textures (max 4); `src_slot` indexes into this.
-    sources: Vec<Texture>,
+    sources: Vec<TextureId>,
     mode: [i32; 4],     // per output channel: 0 = constant, 1 = source
     src_slot: [i32; 4], // per output channel: which source (index into `sources`)
     src_chan: [i32; 4], // per output channel: which channel of that source (0..3)
@@ -85,8 +82,8 @@ impl PackSpec {
     /// Fill output channel `out` from channel `channel` of `tex`. Up to four
     /// distinct source textures may be referenced across all channels; a fifth is
     /// rejected with a logged error (the channel is left at its previous setting).
-    pub fn set_source(&mut self, out: Channel, tex: &Texture, channel: Channel) {
-        let slot = match self.sources.iter().position(|t| t == tex) {
+    pub fn set_source(&mut self, out: Channel, tex: TextureId, channel: Channel) {
+        let slot = match self.sources.iter().position(|t| *t == tex) {
             Some(i) => i,
             None => {
                 if self.sources.len() >= 4 {
@@ -96,7 +93,7 @@ impl PackSpec {
                     );
                     return;
                 }
-                self.sources.push(tex.clone());
+                self.sources.push(tex);
                 self.sources.len() - 1
             }
         };
@@ -172,16 +169,16 @@ void main() {
 }
 "#;
 
-/// Reusable GPU channel packer: compiles the blit program and owns a scratch
-/// framebuffer + dummy texture once, then packs any number of textures.
+/// Reusable GPU channel packer: compiles the blit program and creates a scratch
+/// framebuffer + dummy texture once, then packs any number of textures. Call
+/// `destroy` to free them.
 #[wasm_bindgen]
 pub struct TexturePacker {
-    gl: WebGl2RenderingContext,
-    renderer: Renderer,
-    program: Program,
-    fbo: Framebuffer,
+    ctx: Context,
+    program: ProgramId,
+    fbo: FramebufferId,
     // 1×1 complete texture bound to unused sampler slots so the draw is valid.
-    dummy: Texture,
+    dummy: TextureId,
 }
 
 #[wasm_bindgen]
@@ -192,23 +189,43 @@ impl TexturePacker {
         // Size is irrelevant: the target is (re)attached per pack and the pass
         // viewport is set explicitly, so completeness follows the attachment.
         let fbo = ctx.create_framebuffer(1, 1)?;
-        let gl = ctx.gl();
-        let dummy = Texture::new(
-            &gl,
+        let dummy = ctx.create_texture(
             TextureTarget::Texture2D,
             TextureMinFilter::Nearest,
             TextureMagFilter::Nearest,
         )?;
         // texStorage zero-initialises, so the dummy reads (0,0,0,0); it only ever
         // backs slots no output channel samples.
-        dummy.storage_2d(1, &TextureFormat::rgba8(), 1, 1);
+        ctx.texture_storage_2d(dummy, 1, &TextureFormat::rgba8(), 1, 1);
         Ok(Self {
-            gl,
-            renderer: ctx.renderer(),
+            ctx: ctx.clone(),
             program,
             fbo,
             dummy,
         })
+    }
+
+    /// Frees the packer's program, framebuffer and dummy texture (also done on
+    /// drop / `free()`). Textures it produced are the caller's and stay. Safe to
+    /// call twice, and after a context loss.
+    pub fn destroy(&self) {
+        let (program, fbo, dummy) = {
+            let res = self.ctx.res();
+            (
+                res.programs.contains(self.program.0),
+                res.framebuffers.contains(self.fbo.0),
+                res.textures.contains(self.dummy.0),
+            )
+        };
+        if program {
+            self.ctx.destroy_program(self.program);
+        }
+        if fbo {
+            self.ctx.destroy_framebuffer(self.fbo);
+        }
+        if dummy {
+            self.ctx.destroy_texture(self.dummy);
+        }
     }
 
     /// Pack into a fresh `width × height` texture and return it. `srgb` selects
@@ -221,7 +238,7 @@ impl TexturePacker {
         height: i32,
         srgb: bool,
         generate_mipmaps: bool,
-    ) -> Result<Texture, String> {
+    ) -> Result<TextureId, String> {
         let (min, mag) = if generate_mipmaps {
             (
                 TextureMinFilter::LinearMipmapLinear,
@@ -230,8 +247,13 @@ impl TexturePacker {
         } else {
             (TextureMinFilter::Linear, TextureMagFilter::Linear)
         };
-        let out = Texture::new(&self.gl, TextureTarget::Texture2D, min, mag)?;
-        self.pack_into(&out, spec, width, height, srgb, generate_mipmaps)?;
+        let out = self
+            .ctx
+            .create_texture(TextureTarget::Texture2D, min, mag)?;
+        if let Err(e) = self.pack_into(out, spec, width, height, srgb, generate_mipmaps) {
+            self.ctx.destroy_texture(out);
+            return Err(e);
+        }
         Ok(out)
     }
 
@@ -241,7 +263,7 @@ impl TexturePacker {
     /// once the sources decode.
     pub fn pack_into(
         &self,
-        output: &Texture,
+        output: TextureId,
         spec: &PackSpec,
         width: i32,
         height: i32,
@@ -262,27 +284,34 @@ impl TexturePacker {
         } else {
             TextureFormat::rgba8()
         };
-        output.storage_2d(levels, &format, width, height);
+        let ctx = &self.ctx;
+        ctx.texture_storage_2d(output, levels, &format, width, height);
 
-        self.fbo.attach_color_texture_2d(0, output, 0);
-        // Detach before returning on any path, so the scratch FBO never pins the
-        // produced texture alive past this call.
+        ctx.framebuffer_attach_color_texture_2d(self.fbo, 0, output, 0);
+        // Detach before returning on any path, so the scratch FBO never keeps
+        // the produced texture in use past this call.
         let result = self.run_pass(spec, width, height);
         if result.is_ok() && generate_mipmaps {
-            output.generate_mipmaps();
+            ctx.texture_generate_mipmaps(output);
         }
-        self.fbo.detach_color(0);
+        ctx.framebuffer_detach_color(self.fbo, 0);
         result
+    }
+}
+
+impl Drop for TexturePacker {
+    fn drop(&mut self) {
+        self.destroy();
     }
 }
 
 impl TexturePacker {
     fn run_pass(&self, spec: &PackSpec, width: i32, height: i32) -> Result<(), String> {
-        self.renderer.check_framebuffer(&self.fbo)?;
+        self.ctx.check_framebuffer(self.fbo)?;
 
         let uniforms = UniformValues::new();
         for i in 0..4 {
-            let tex = spec.sources.get(i).unwrap_or(&self.dummy);
+            let tex = spec.sources.get(i).copied().unwrap_or(self.dummy);
             uniforms.set_sampler(&format!("u_src{i}"), tex);
         }
         uniforms.set_int_array("u_out_mode", &spec.mode);
@@ -293,13 +322,13 @@ impl TexturePacker {
         // The triangle covers the whole target, so no clear is needed. Default
         // render state (no depth/blend/cull, full colour mask) writes every texel.
         let state = RenderState::new();
-        let mut batch = Batch::new(&self.program, &state);
+        let mut batch = Batch::new(self.program, &state);
         batch.draw_vertexless(&uniforms, DrawCommand::arrays(DrawMode::Triangles, 0, 3));
 
-        let mut pass = Pass::new(&self.fbo);
+        let mut pass = Pass::new(self.fbo);
         pass.set_viewport(Viewport::new(0, 0, width, height));
         pass.add(batch);
-        self.renderer.render(&pass);
+        self.ctx.render(&pass);
         Ok(())
     }
 }
