@@ -152,11 +152,11 @@ FBO blit). Done. Deferred polish:
 
 ## Minor / nice-to-have (from the audit)
 
-- The unset-uniform check also flags samplers a shader declares but a branch
-  never samples. glTF `write_uniforms` leaves `u_base_color_tex` unset for
-  untextured materials (it's gated by `u_has_base_color_tex`), so such a model
-  will log that warning once. Bind a 1×1 white texture there instead, or allow
-  marking uniforms as optional.
+- Parameter groups: a group unchanged since it was last applied in a slot could be
+  skipped wholesale instead of compared field by field; needs care when two
+  slots' layouts overlap. Also: zero-copy JS views over a group's words
+  (foundation `Column`-style), sampler arrays, and retaining textures / UBOs
+  referenced by groups (today a destroyed one is reported at render).
 - Texture units / block points are assigned per program from 0, so programs
   that share a block name ("Frame") may put it on different points and rebind
   more than needed. A context-wide name→point registry would let them share.

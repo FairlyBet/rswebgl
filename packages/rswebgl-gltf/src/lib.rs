@@ -11,9 +11,10 @@
 //! let model = rswebgl_gltf::load_model(&ctx, "./model.glb").await?;
 //! for i in 0..model.draw_item_count() {
 //!     let item = model.draw_item(i).unwrap();
-//!     // set MVP from item.model_cols(), then:
-//!     item.write_uniforms(&model, &uniforms);
-//!     // draw item.vao() with item.draw_command() under item.render_state()
+//!     // the material's parameters are a ready-made group:
+//!     batch.set_group(1, item.material_group());
+//!     // set the transform from item.model_cols() in your own group, then draw
+//!     // item.vao() with item.draw_command() under item.render_state()
 //! }
 //! ```
 
@@ -29,9 +30,10 @@ pub use material::{AlphaMode, Material};
 
 use rswebgl::context::Context;
 use rswebgl::draw::DrawCommand;
-use rswebgl::ids::{TextureId, VertexArrayId};
+use rswebgl::ids::{ParamGroupId, ParamLayoutId, TextureId, VertexArrayId};
+use rswebgl::param::ParamLayoutBuilder;
 use rswebgl::render_state::RenderState;
-use rswebgl::uniform_values::UniformValues;
+use rswebgl::uniform_buffer::UniformType;
 use wasm_bindgen::prelude::*;
 
 /// One renderable primitive instance: its geometry, how to draw it, the
@@ -43,6 +45,7 @@ pub struct DrawItem {
     pub(crate) draw: DrawCommand,
     pub(crate) state: RenderState,
     pub(crate) material: i32, // index into Model materials, or -1 (default)
+    pub(crate) material_group: ParamGroupId,
     pub(crate) model: [f32; 16], // world matrix, column-major
 }
 
@@ -66,25 +69,10 @@ impl DrawItem {
         self.model.to_vec()
     }
 
-    /// Fill `uniforms` with this item's material, by a documented convention:
-    /// `u_base_color_factor` (vec4), `u_base_color_tex` (sampler) +
-    /// `u_has_base_color_tex` (bool), `u_alpha_cutoff` (float), `u_alpha_mode`
-    /// (int: 0=OPAQUE 1=MASK 2=BLEND). The MVP/model matrix is the caller's job
-    /// (it depends on the camera) — use `model_matrix()` / `model_cols()`.
-    pub fn write_uniforms(&self, model: &Model, uniforms: &UniformValues) {
-        let m = self.material_of(model);
-        let c = m.base_color_factor;
-        uniforms.set_vec4("u_base_color_factor", c[0], c[1], c[2], c[3]);
-        uniforms.set_float("u_alpha_cutoff", m.alpha_cutoff);
-        uniforms.set_int("u_alpha_mode", m.alpha_mode as i32);
-        if m.base_color_tex >= 0 {
-            if let Some(tex) = model.textures.get(m.base_color_tex as usize) {
-                uniforms.set_sampler("u_base_color_tex", *tex);
-            }
-            uniforms.set_bool("u_has_base_color_tex", true);
-        } else {
-            uniforms.set_bool("u_has_base_color_tex", false);
-        }
+    /// The parameter group holding this item's material (see `Model` for the
+    /// uniform names). Put it in a batch slot, typically 1.
+    pub fn material_group(&self) -> ParamGroupId {
+        self.material_group
     }
 }
 
@@ -94,22 +82,22 @@ impl DrawItem {
     pub fn model_cols(&self) -> [f32; 16] {
         self.model
     }
-
-    fn material_of(&self, model: &Model) -> Material {
-        if self.material >= 0
-            && let Some(m) = model.materials.get(self.material as usize)
-        {
-            return m.clone();
-        }
-        material::default_material()
-    }
 }
 
 /// A translated glTF asset: a flat draw list plus its materials and textures.
+///
+/// Each material is a parameter group (layout `material_layout()`) with, by
+/// convention: `u_base_color_factor` (vec4), `u_base_color_tex` (sampler) +
+/// `u_has_base_color_tex` (bool), `u_alpha_cutoff` (float), `u_alpha_mode`
+/// (int: 0=OPAQUE 1=MASK 2=BLEND). The transform is the caller's job (it
+/// depends on the camera) — use `DrawItem::model_cols()`.
 #[wasm_bindgen]
 pub struct Model {
     pub(crate) items: Vec<DrawItem>,
     pub(crate) materials: Vec<Material>,
+    pub(crate) material_layout: ParamLayoutId,
+    // One per material, plus the default material's last.
+    pub(crate) material_groups: Vec<ParamGroupId>,
     pub(crate) textures: Vec<TextureId>,
     pub(crate) center: [f32; 3],
     pub(crate) radius: f32,
@@ -145,8 +133,13 @@ impl Model {
         self.radius
     }
 
-    /// Destroys every GPU resource the model created: its vertex arrays (with
-    /// their buffers) and textures. Draw items and texture handles from this
+    /// The layout of the material groups.
+    pub fn material_layout(&self) -> ParamLayoutId {
+        self.material_layout
+    }
+
+    /// Destroys every GPU resource the model created: vertex arrays (with their
+    /// buffers), textures, material groups and their layout. Handles from this
     /// model are stale afterwards.
     pub fn destroy(&self, ctx: &Context) {
         for item in &self.items {
@@ -155,6 +148,10 @@ impl Model {
         for &tex in &self.textures {
             ctx.destroy_texture(tex);
         }
+        for &g in &self.material_groups {
+            ctx.destroy_param_group(g);
+        }
+        ctx.destroy_param_layout(self.material_layout);
     }
 }
 
@@ -200,9 +197,21 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, String> {
     let mut items = Vec::new();
     let (center, radius) = scene::build_draw_list(ctx, &document, &buffers, &materials, &mut items);
 
+    let (material_layout, material_groups) = build_material_groups(ctx, &materials, &textures)?;
+    for item in &mut items {
+        let i = if item.material >= 0 {
+            item.material as usize
+        } else {
+            materials.len()
+        };
+        item.material_group = material_groups[i];
+    }
+
     Ok(Model {
         items,
         materials,
+        material_layout,
+        material_groups,
         textures,
         center,
         radius,
@@ -211,4 +220,43 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, String> {
 
 fn js_err(e: JsValue) -> String {
     e.as_string().unwrap_or_else(|| format!("{e:?}"))
+}
+
+// One parameter group per material (plus the default material's, last).
+fn build_material_groups(
+    ctx: &Context,
+    materials: &[Material],
+    textures: &[TextureId],
+) -> Result<(ParamLayoutId, Vec<ParamGroupId>), String> {
+    let layout = ctx.create_param_layout(
+        &ParamLayoutBuilder::new()
+            .uniform("u_base_color_factor", UniformType::Vec4)
+            .uniform("u_alpha_cutoff", UniformType::F32)
+            .uniform("u_alpha_mode", UniformType::I32)
+            .uniform("u_has_base_color_tex", UniformType::Bool)
+            .texture("u_base_color_tex"),
+    )?;
+    let f_color = ctx.param_field(layout, "u_base_color_factor")?;
+    let f_cutoff = ctx.param_field(layout, "u_alpha_cutoff")?;
+    let f_mode = ctx.param_field(layout, "u_alpha_mode")?;
+    let f_has_tex = ctx.param_field(layout, "u_has_base_color_tex")?;
+    let f_tex = ctx.param_field(layout, "u_base_color_tex")?;
+
+    let default = material::default_material();
+    let mut groups = Vec::with_capacity(materials.len() + 1);
+    for m in materials.iter().chain(std::iter::once(&default)) {
+        let g = ctx.create_param_group(layout)?;
+        ctx.param_set_floats(g, f_color, &m.base_color_factor);
+        ctx.param_set_f32(g, f_cutoff, m.alpha_cutoff);
+        ctx.param_set_i32(g, f_mode, m.alpha_mode as i32);
+        let tex = usize::try_from(m.base_color_tex)
+            .ok()
+            .and_then(|i| textures.get(i).copied());
+        ctx.param_set_bool(g, f_has_tex, tex.is_some());
+        if let Some(tex) = tex {
+            ctx.param_set_texture(g, f_tex, tex);
+        }
+        groups.push(g);
+    }
+    Ok((layout, groups))
 }

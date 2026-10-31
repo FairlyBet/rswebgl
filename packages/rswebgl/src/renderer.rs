@@ -9,10 +9,15 @@ use web_sys::WebGl2RenderingContext;
 use crate::context::{Context, Resources, stale};
 use crate::draw::Viewport;
 use crate::framebuffer::{ClearMask, DefaultFramebuffer, InvalidateMask, framebuffer_status_str};
-use crate::ids::{FramebufferId, ProgramId, VertexArrayId};
+use rswebgl_foundation::pool::Pool;
+
+use crate::ids::{FramebufferId, ProgramId, TextureId, UniformBufferId, VertexArrayId};
+use crate::param::{GROUP_SLOTS, ParamGroupObj, ParamLayoutObj};
 use crate::pass::Pass;
+use crate::program::ProgramObj;
 use crate::render_state::RenderState;
-use crate::uniform_values::{GlBindings, SyncTarget, UniformValues};
+use crate::texture::TextureObj;
+use crate::uniform_buffer::UniformBufferObj;
 
 #[wasm_bindgen]
 impl Context {
@@ -92,6 +97,8 @@ fn execute_pass(
         vertex_arrays,
         textures,
         uniform_buffers,
+        param_layouts,
+        param_groups,
         ..
     } = res;
 
@@ -140,6 +147,7 @@ fn execute_pass(
         }
         t.apply_render_state(&batch.render_state);
         t.use_program(batch.program, &program.raw);
+        program.activate(gl);
         for d in &batch.draws {
             let vao = if d.vao.is_null() {
                 None
@@ -153,18 +161,42 @@ fn execute_pass(
                 }
             };
             t.bind_vao(d.vao, vao);
-            // Batch first, then the draw's own (overrides win). Re-syncing the
-            // batch per draw restores any value the previous draw overrode;
-            // unchanged ones cost a compare, not a GL call.
-            let mut sync = SyncTarget {
-                gl,
-                program,
-                textures,
-                uniform_buffers,
-            };
-            t.upload_uniforms(&batch.uniforms, &mut sync);
-            t.upload_uniforms(&d.uniforms, &mut sync);
-            program.check_uniforms_set(gl, &[&batch.uniforms, &d.uniforms]);
+            // Each slot: the draw's group, else the batch's. Values are compared
+            // against what the program holds, so unchanged ones cost a compare,
+            // not a GL call.
+            let mut used = [0usize; GROUP_SLOTS];
+            let mut n_used = 0;
+            for slot in 0..GROUP_SLOTS {
+                let gid = if d.groups[slot].is_null() {
+                    batch.groups[slot]
+                } else {
+                    d.groups[slot]
+                };
+                if gid.is_null() {
+                    continue;
+                }
+                let Some(group) = param_groups.get(gid.0) else {
+                    stale("param group", "render (draw)", gid);
+                    continue;
+                };
+                let layout = param_layouts
+                    .get(group.layout.0)
+                    .expect("a group keeps its layout alive");
+                let m = program.mapping(group.layout, layout);
+                apply_group(
+                    gl,
+                    program,
+                    m,
+                    group,
+                    layout,
+                    textures,
+                    uniform_buffers,
+                    &mut t.bindings,
+                );
+                used[n_used] = m;
+                n_used += 1;
+            }
+            program.check_covered(&used[..n_used]);
             d.command.execute(gl);
         }
     }
@@ -219,12 +251,8 @@ struct StateTracker<'a> {
     program: Option<ProgramId>,
     // VertexArrayId::NULL = explicitly no VAO.
     vao: Option<VertexArrayId>,
-    // What's currently set in the active program. Persisted across draws and diffed
-    // in place (no per-draw clone); cleared on program switch since locations are
-    // per-program.
-    applied_uniforms: UniformValues,
     // What's bound to each texture unit / uniform-buffer point. Global state, so
-    // unlike `applied_uniforms` it's kept across program switches.
+    // it's kept across program switches.
     bindings: GlBindings,
 }
 
@@ -237,8 +265,7 @@ impl<'a> StateTracker<'a> {
             render_state: None,
             program: None,
             vao: None,
-            applied_uniforms: UniformValues::new(),
-            bindings: GlBindings::new(),
+            bindings: GlBindings::default(),
         }
     }
 
@@ -290,9 +317,6 @@ impl<'a> StateTracker<'a> {
         if self.program != Some(id) {
             self.gl.use_program(Some(raw));
             self.program = Some(id);
-            // Uniform locations are per-program; drop the applied cache (in place,
-            // keeping capacity) so the next draw re-uploads everything it needs.
-            self.applied_uniforms.clear();
         }
     }
 
@@ -302,9 +326,140 @@ impl<'a> StateTracker<'a> {
             self.vao = Some(id);
         }
     }
+}
 
-    fn upload_uniforms(&mut self, uniforms: &UniformValues, sync: &mut SyncTarget<'_>) {
-        self.applied_uniforms
-            .sync_from(uniforms, sync, &mut self.bindings);
+// ---------------------------------------------------------------------------
+// Parameter groups
+// ---------------------------------------------------------------------------
+
+// Applies one group to the program in use through mapping `m`: changed plain
+// values, its textures (on the units the program assigned), its uniform
+// buffers (flushed, on the program's binding points).
+#[allow(clippy::too_many_arguments)]
+fn apply_group(
+    gl: &WebGl2RenderingContext,
+    program: &mut ProgramObj,
+    m: usize,
+    group: &ParamGroupObj,
+    layout: &ParamLayoutObj,
+    textures: &Pool<TextureObj>,
+    uniform_buffers: &mut Pool<UniformBufferObj>,
+    bindings: &mut GlBindings,
+) {
+    for (i, f) in layout.plain.iter().enumerate() {
+        program.upload_field(gl, m, i, f, group);
+    }
+
+    for i in 0..layout.textures.len() {
+        let Some(unit) = program.mapping_at(m).textures[i] else {
+            continue;
+        };
+        let tex = group.textures[i];
+        if tex.is_null() {
+            continue;
+        }
+        match textures.get(tex.0) {
+            Some(obj) => bindings.bind_texture(gl, unit, tex, obj),
+            None => stale(
+                "texture",
+                &format!("texture \"{}\"", layout.textures[i]),
+                tex,
+            ),
+        }
+    }
+
+    for i in 0..layout.blocks.len() {
+        let Some(bi) = program.mapping_at(m).blocks[i] else {
+            continue;
+        };
+        let (ubo, range) = group.blocks[i];
+        if ubo.is_null() {
+            continue;
+        }
+        let Some(obj) = uniform_buffers.get_mut(ubo.0) else {
+            stale(
+                "uniform buffer",
+                &format!("block \"{}\"", layout.blocks[i]),
+                ubo,
+            );
+            continue;
+        };
+        // The UBO's bytes can be dirty while the binding is unchanged, so flush
+        // unconditionally (a no-op when clean).
+        obj.flush(gl);
+        let size = range.map_or(obj.byte_size(), |(_, s)| s as u32);
+        let point = program.block_point(bi, size);
+        bindings.bind_block(gl, point, ubo, range, obj);
+    }
+}
+
+// What's actually bound to each texture unit / uniform-buffer binding point, for
+// the lifetime of one render call. These are *global* GL state, not program
+// state: different programs (and draws) put different textures on the same unit,
+// so this is keyed by unit/point. It survives program switches, so an unchanged
+// binding isn't re-issued after `useProgram`.
+#[derive(Default)]
+struct GlBindings {
+    active_unit: Option<u32>,
+    units: Vec<TextureId>,
+    blocks: Vec<Option<BoundBlock>>,
+}
+
+// A buffer bound to a uniform-buffer point, with its sub-range (None = whole).
+type BoundBlock = (UniformBufferId, Option<(i32, i32)>);
+
+impl GlBindings {
+    fn bind_texture(
+        &mut self,
+        gl: &WebGl2RenderingContext,
+        unit: u32,
+        id: TextureId,
+        obj: &TextureObj,
+    ) {
+        let idx = unit as usize;
+        if self.units.get(idx) == Some(&id) {
+            return;
+        }
+        if self.active_unit != Some(unit) {
+            gl.active_texture(WebGl2RenderingContext::TEXTURE0 + unit);
+            self.active_unit = Some(unit);
+        }
+        gl.bind_texture(obj.target_gl(), Some(&obj.raw));
+        if idx >= self.units.len() {
+            self.units.resize(idx + 1, TextureId::NULL);
+        }
+        self.units[idx] = id;
+    }
+
+    fn bind_block(
+        &mut self,
+        gl: &WebGl2RenderingContext,
+        point: u32,
+        id: UniformBufferId,
+        range: Option<(i32, i32)>,
+        obj: &UniformBufferObj,
+    ) {
+        let idx = point as usize;
+        if self.blocks.get(idx) == Some(&Some((id, range))) {
+            return;
+        }
+        match range {
+            Some((offset, size)) => gl.bind_buffer_range_with_i32_and_i32(
+                WebGl2RenderingContext::UNIFORM_BUFFER,
+                point,
+                Some(&obj.raw),
+                offset,
+                size,
+            ),
+            None => gl.bind_buffer_base(
+                WebGl2RenderingContext::UNIFORM_BUFFER,
+                point,
+                Some(&obj.raw),
+            ),
+        }
+        if idx >= self.blocks.len() {
+            self.blocks.resize(idx + 1, None);
+        }
+        self.blocks[idx] = Some((id, range));
     }
 }

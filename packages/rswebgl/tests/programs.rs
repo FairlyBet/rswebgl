@@ -6,7 +6,6 @@ mod common;
 
 use wasm_bindgen_test::*;
 
-use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
 use rswebgl::extension::Extension;
 use rswebgl::pass::Batch;
 use rswebgl::render_state::RenderState;
@@ -31,10 +30,6 @@ void main() {
     frag_color = 1.0;
 }
 "#;
-
-fn cmd() -> DrawCommand {
-    DrawCommand::elements(DrawMode::Triangles, 6, IndexType::UnsignedShort, 0)
-}
 
 // Without parallel compile the error comes straight back from create_program,
 // with the fragment shader's compile log in it.
@@ -64,9 +59,9 @@ fn renderer_skips_program_that_failed_to_link() {
     let good = f.ctx.create_program(VERT, RED_FRAG).expect("program");
 
     let mut bad_batch = Batch::new(broken, &RenderState::new());
-    bad_batch.draw(f.quad, &quad_uniforms(0, 0), cmd());
+    draw_quad(&mut bad_batch, &f, 0);
     let mut good_batch = Batch::new(good, &RenderState::new());
-    good_batch.draw(f.quad, &quad_uniforms(1, 0), cmd());
+    draw_quad(&mut good_batch, &f, 1);
     render(&f, vec![bad_batch, good_batch]);
 
     assert_eq!(read_quads(&f.gl), [BLACK, RED, BLACK]);

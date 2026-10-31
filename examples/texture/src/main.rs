@@ -8,10 +8,10 @@ use web_sys::HtmlCanvasElement;
 use rswebgl::context::{Context, ContextOptions};
 use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
 use rswebgl::framebuffer::ClearMask;
+use rswebgl::param::ParamLayoutBuilder;
 use rswebgl::pass::{Batch, Pass};
 use rswebgl::render_state::RenderState;
 use rswebgl::texture::{TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget};
-use rswebgl::uniform_values::UniformValues;
 use rswebgl::vao_builder::{AttrKind, VaoBuilder};
 
 const VERT: &str = r#"#version 300 es
@@ -100,8 +100,11 @@ fn main() {
     //   let cb = Closure::<dyn FnMut()>::new(|| {}).into_js_value();
     //   ctx.texture_load_image(tex, "./photo.png", &TextureFormat::rgba8(), true, true, cb.into());
 
-    let uniforms = UniformValues::new();
-    uniforms.set_sampler("u_tex", tex);
+    let params_layout = ctx
+        .create_param_layout(&ParamLayoutBuilder::new().texture("u_tex"))
+        .expect("param layout");
+    let params = ctx.create_param_group(params_layout).expect("params");
+    ctx.param_set_texture_by_name(params, "u_tex", tex);
 
     let render_state = RenderState::new();
 
@@ -114,7 +117,8 @@ fn main() {
     let mut pass = Pass::to_default();
     pass.set_clear(ClearMask::color());
     let mut batch = Batch::new(program, &render_state);
-    batch.draw(vao, &uniforms, draw_cmd);
+    batch.set_group(0, params);
+    batch.draw(vao, draw_cmd);
     pass.add(batch);
 
     // Re-render each frame so the quad tracks the auto-resized buffer.

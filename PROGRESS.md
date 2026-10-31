@@ -33,20 +33,18 @@
 | Pass / Batch / Draw API         | ✅     | `src/pass.rs`, `src/renderer.rs`    |
 | Per-pass state tracking (diff)  | ✅     | `src/renderer.rs`                   |
 | Render-state diff               | ✅     | `src/render_state.rs`               |
-| Uniform diff (in-place)         | ✅     | `src/uniform_values.rs`             |
+| Uniform diff (shadow compare)   | ✅     | `src/program.rs`, `src/renderer.rs` |
 
 ## Uniforms
 
 | Entity                      | Status | File                    |
 |-----------------------------|--------|-------------------------|
-| Scalar (float, int, uint)   | ✅     | `src/uniform_values.rs` |
-| Vector (vec2–4, ivec, uvec) | ✅     | `src/uniform_values.rs` |
-| Matrix (mat2–4, non-square) | ✅     | `src/uniform_values.rs` |
-| Sampler binding             | ✅     | `src/uniform_values.rs` |
-| Batch-level uniforms        | ✅     | `src/pass.rs`           |
-| Unset-uniform check (debug) | ✅     | `src/program.rs`        |
-| Rust trait `UniformValue`   | ✅     | `src/uniform_value.rs`  |
-| Uniform location cache      | ✅     | `src/uniform_cache.rs`  |
+| Program reflection (types, locations, units, block points) | ✅ | `src/program.rs` |
+| Parameter layouts + groups, name → field index once | ✅ | `src/param.rs` |
+| Scalar / vector / matrix / array params | ✅ | `src/param.rs`       |
+| Sampler + uniform-block params | ✅     | `src/param.rs`         |
+| Group slots on Batch / Draw  | ✅     | `src/pass.rs`           |
+| Uncovered-input check (debug) | ✅    | `src/program.rs`        |
 | Uniform Buffer Object (UBO) | ✅     | `src/uniform_buffer.rs` |
 
 ## Vertex Attributes
@@ -130,7 +128,7 @@
 | Entity                      | Status | File |
 |-----------------------------|--------|------|
 | getActiveAttrib             | ❌     | —                |
-| getActiveUniform            | ✅     | `src/program.rs` (names) |
+| getActiveUniform            | ✅     | `src/program.rs` (reflection) |
 | getAttribLocation           | ❌     | —                |
 | getUniformBlockIndex        | ✅     | `src/program.rs` |
 | uniformBlockBinding         | ✅     | `src/program.rs` |

@@ -101,6 +101,7 @@ fn walk(
                 draw: geo.draw,
                 state,
                 material: mat_index,
+                material_group: rswebgl::ids::ParamGroupId::NULL,
                 model: world.to_cols_array(),
             });
         }

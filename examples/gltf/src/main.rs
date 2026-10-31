@@ -10,9 +10,9 @@ use rswebgl::buffer::BufferUsage;
 use rswebgl::console;
 use rswebgl::context::{Context, ContextOptions};
 use rswebgl::framebuffer::ClearMask;
+use rswebgl::param::ParamLayoutBuilder;
 use rswebgl::pass::{Batch, Pass};
-use rswebgl::uniform_buffer::{Std140Type, UboLayout};
-use rswebgl::uniform_values::UniformValues;
+use rswebgl::uniform_buffer::{UboLayout, UniformType};
 use rswebgl_gltf::Model;
 
 // A small, self-contained Khronos sample (GLB: geometry + textures embedded).
@@ -21,8 +21,9 @@ use rswebgl_gltf::Model;
 const MODEL_URL: &str = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/main/2.0/Avocado/glTF-Binary/Avocado.glb";
 
 // Geometry uses the translator's fixed attribute locations (0=pos, 1=normal,
-// 2=uv). The MVP and model matrices come from a std140 uniform block; material
-// values come from `DrawItem::write_uniforms` (the documented convention).
+// 2=uv). The MVP and model matrices come from a std140 uniform block (the
+// object group, slot 2); material values come from the model's material groups
+// (slot 1, uniform names per the loader's documented convention).
 const VERT: &str = r#"#version 300 es
 precision highp float;
 layout(location = 0) in vec3 a_pos;
@@ -112,12 +113,16 @@ fn run(ctx: Context, model: Model) {
     let center = Vec3::new(c[0], c[1], c[2]);
     let radius = model.radius();
 
-    // The block holds two mat4s (MVP + model), updated per frame and bound by
-    // block name. Each draw item gets its own UBO + uniforms so it carries its
-    // own material and transform.
+    // The block holds two mat4s (MVP + model), updated per frame. Each draw item
+    // gets its own UBO in its own object group; its material is the model's
+    // ready-made group.
     let layout = UboLayout::new()
-        .field("u_mvp", Std140Type::Mat4)
-        .field("u_model", Std140Type::Mat4);
+        .field("u_mvp", UniformType::Mat4)
+        .field("u_model", UniformType::Mat4);
+
+    let object_layout = ctx
+        .create_param_layout(&ParamLayoutBuilder::new().block("Matrices"))
+        .expect("object layout");
 
     let mut pass = Pass::to_default();
     pass.set_clear(ClearMask::color_depth());
@@ -128,12 +133,14 @@ fn run(ctx: Context, model: Model) {
         let ubo = ctx
             .create_uniform_buffer(&layout, BufferUsage::DynamicDraw)
             .expect("ubo");
-        let uniforms = UniformValues::new();
-        uniforms.set_uniform_block("Matrices", ubo);
-        di.write_uniforms(&model, &uniforms);
+        let object = ctx
+            .create_param_group(object_layout)
+            .expect("object params");
+        ctx.param_set_block_by_name(object, "Matrices", ubo);
 
         let mut batch = Batch::new(program, &di.render_state());
-        batch.draw(di.vao(), &uniforms, di.draw_command());
+        batch.set_group(1, di.material_group());
+        batch.draw_with_group(di.vao(), 2, object, di.draw_command());
         pass.add(batch);
 
         items.push(Item {

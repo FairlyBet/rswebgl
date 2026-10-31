@@ -33,3 +33,11 @@ typed_handle!(
     /// A std140 uniform block with CPU staging.
     pub struct UniformBufferId
 );
+typed_handle!(
+    /// The fields of a parameter group: uniforms, textures, blocks by name.
+    pub struct ParamLayoutId
+);
+typed_handle!(
+    /// Values for a parameter layout, referenced by batches and draws.
+    pub struct ParamGroupId
+);

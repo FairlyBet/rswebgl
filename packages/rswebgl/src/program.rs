@@ -1,37 +1,280 @@
-use std::collections::{HashMap, HashSet};
-
+use rswebgl_foundation::layout::{FieldType, Scalar};
 use rswebgl_foundation::pool::Destroyed;
 use wasm_bindgen::prelude::*;
-use web_sys::{WebGl2RenderingContext, WebGlProgram, WebGlShader, WebGlUniformLocation};
+use web_sys::{WebGl2RenderingContext as Gl, WebGlProgram, WebGlShader, WebGlUniformLocation};
 
 use crate::console;
 use crate::context::{Context, stale};
 use crate::extension::Extension;
-use crate::ids::ProgramId;
+use crate::ids::{ParamLayoutId, ProgramId};
 use crate::limits;
-use crate::uniform_cache::UniformCache;
-use crate::uniform_values::UniformValues;
+use crate::param::{ParamGroupObj, ParamLayoutObj, PlainField};
 
 const COMPLETION_STATUS_KHR: u32 = 0x91B1;
-// getUniformBlockIndex returns this for a name that isn't an active uniform block.
-const INVALID_INDEX: u32 = 0xFFFF_FFFF;
 
 /// Debug checks a program runs while drawing (each reported once).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Validation {
-    /// Uniform-block size vs our std140 layout, on first bind.
+    /// Uniform-block size vs the bound buffer's size, on first bind.
     pub blocks: bool,
-    /// Active uniforms that neither the batch nor the draw sets.
+    /// Active uniforms, samplers and blocks that none of a draw's groups sets.
     pub uniforms: bool,
 }
 
-/// A program in the context's pool.
+// ---------------------------------------------------------------------------
+// Reflection — what the linked program declares, read once.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct ReflUniform {
+    name: Box<str>,
+    ty: FieldType,
+    loc: WebGlUniformLocation,
+    // Words in `Reflection::shadow` holding the last uploaded value.
+    shadow: usize,
+    words: usize,
+    known: bool,
+}
+
+#[derive(Debug)]
+struct ReflSampler {
+    name: Box<str>,
+    unit: u32,
+    loc: WebGlUniformLocation,
+}
+
+#[derive(Debug)]
+struct ReflBlock {
+    name: Box<str>,
+    point: u32,
+    size: u32,
+    size_checked: bool,
+}
+
+/// The program's active interface, plus the last value uploaded to each plain
+/// uniform (so unchanged values aren't re-uploaded).
 ///
-/// Texture units and uniform-buffer binding points are assigned here, per program
-/// and by name, in order of first use: the sampler's uniform1i / the block's
-/// uniformBlockBinding is then written once for the program's lifetime, and
-/// samplers/blocks coming from different UniformValues (batch + draw) can never
-/// collide on a slot. `None` = no such active sampler/block in the shader.
+/// Texture units and uniform-buffer binding points are assigned here, one per
+/// sampler / block in declaration order: the sampler's `uniform1i` is written
+/// once on first use, `uniformBlockBinding` at link time.
+#[derive(Debug)]
+struct Reflection {
+    uniforms: Vec<ReflUniform>,
+    samplers: Vec<ReflSampler>,
+    blocks: Vec<ReflBlock>,
+    shadow: Vec<u32>,
+    units_written: bool,
+}
+
+/// How one parameter layout's fields land in this program: the matching
+/// uniform / sampler unit / block (None = the program doesn't use that name),
+/// plus which of the program's inputs the layout covers.
+#[derive(Debug)]
+pub(crate) struct Mapping {
+    layout: ParamLayoutId,
+    pub(crate) plain: Vec<Option<u16>>,
+    pub(crate) textures: Vec<Option<u32>>,
+    pub(crate) blocks: Vec<Option<u16>>,
+    coverage: Vec<u64>,
+}
+
+enum GlUniform {
+    Value(FieldType),
+    Sampler,
+}
+
+// A uniform's GL type as a field type (bool vectors upload like int vectors).
+fn gl_uniform_type(t: u32) -> Option<GlUniform> {
+    use FieldType::*;
+    Some(GlUniform::Value(match t {
+        Gl::FLOAT => F32,
+        Gl::FLOAT_VEC2 => Vec2,
+        Gl::FLOAT_VEC3 => Vec3,
+        Gl::FLOAT_VEC4 => Vec4,
+        Gl::INT => I32,
+        Gl::INT_VEC2 | Gl::BOOL_VEC2 => IVec2,
+        Gl::INT_VEC3 | Gl::BOOL_VEC3 => IVec3,
+        Gl::INT_VEC4 | Gl::BOOL_VEC4 => IVec4,
+        Gl::UNSIGNED_INT => U32,
+        Gl::UNSIGNED_INT_VEC2 => UVec2,
+        Gl::UNSIGNED_INT_VEC3 => UVec3,
+        Gl::UNSIGNED_INT_VEC4 => UVec4,
+        Gl::BOOL => Bool,
+        Gl::FLOAT_MAT2 => Mat2,
+        Gl::FLOAT_MAT3 => Mat3,
+        Gl::FLOAT_MAT4 => Mat4,
+        Gl::FLOAT_MAT2X3 => Mat2x3,
+        Gl::FLOAT_MAT2X4 => Mat2x4,
+        Gl::FLOAT_MAT3X2 => Mat3x2,
+        Gl::FLOAT_MAT3X4 => Mat3x4,
+        Gl::FLOAT_MAT4X2 => Mat4x2,
+        Gl::FLOAT_MAT4X3 => Mat4x3,
+        Gl::SAMPLER_2D
+        | Gl::SAMPLER_3D
+        | Gl::SAMPLER_CUBE
+        | Gl::SAMPLER_2D_SHADOW
+        | Gl::SAMPLER_2D_ARRAY
+        | Gl::SAMPLER_2D_ARRAY_SHADOW
+        | Gl::SAMPLER_CUBE_SHADOW
+        | Gl::INT_SAMPLER_2D
+        | Gl::INT_SAMPLER_3D
+        | Gl::INT_SAMPLER_CUBE
+        | Gl::INT_SAMPLER_2D_ARRAY
+        | Gl::UNSIGNED_INT_SAMPLER_2D
+        | Gl::UNSIGNED_INT_SAMPLER_3D
+        | Gl::UNSIGNED_INT_SAMPLER_CUBE
+        | Gl::UNSIGNED_INT_SAMPLER_2D_ARRAY => return Some(GlUniform::Sampler),
+        _ => return None,
+    }))
+}
+
+fn reflect(gl: &Gl, raw: &WebGlProgram) -> Reflection {
+    let count = gl
+        .get_program_parameter(raw, Gl::ACTIVE_UNIFORMS)
+        .as_f64()
+        .unwrap_or(0.0) as u32;
+    let indices: js_sys::Array = (0..count).map(JsValue::from).collect();
+    let block_of =
+        js_sys::Array::from(&gl.get_active_uniforms(raw, &indices, Gl::UNIFORM_BLOCK_INDEX));
+
+    let mut uniforms = Vec::new();
+    let mut samplers = Vec::new();
+    let mut words = 0usize;
+    for i in 0..count {
+        // Block members are set through the block's buffer, not one by one.
+        if block_of.get(i).as_f64() != Some(-1.0) {
+            continue;
+        }
+        let Some(info) = gl.get_active_uniform(raw, i) else {
+            continue;
+        };
+        let full = info.name();
+        if full.starts_with("gl_") {
+            continue;
+        }
+        let name = full.strip_suffix("[0]").unwrap_or(&full).to_string();
+        let Some(loc) = gl.get_uniform_location(raw, &name) else {
+            continue;
+        };
+        match gl_uniform_type(info.type_()) {
+            Some(GlUniform::Value(ty)) => {
+                let w = (ty.components() * info.size().max(1) as u32) as usize;
+                uniforms.push(ReflUniform {
+                    name: name.into(),
+                    ty,
+                    loc,
+                    shadow: words,
+                    words: w,
+                    known: false,
+                });
+                words += w;
+            }
+            Some(GlUniform::Sampler) => {
+                if info.size() > 1 {
+                    console::warn_once(&format!(
+                        "[rswebgl] sampler arrays aren't supported yet: \"{name}\""
+                    ));
+                    continue;
+                }
+                let unit = samplers.len() as u32;
+                if unit >= limits::max_combined_texture_units() {
+                    console::warn_once(&format!(
+                        "[rswebgl] sampler \"{name}\": all {} texture units are in use",
+                        limits::max_combined_texture_units()
+                    ));
+                    continue;
+                }
+                samplers.push(ReflSampler {
+                    name: name.into(),
+                    unit,
+                    loc,
+                });
+            }
+            None => console::warn_once(&format!(
+                "[rswebgl] uniform \"{name}\" has an unsupported type 0x{:X}",
+                info.type_()
+            )),
+        }
+    }
+
+    let block_count = gl
+        .get_program_parameter(raw, Gl::ACTIVE_UNIFORM_BLOCKS)
+        .as_f64()
+        .unwrap_or(0.0) as u32;
+    let mut blocks = Vec::new();
+    for index in 0..block_count {
+        let Some(name) = gl.get_active_uniform_block_name(raw, index) else {
+            continue;
+        };
+        let point = index;
+        if point >= limits::max_uniform_buffer_bindings() {
+            console::warn_once(&format!(
+                "[rswebgl] uniform block \"{name}\": all {} binding points are in use",
+                limits::max_uniform_buffer_bindings()
+            ));
+            continue;
+        }
+        gl.uniform_block_binding(raw, index, point);
+        let size = gl
+            .get_active_uniform_block_parameter(raw, index, Gl::UNIFORM_BLOCK_DATA_SIZE)
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as u32;
+        blocks.push(ReflBlock {
+            name: name.into(),
+            point,
+            size,
+            size_checked: false,
+        });
+    }
+
+    Reflection {
+        uniforms,
+        samplers,
+        blocks,
+        shadow: vec![0; words],
+        units_written: false,
+    }
+}
+
+// Uploads a plain uniform from 32-bit words (all of its array elements present
+// in `words`).
+fn upload(gl: &Gl, loc: &WebGlUniformLocation, ty: FieldType, words: &[u32]) {
+    use FieldType::*;
+    let loc = Some(loc);
+    // SAFETY: u32/f32/i32 share size and alignment; any bits are valid.
+    let f = unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<f32>(), words.len()) };
+    let i = unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<i32>(), words.len()) };
+    match ty {
+        F32 => gl.uniform1fv_with_f32_array(loc, f),
+        Vec2 => gl.uniform2fv_with_f32_array(loc, f),
+        Vec3 => gl.uniform3fv_with_f32_array(loc, f),
+        Vec4 => gl.uniform4fv_with_f32_array(loc, f),
+        I32 | Bool => gl.uniform1iv_with_i32_array(loc, i),
+        IVec2 => gl.uniform2iv_with_i32_array(loc, i),
+        IVec3 => gl.uniform3iv_with_i32_array(loc, i),
+        IVec4 => gl.uniform4iv_with_i32_array(loc, i),
+        U32 => gl.uniform1uiv_with_u32_array(loc, words),
+        UVec2 => gl.uniform2uiv_with_u32_array(loc, words),
+        UVec3 => gl.uniform3uiv_with_u32_array(loc, words),
+        UVec4 => gl.uniform4uiv_with_u32_array(loc, words),
+        Mat2 => gl.uniform_matrix2fv_with_f32_array(loc, false, f),
+        Mat3 => gl.uniform_matrix3fv_with_f32_array(loc, false, f),
+        Mat4 => gl.uniform_matrix4fv_with_f32_array(loc, false, f),
+        Mat2x3 => gl.uniform_matrix2x3fv_with_f32_array(loc, false, f),
+        Mat2x4 => gl.uniform_matrix2x4fv_with_f32_array(loc, false, f),
+        Mat3x2 => gl.uniform_matrix3x2fv_with_f32_array(loc, false, f),
+        Mat3x4 => gl.uniform_matrix3x4fv_with_f32_array(loc, false, f),
+        Mat4x2 => gl.uniform_matrix4x2fv_with_f32_array(loc, false, f),
+        Mat4x3 => gl.uniform_matrix4x3fv_with_f32_array(loc, false, f),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ProgramObj
+// ---------------------------------------------------------------------------
+
+/// A program in the context's pool.
 #[derive(Debug)]
 pub(crate) struct ProgramObj {
     pub(crate) raw: WebGlProgram,
@@ -40,25 +283,22 @@ pub(crate) struct ProgramObj {
     frag: Option<WebGlShader>,
     ready: bool,
     valid: bool,
-    cache: UniformCache,
-    sampler_units: HashMap<String, Option<u32>>,
-    block_points: HashMap<String, Option<u32>>,
-    // Active non-block uniforms (array names without "[0]"), read lazily.
-    active: Option<Vec<String>>,
-    // Uniforms already reported as unset, so each is reported once.
-    reported_unset: HashSet<String>,
+    refl: Option<Reflection>,
+    mappings: Vec<Mapping>,
+    // Inputs (uniforms, then samplers, then blocks) already reported unset.
+    reported_unset: Vec<bool>,
 }
 
 impl ProgramObj {
     fn new(
-        gl: &WebGl2RenderingContext,
+        gl: &Gl,
         vert_src: &str,
         frag_src: &str,
         parallel: bool,
         validate: Validation,
     ) -> Result<ProgramObj, String> {
-        let vert = create_shader(gl, WebGl2RenderingContext::VERTEX_SHADER, vert_src)?;
-        let frag = create_shader(gl, WebGl2RenderingContext::FRAGMENT_SHADER, frag_src)?;
+        let vert = create_shader(gl, Gl::VERTEX_SHADER, vert_src)?;
+        let frag = create_shader(gl, Gl::FRAGMENT_SHADER, frag_src)?;
 
         let raw = gl.create_program().ok_or("createProgram failed")?;
         gl.attach_shader(&raw, &vert);
@@ -72,17 +312,15 @@ impl ProgramObj {
             frag: Some(frag),
             ready: false,
             valid: false,
-            cache: UniformCache::new(),
-            sampler_units: HashMap::new(),
-            block_points: HashMap::new(),
-            active: None,
-            reported_unset: HashSet::new(),
+            refl: None,
+            mappings: Vec::new(),
+            reported_unset: Vec::new(),
         };
 
         // Without parallel compile the first status query blocks on the link
         // anyway, so do it now and hand compile/link errors back to the caller.
-        // With it, the link finishes in the background; `is_ready` polls it
-        // without blocking, and the renderer waits on it at first draw.
+        // With it, the link finishes in the background; `program_is_ready`
+        // polls it without blocking, and the renderer waits on it at first draw.
         if !parallel && let Err(e) = program.finalize(gl) {
             program.delete(gl);
             return Err(e);
@@ -90,114 +328,15 @@ impl ProgramObj {
         Ok(program)
     }
 
-    pub(crate) fn delete(self, gl: &WebGl2RenderingContext) {
+    pub(crate) fn delete(self, gl: &Gl) {
         gl.delete_shader(self.vert.as_ref());
         gl.delete_shader(self.frag.as_ref());
         gl.delete_program(Some(&self.raw));
     }
 
-    // The texture unit sampler `name` reads from. Assigned and written to the
-    // sampler uniform (uniform1i) the first time it's asked for, so the program
-    // must be in use then.
-    pub(crate) fn sampler_unit(&mut self, gl: &WebGl2RenderingContext, name: &str) -> Option<u32> {
-        if let Some(unit) = self.sampler_units.get(name) {
-            return *unit;
-        }
-        let loc = self.loc(gl, name);
-        let unit = loc.and_then(|loc| {
-            let next = self.sampler_units.values().flatten().count() as u32;
-            let max = limits::max_combined_texture_units();
-            if next >= max {
-                console::warn(&format!(
-                    "[rswebgl] sampler \"{name}\": all {max} texture units are in use"
-                ));
-                return None;
-            }
-            gl.uniform1i(Some(&loc), next as i32);
-            Some(next)
-        });
-        self.sampler_units.insert(name.to_string(), unit);
-        unit
-    }
-
-    // The uniform-buffer binding point block `name` reads from. On first use the
-    // block is resolved, linked to its point (uniformBlockBinding) and, if
-    // validation is on, its shader-reported size checked against `expected_size`
-    // (our computed std140 size).
-    pub(crate) fn block_point(
-        &mut self,
-        gl: &WebGl2RenderingContext,
-        name: &str,
-        expected_size: u32,
-    ) -> Option<u32> {
-        if let Some(point) = self.block_points.get(name) {
-            return *point;
-        }
-        let index = gl.get_uniform_block_index(&self.raw, name);
-        let point = if index == INVALID_INDEX {
-            console::warn(&format!("[rswebgl] uniform block not found: \"{name}\""));
-            None
-        } else {
-            if self.validate.blocks {
-                validate_block_size(gl, &self.raw, index, name, expected_size);
-            }
-            let next = self.block_points.values().flatten().count() as u32;
-            let max = limits::max_uniform_buffer_bindings();
-            if next >= max {
-                console::warn(&format!(
-                    "[rswebgl] uniform block \"{name}\": all {max} binding points are in use"
-                ));
-                None
-            } else {
-                gl.uniform_block_binding(&self.raw, index, next);
-                Some(next)
-            }
-        };
-        self.block_points.insert(name.to_string(), point);
-        point
-    }
-
-    // Reports (once per name) active uniforms that none of `sources` sets: such a
-    // uniform silently keeps whatever an earlier draw of this program left in it.
-    pub(crate) fn check_uniforms_set(
-        &mut self,
-        gl: &WebGl2RenderingContext,
-        sources: &[&UniformValues],
-    ) {
-        if !self.validate.uniforms {
-            return;
-        }
-        self.ensure_active(gl);
-        for name in self.active.iter().flatten() {
-            if self.reported_unset.contains(name) || sources.iter().any(|u| u.contains(name)) {
-                continue;
-            }
-            console::warn(&format!(
-                "[rswebgl] uniform \"{name}\" is set by neither the batch nor the draw, so it \
-                 keeps the value an earlier draw of this program left. Set it on the Batch to \
-                 share it across draws."
-            ));
-            self.reported_unset.insert(name.clone());
-        }
-    }
-
-    fn ensure_active(&mut self, gl: &WebGl2RenderingContext) {
-        if self.active.is_none() {
-            self.active = Some(active_uniforms(gl, &self.raw));
-        }
-    }
-
-    pub(crate) fn loc(
-        &mut self,
-        gl: &WebGl2RenderingContext,
-        name: &str,
-    ) -> Option<WebGlUniformLocation> {
-        self.cache.get(gl, &self.raw, name).cloned()
-    }
-
     // Waits for the link if it's still running (blocking), reporting a failure
     // once. Returns whether the program is usable.
-    pub(crate) fn ensure_linked(&mut self, gl: &WebGl2RenderingContext) -> bool {
+    pub(crate) fn ensure_linked(&mut self, gl: &Gl) -> bool {
         if !self.ready
             && let Err(msg) = self.finalize(gl)
         {
@@ -206,16 +345,21 @@ impl ProgramObj {
         self.valid
     }
 
-    // Reads the link status once the link has completed, frees the shader
-    // objects, and returns the compile/link logs on failure.
-    fn finalize(&mut self, gl: &WebGl2RenderingContext) -> Result<(), String> {
+    // Reads the link status once the link has completed, reflects the program
+    // if it linked, frees the shader objects, and returns the compile/link logs
+    // on failure.
+    fn finalize(&mut self, gl: &Gl) -> Result<(), String> {
         self.ready = true;
         self.valid = gl
-            .get_program_parameter(&self.raw, WebGl2RenderingContext::LINK_STATUS)
+            .get_program_parameter(&self.raw, Gl::LINK_STATUS)
             .as_bool()
             .unwrap_or(false);
 
         let result = if self.valid {
+            let refl = reflect(gl, &self.raw);
+            self.reported_unset =
+                vec![false; refl.uniforms.len() + refl.samplers.len() + refl.blocks.len()];
+            self.refl = Some(refl);
             Ok(())
         } else {
             let prog_log = gl
@@ -237,6 +381,180 @@ impl ProgramObj {
         gl.delete_shader(self.vert.take().as_ref());
         gl.delete_shader(self.frag.take().as_ref());
         result
+    }
+
+    // Call right after the program is made current: writes each sampler's unit
+    // (once per program lifetime).
+    pub(crate) fn activate(&mut self, gl: &Gl) {
+        if let Some(r) = &mut self.refl
+            && !r.units_written
+        {
+            for s in &r.samplers {
+                gl.uniform1i(Some(&s.loc), s.unit as i32);
+            }
+            r.units_written = true;
+        }
+    }
+
+    /// Index of the mapping for `layout` (built on first use).
+    pub(crate) fn mapping(&mut self, id: ParamLayoutId, layout: &ParamLayoutObj) -> usize {
+        if let Some(i) = self.mappings.iter().position(|m| m.layout == id) {
+            return i;
+        }
+        let refl = self.refl.as_ref().expect("mapping on a linked program");
+        let n_u = refl.uniforms.len();
+        let n_s = refl.samplers.len();
+        let mut coverage = vec![0u64; (n_u + n_s + refl.blocks.len()).div_ceil(64)];
+        let mut cover = |bit: usize| coverage[bit / 64] |= 1 << (bit % 64);
+
+        let plain = layout
+            .plain
+            .iter()
+            .map(|f| {
+                let i = refl.uniforms.iter().position(|u| *u.name == *f.name)?;
+                let u = &refl.uniforms[i];
+                let compatible = u.ty == f.ty
+                    || (u.ty == FieldType::Bool
+                        && matches!(f.ty.scalar(), Scalar::Bool | Scalar::I32 | Scalar::U32));
+                if !compatible {
+                    console::warn_once(&format!(
+                        "[rswebgl] param \"{}\" is {:?} in the layout but {:?} in the shader; \
+                         not uploaded",
+                        f.name, f.ty, u.ty
+                    ));
+                    return None;
+                }
+                cover(i);
+                Some(i as u16)
+            })
+            .collect();
+        let textures = layout
+            .textures
+            .iter()
+            .map(|name| {
+                let i = refl.samplers.iter().position(|s| *s.name == **name)?;
+                cover(n_u + i);
+                Some(refl.samplers[i].unit)
+            })
+            .collect();
+        let blocks = layout
+            .blocks
+            .iter()
+            .map(|name| {
+                let i = refl.blocks.iter().position(|b| *b.name == **name)?;
+                cover(n_u + n_s + i);
+                Some(i as u16)
+            })
+            .collect();
+
+        self.mappings.push(Mapping {
+            layout: id,
+            plain,
+            textures,
+            blocks,
+            coverage,
+        });
+        self.mappings.len() - 1
+    }
+
+    pub(crate) fn mapping_at(&self, i: usize) -> &Mapping {
+        &self.mappings[i]
+    }
+
+    /// Uploads plain field `field` of `group` (through mapping `m`) if it
+    /// differs from what the program already holds.
+    pub(crate) fn upload_field(
+        &mut self,
+        gl: &Gl,
+        m: usize,
+        field: usize,
+        f: &PlainField,
+        group: &ParamGroupObj,
+    ) {
+        let Some(ui) = self.mappings[m].plain[field] else {
+            return;
+        };
+        let refl = self.refl.as_mut().expect("linked");
+        let u = &mut refl.uniforms[ui as usize];
+        // An array may be shorter in the shader (or the layout): send the overlap.
+        let n = f.words.min(u.words);
+        let src = &group.uints(f)[..n];
+        let shadow = &mut refl.shadow[u.shadow..u.shadow + n];
+        if u.known && shadow == src {
+            return;
+        }
+        upload(gl, &u.loc, u.ty, src);
+        shadow.copy_from_slice(src);
+        u.known = true;
+    }
+
+    /// The binding point of block `i`, checking (once, if enabled) that the
+    /// buffer bound to it matches the shader's block size.
+    pub(crate) fn block_point(&mut self, i: u16, buffer_size: u32) -> u32 {
+        let check = self.validate.blocks;
+        let refl = self.refl.as_mut().expect("linked");
+        let b = &mut refl.blocks[i as usize];
+        if check && !b.size_checked {
+            b.size_checked = true;
+            if buffer_size != b.size {
+                console::error(&format!(
+                    "[rswebgl] uniform block \"{}\" layout mismatch: shader needs {} bytes, \
+                     the buffer has {buffer_size}. Check field order/types/counts against the \
+                     GLSL block.",
+                    b.name, b.size
+                ));
+            }
+        }
+        b.point
+    }
+
+    // Reports (once each) inputs that none of `mappings` covers: such a
+    // uniform keeps whatever an earlier draw left; a sampler reads whatever is
+    // on its unit; a block reads whatever buffer is on its point.
+    pub(crate) fn check_covered(&mut self, mappings: &[usize]) {
+        if !self.validate.uniforms {
+            return;
+        }
+        let Some(refl) = &self.refl else {
+            return;
+        };
+        let n_u = refl.uniforms.len();
+        let n_s = refl.samplers.len();
+        for bit in 0..self.reported_unset.len() {
+            if self.reported_unset[bit]
+                || mappings
+                    .iter()
+                    .any(|&m| self.mappings[m].coverage[bit / 64] & (1 << (bit % 64)) != 0)
+            {
+                continue;
+            }
+            self.reported_unset[bit] = true;
+            let (what, name) = if bit < n_u {
+                ("uniform", &refl.uniforms[bit].name)
+            } else if bit < n_u + n_s {
+                ("sampler", &refl.samplers[bit - n_u].name)
+            } else {
+                ("uniform block", &refl.blocks[bit - n_u - n_s].name)
+            };
+            console::warn(&format!(
+                "[rswebgl] {what} \"{name}\" is in none of the draw's parameter groups, so it \
+                 keeps whatever an earlier draw left. Add it to a group's layout."
+            ));
+        }
+    }
+
+    fn active_names(&self) -> Vec<String> {
+        let Some(r) = &self.refl else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = r
+            .uniforms
+            .iter()
+            .map(|u| u.name.to_string())
+            .chain(r.samplers.iter().map(|s| s.name.to_string()))
+            .collect();
+        names.sort();
+        names
     }
 }
 
@@ -306,7 +624,8 @@ impl Context {
     }
 
     /// Names of the program's active uniforms outside uniform blocks (samplers
-    /// included; arrays as their base name, without `[0]`), sorted.
+    /// included; arrays as their base name, without `[0]`), sorted. Waits for
+    /// the link if needed.
     pub fn program_active_uniform_names(&self, program: ProgramId) -> Vec<String> {
         let gl = self.gl();
         let mut res = self.res();
@@ -314,78 +633,12 @@ impl Context {
             stale("program", "program_active_uniform_names", program);
             return Vec::new();
         };
-        p.ensure_active(gl);
-        p.active.clone().unwrap_or_default()
+        p.ensure_linked(gl);
+        p.active_names()
     }
 }
 
-// Compares the shader's reported block size (UNIFORM_BLOCK_DATA_SIZE) against our
-// computed std140 size. A mismatch means the layout drifted from the GLSL block
-// (wrong field order/types/counts) — the kind of silent corruption that's near-
-// impossible to debug at draw time, so we surface it loudly here, once.
-fn validate_block_size(
-    gl: &WebGl2RenderingContext,
-    program: &WebGlProgram,
-    index: u32,
-    name: &str,
-    expected: u32,
-) {
-    let driver = gl
-        .get_active_uniform_block_parameter(
-            program,
-            index,
-            WebGl2RenderingContext::UNIFORM_BLOCK_DATA_SIZE,
-        )
-        .ok()
-        .and_then(|v| v.as_f64())
-        .map(|n| n as u32);
-    if let Some(size) = driver
-        && size != expected
-    {
-        console::error(&format!(
-            "[rswebgl] uniform block \"{name}\" layout mismatch: shader needs {size} bytes, \
-             layout computes {expected}. Check field order/types/counts against the GLSL block."
-        ));
-    }
-}
-
-// Active uniforms that live outside uniform blocks (block members are set
-// through the block's buffer, not one by one). Empty for an unlinked program.
-fn active_uniforms(gl: &WebGl2RenderingContext, program: &WebGlProgram) -> Vec<String> {
-    let count = gl
-        .get_program_parameter(program, WebGl2RenderingContext::ACTIVE_UNIFORMS)
-        .as_f64()
-        .unwrap_or(0.0) as u32;
-    if count == 0 {
-        return Vec::new();
-    }
-    let indices: js_sys::Array = (0..count).map(JsValue::from).collect();
-    let block_of = js_sys::Array::from(&gl.get_active_uniforms(
-        program,
-        &indices,
-        WebGl2RenderingContext::UNIFORM_BLOCK_INDEX,
-    ));
-    let mut names: Vec<String> = (0..count)
-        .filter(|&i| block_of.get(i).as_f64() == Some(-1.0))
-        .filter_map(|i| gl.get_active_uniform(program, i))
-        .map(|info| {
-            let name = info.name();
-            match name.strip_suffix("[0]") {
-                Some(base) => base.to_string(),
-                None => name,
-            }
-        })
-        .filter(|n| !n.starts_with("gl_"))
-        .collect();
-    names.sort();
-    names
-}
-
-fn create_shader(
-    gl: &WebGl2RenderingContext,
-    shader_type: u32,
-    src: &str,
-) -> Result<WebGlShader, String> {
+fn create_shader(gl: &Gl, shader_type: u32, src: &str) -> Result<WebGlShader, String> {
     let shader = gl.create_shader(shader_type).ok_or("createShader failed")?;
     gl.shader_source(&shader, src);
     gl.compile_shader(&shader);

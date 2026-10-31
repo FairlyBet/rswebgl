@@ -8,13 +8,12 @@ use wasm_bindgen_test::*;
 
 use rswebgl::buffer::BufferUsage;
 use rswebgl::context::Context;
-use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
-use rswebgl::ids::{ProgramId, TextureId, UniformBufferId};
+use rswebgl::ids::{ParamGroupId, ProgramId, TextureId, UniformBufferId};
+use rswebgl::param::ParamLayoutBuilder;
 use rswebgl::pass::Batch;
 use rswebgl::render_state::RenderState;
 use rswebgl::texture::{TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget};
-use rswebgl::uniform_buffer::{Std140Type, UboLayout};
-use rswebgl::uniform_values::UniformValues;
+use rswebgl::uniform_buffer::{UboLayout, UniformType};
 
 use common::*;
 
@@ -72,7 +71,7 @@ fn solid_texture(ctx: &Context, c: [u8; 4]) -> TextureId {
 }
 
 fn color_block(ctx: &Context, field: &str, c: [u8; 4]) -> UniformBufferId {
-    let layout = UboLayout::new().field(field, Std140Type::Vec4);
+    let layout = UboLayout::new().field(field, UniformType::Vec4);
     let ubo = ctx
         .create_uniform_buffer(&layout, BufferUsage::StaticDraw)
         .expect("ubo");
@@ -81,33 +80,48 @@ fn color_block(ctx: &Context, field: &str, c: [u8; 4]) -> UniformBufferId {
     ubo
 }
 
-// One batch drawing quad `col` with `program` and `u` (plus the quad rect).
-fn quad_batch(f: &Fixture, program: ProgramId, col: i32, u: UniformValues) -> Batch {
+// A single-texture / single-block parameter group.
+fn texture_group(f: &Fixture, name: &str, tex: TextureId) -> ParamGroupId {
+    let layout = f
+        .ctx
+        .create_param_layout(&ParamLayoutBuilder::new().texture(name))
+        .unwrap();
+    let g = f.ctx.create_param_group(layout).unwrap();
+    f.ctx.param_set_texture_by_name(g, name, tex);
+    g
+}
+
+fn block_group(f: &Fixture, name: &str, ubo: UniformBufferId) -> ParamGroupId {
+    let layout = f
+        .ctx
+        .create_param_layout(&ParamLayoutBuilder::new().block(name))
+        .unwrap();
+    let g = f.ctx.create_param_group(layout).unwrap();
+    f.ctx.param_set_block_by_name(g, name, ubo);
+    g
+}
+
+// One batch drawing quad `col` with `program` and `group` in slot 0.
+fn quad_batch(f: &Fixture, program: ProgramId, col: i32, group: ParamGroupId) -> Batch {
     let mut b = Batch::new(program, &RenderState::new());
-    b.set_uniforms(&u);
-    let cmd = DrawCommand::elements(DrawMode::Triangles, 6, IndexType::UnsignedShort, 0);
-    b.draw(f.quad, &quad_uniforms(col, 0), cmd);
+    b.set_group(0, group);
+    draw_quad(&mut b, f, col);
     b
 }
 
 // A → B → A, all on unit 0. Switching back to A must rebind RED even though A's
-// own uniforms didn't change: the unit's contents are global state.
+// own parameters didn't change: the unit's contents are global state.
 #[wasm_bindgen_test]
 fn texture_unit_rebinds_across_programs() {
     let f = fixture();
     let prog_a = f.ctx.create_program(VERT, SAMPLER_A_FRAG).expect("program");
     let prog_b = f.ctx.create_program(VERT, SAMPLER_B_FRAG).expect("program");
-    let red = solid_texture(&f.ctx, RED);
-    let blue = solid_texture(&f.ctx, BLUE);
-
-    let a = UniformValues::new();
-    a.set_sampler("u_a", red);
-    let b = UniformValues::new();
-    b.set_sampler("u_b", blue);
+    let a = texture_group(&f, "u_a", solid_texture(&f.ctx, RED));
+    let b = texture_group(&f, "u_b", solid_texture(&f.ctx, BLUE));
     render(
         &f,
         vec![
-            quad_batch(&f, prog_a, 0, a.clone()),
+            quad_batch(&f, prog_a, 0, a),
             quad_batch(&f, prog_b, 1, b),
             quad_batch(&f, prog_a, 2, a),
         ],
@@ -122,17 +136,12 @@ fn block_point_rebinds_across_programs() {
     let f = fixture();
     let prog_a = f.ctx.create_program(VERT, BLOCK_A_FRAG).expect("program");
     let prog_b = f.ctx.create_program(VERT, BLOCK_B_FRAG).expect("program");
-    let a_red = color_block(&f.ctx, "a_color", RED);
-    let b_blue = color_block(&f.ctx, "b_color", BLUE);
-
-    let a = UniformValues::new();
-    a.set_uniform_block("BlockA", a_red);
-    let b = UniformValues::new();
-    b.set_uniform_block("BlockB", b_blue);
+    let a = block_group(&f, "BlockA", color_block(&f.ctx, "a_color", RED));
+    let b = block_group(&f, "BlockB", color_block(&f.ctx, "b_color", BLUE));
     render(
         &f,
         vec![
-            quad_batch(&f, prog_a, 0, a.clone()),
+            quad_batch(&f, prog_a, 0, a),
             quad_batch(&f, prog_b, 1, b),
             quad_batch(&f, prog_a, 2, a),
         ],
@@ -155,9 +164,9 @@ void main() {
     let f = fixture();
     let program = f.ctx.create_program(VERT, FRAG).expect("program");
     let layout = UboLayout::new()
-        .field("head", Std140Type::Vec4)
-        .array("filler", Std140Type::Vec4, 60)
-        .field("tail", Std140Type::Vec4);
+        .field("head", UniformType::Vec4)
+        .array("filler", UniformType::Vec4, 60)
+        .field("tail", UniformType::Vec4);
     let ubo = f
         .ctx
         .create_uniform_buffer(&layout, BufferUsage::DynamicDraw)
@@ -165,9 +174,8 @@ void main() {
     f.ctx.ubo_set_vec4(ubo, "head", 1.0, 0.0, 0.0, 0.5);
     f.ctx.ubo_set_vec4(ubo, "tail", 0.0, 0.0, 1.0, 0.5);
 
-    let u = UniformValues::new();
-    u.set_uniform_block("Big", ubo);
-    render(&f, vec![quad_batch(&f, program, 1, u)]);
+    let g = block_group(&f, "Big", ubo);
+    render(&f, vec![quad_batch(&f, program, 1, g)]);
 
     assert_eq!(read_quads(&f.gl), [BLACK, [255, 0, 255, 255], BLACK]);
 }

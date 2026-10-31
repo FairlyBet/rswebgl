@@ -14,6 +14,7 @@ use crate::draw::Viewport;
 use crate::extension::Extension;
 use crate::framebuffer::{DefaultFramebuffer, FramebufferObj};
 use crate::limits;
+use crate::param::{ParamGroupObj, ParamLayoutObj};
 use crate::program::{ProgramObj, Validation};
 use crate::renderbuffer::RenderbufferObj;
 use crate::texture::TextureObj;
@@ -142,6 +143,8 @@ pub(crate) struct Resources {
     pub(crate) programs: Pool<ProgramObj>,
     pub(crate) vertex_arrays: Pool<VertexArrayObj>,
     pub(crate) uniform_buffers: Pool<UniformBufferObj>,
+    pub(crate) param_layouts: Pool<ParamLayoutObj>,
+    pub(crate) param_groups: Pool<ParamGroupObj>,
 }
 
 impl Resources {
@@ -155,6 +158,8 @@ impl Resources {
         self.programs.drain();
         self.vertex_arrays.drain();
         self.uniform_buffers.drain();
+        // Parameter layouts and groups are CPU-only and survive; the texture and
+        // buffer handles inside groups go stale like every other GPU handle.
     }
 }
 

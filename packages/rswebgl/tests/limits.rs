@@ -8,10 +8,7 @@ use wasm_bindgen_test::*;
 use web_sys::WebGl2RenderingContext;
 
 use rswebgl::buffer::BufferUsage;
-use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
 use rswebgl::limits;
-use rswebgl::pass::Batch;
-use rswebgl::render_state::RenderState;
 use rswebgl::renderbuffer::RenderbufferFormat;
 use rswebgl::texture::{TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget};
 
@@ -129,33 +126,26 @@ fn renderbuffer_beyond_limit_fails_to_create() {
     assert_no_gl_error(&f);
 }
 
-// An unknown uniform name set every frame is reported once, not per frame.
+// A problem hit every frame (here: a wrong-type parameter write) is reported once.
 #[wasm_bindgen_test]
-fn unknown_uniform_is_reported_once_across_frames() {
-    const FRAG: &str = r#"#version 300 es
-precision highp float;
-out vec4 frag_color;
-void main() {
-    frag_color = vec4(1.0);
-}
-"#;
+fn wrong_type_write_is_reported_once_across_frames() {
     let f = fixture();
-    let program = f.ctx.create_program(VERT, FRAG).unwrap();
-    let u = quad_uniforms(1, 0);
-    u.set_float("u_no_such_uniform", 1.0);
-    let cmd = DrawCommand::elements(DrawMode::Triangles, 6, IndexType::UnsignedShort, 0);
+    let layout = f
+        .ctx
+        .create_param_layout(
+            &rswebgl::param::ParamLayoutBuilder::new()
+                .uniform("u_speed", rswebgl::uniform_buffer::UniformType::F32),
+        )
+        .unwrap();
+    let g = f.ctx.create_param_group(layout).unwrap();
+    let field = f.ctx.param_field(layout, "u_speed").unwrap();
 
+    // An int write to a float field, every frame.
     let warnings = capture_console("warn", || {
         for frame in 0..3 {
-            u.set_float("u_no_such_uniform", frame as f32);
-            let mut batch = Batch::new(program, &RenderState::new());
-            batch.draw(f.quad, &u, cmd);
-            render(&f, vec![batch]);
+            f.ctx.param_set_ints(g, field, &[frame]);
         }
     });
-    let about: Vec<_> = warnings
-        .iter()
-        .filter(|w| w.contains("u_no_such_uniform"))
-        .collect();
+    let about: Vec<_> = warnings.iter().filter(|w| w.contains("u_speed")).collect();
     assert_eq!(about.len(), 1, "{warnings:?}");
 }

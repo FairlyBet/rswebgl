@@ -17,12 +17,13 @@ use web_sys::HtmlCanvasElement;
 
 use rswebgl::context::{Context, ContextOptions};
 use rswebgl::draw::{DrawCommand, DrawMode};
+use rswebgl::param::ParamLayoutBuilder;
 use rswebgl::pass::{Batch, Pass};
 use rswebgl::render_state::RenderState;
 use rswebgl::texture::{
     CubeMapFace, TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget,
 };
-use rswebgl::uniform_values::UniformValues;
+use rswebgl::uniform_buffer::UniformType;
 
 const CUBE_SIZE: i32 = 512;
 const FOV_DEG: f32 = 60.0;
@@ -148,6 +149,11 @@ fn main() {
     ];
 
     let tri = DrawCommand::arrays(DrawMode::Triangles, 0, 3);
+    let bake_layout = ctx
+        .create_param_layout(&ParamLayoutBuilder::new().uniform("u_face", UniformType::I32))
+        .expect("bake layout");
+    let bake_params = ctx.create_param_group(bake_layout).expect("bake params");
+    let f_face = ctx.param_field(bake_layout, "u_face").expect("u_face");
     for (i, face) in faces.iter().enumerate() {
         // Point the FBO's color attachment at this face, then render into it. The
         // fullscreen triangle covers the whole face, so no clear is needed.
@@ -156,12 +162,12 @@ fn main() {
             web_sys::console::error_1(&"cubemap FBO incomplete".into());
         }
 
-        let uniforms = UniformValues::new();
-        uniforms.set_int("u_face", i as i32);
+        ctx.param_set_i32(bake_params, f_face, i as i32);
 
         let mut pass = Pass::new(fbo);
         let mut batch = Batch::new(bake_program, &render_state);
-        batch.draw_vertexless(&uniforms, tri);
+        batch.set_group(0, bake_params);
+        batch.draw_vertexless(tri);
         pass.add(batch);
         ctx.render(&pass);
     }
@@ -169,15 +175,28 @@ fn main() {
     // framebuffer also stops it using the cubemap.
     ctx.destroy_framebuffer(fbo);
     ctx.destroy_program(bake_program);
+    ctx.destroy_param_group(bake_params);
+    ctx.destroy_param_layout(bake_layout);
 
     // ---- phase 2: display the cubemap as a rotating skybox ---------------
     let sky_program = ctx.create_program(SKY_VERT, SKY_FRAG).expect("sky program");
     let default_fb = ctx.default_framebuffer();
     default_fb.enable_auto_resize().expect("auto-resize");
 
-    let sky_uniforms = UniformValues::new();
-    sky_uniforms.set_sampler("u_sky", cube);
-    sky_uniforms.set_float("u_tan_half_fov", (FOV_DEG.to_radians() * 0.5).tan());
+    let sky_layout = ctx
+        .create_param_layout(
+            &ParamLayoutBuilder::new()
+                .texture("u_sky")
+                .uniform("u_tan_half_fov", UniformType::F32)
+                .uniform("u_rot", UniformType::Mat3)
+                .uniform("u_aspect", UniformType::F32),
+        )
+        .expect("sky layout");
+    let sky = ctx.create_param_group(sky_layout).expect("sky params");
+    let f_rot = ctx.param_field(sky_layout, "u_rot").expect("u_rot");
+    let f_aspect = ctx.param_field(sky_layout, "u_aspect").expect("u_aspect");
+    ctx.param_set_texture_by_name(sky, "u_sky", cube);
+    ctx.param_set_floats_by_name(sky, "u_tan_half_fov", &[(FOV_DEG.to_radians() * 0.5).tan()]);
 
     // requestAnimationFrame loop with self-reference via Rc<RefCell<Option<..>>>.
     let f: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));
@@ -189,14 +208,15 @@ fn main() {
 
         // Pan the camera: continuous yaw, gentle bobbing pitch.
         let rot = Mat3::from_rotation_y(t * 0.3) * Mat3::from_rotation_x(0.2 * (t * 0.5).sin());
-        sky_uniforms.set_mat3("u_rot", false, &rot.to_cols_array());
+        ctx.param_set_floats(sky, f_rot, &rot.to_cols_array());
 
         let aspect = default_fb.width().max(1) as f32 / default_fb.height().max(1) as f32;
-        sky_uniforms.set_float("u_aspect", aspect);
+        ctx.param_set_f32(sky, f_aspect, aspect);
 
         let mut pass = Pass::to_default();
         let mut batch = Batch::new(sky_program, &render_state);
-        batch.draw_vertexless(&sky_uniforms, tri);
+        batch.set_group(0, sky);
+        batch.draw_vertexless(tri);
         pass.add(batch);
         ctx.render(&pass);
 

@@ -6,10 +6,13 @@ use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
 use rswebgl::context::{Context, ContextOptions};
+use rswebgl::draw::DrawCommand;
 use rswebgl::framebuffer::ClearMask;
 use rswebgl::ids::VertexArrayId;
+use rswebgl::ids::{ParamGroupId, ParamLayoutId};
+use rswebgl::param::ParamLayoutBuilder;
 use rswebgl::pass::{Batch, Pass};
-use rswebgl::uniform_values::UniformValues;
+use rswebgl::uniform_buffer::UniformType;
 use rswebgl::vao_builder::{AttrKind, VaoBuilder};
 
 pub const W: i32 = 300;
@@ -34,6 +37,8 @@ pub struct Fixture {
     pub ctx: Context,
     pub gl: WebGl2RenderingContext,
     pub quad: VertexArrayId,
+    // `u_rect` (vec4): where a quad goes. Lives in group slot QUAD_SLOT.
+    pub quad_layout: ParamLayoutId,
 }
 
 pub fn fixture() -> Fixture {
@@ -65,16 +70,38 @@ pub fn fixture() -> Fixture {
     );
     vb.add_indices_u16(&[0, 1, 2, 0, 2, 3]);
     let quad = vb.build().expect("vao");
-    Fixture { ctx, gl, quad }
+    let quad_layout = ctx
+        .create_param_layout(&ParamLayoutBuilder::new().uniform("u_rect", UniformType::Vec4))
+        .expect("quad layout");
+    Fixture {
+        ctx,
+        gl,
+        quad,
+        quad_layout,
+    }
 }
 
-// Uniforms for quad `col` of three side-by-side quads.
-pub fn quad_uniforms(col: i32, mode: i32) -> UniformValues {
-    let u = UniformValues::new();
+/// Group slot the quad placement goes in (the tests use 0..2 for their own).
+pub const QUAD_SLOT: u32 = 3;
+
+// A group placing a quad at column `col` of three side-by-side quads.
+pub fn quad(f: &Fixture, col: i32) -> ParamGroupId {
+    let g = f.ctx.create_param_group(f.quad_layout).expect("quad group");
     let x0 = -1.0 + col as f32 * (2.0 / 3.0) + 0.05;
-    u.set_vec4("u_rect", x0, -0.9, x0 + 2.0 / 3.0 - 0.1, 0.9);
-    u.set_int("u_mode", mode);
-    u
+    f.ctx
+        .param_set_floats_by_name(g, "u_rect", &[x0, -0.9, x0 + 2.0 / 3.0 - 0.1, 0.9]);
+    g
+}
+
+// Adds a draw of the quad at column `col`.
+pub fn draw_quad(batch: &mut Batch, f: &Fixture, col: i32) {
+    let cmd = DrawCommand::elements(
+        rswebgl::draw::DrawMode::Triangles,
+        6,
+        rswebgl::draw::IndexType::UnsignedShort,
+        0,
+    );
+    batch.draw_with_group(f.quad, QUAD_SLOT, quad(f, col), cmd);
 }
 
 // One pass to the canvas, cleared to black first.
@@ -116,4 +143,14 @@ pub fn capture_console(method: &str, f: impl FnOnce()) -> Vec<String> {
     f();
     js_sys::Reflect::set(&console, &method.into(), &original).unwrap();
     log.iter().filter_map(|v| v.as_string()).collect()
+}
+
+// The quad's draw command (6 indices).
+pub fn quad_cmd() -> DrawCommand {
+    DrawCommand::elements(
+        rswebgl::draw::DrawMode::Triangles,
+        6,
+        rswebgl::draw::IndexType::UnsignedShort,
+        0,
+    )
 }

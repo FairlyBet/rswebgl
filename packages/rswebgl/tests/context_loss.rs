@@ -11,7 +11,6 @@ use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
 use web_sys::WebGl2RenderingContext;
 
-use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
 use rswebgl::extension::Extension;
 use rswebgl::pass::Batch;
 use rswebgl::render_state::RenderState;
@@ -52,8 +51,8 @@ async fn wait_for(cond: impl Fn() -> bool) -> bool {
 
 fn red_middle_quad(f: &Fixture, program: rswebgl::ids::ProgramId) -> Batch {
     let mut b = Batch::new(program, &RenderState::new());
-    let cmd = DrawCommand::elements(DrawMode::Triangles, 6, IndexType::UnsignedShort, 0);
-    b.draw(f.quad, &quad_uniforms(1, 0), cmd);
+
+    draw_quad(&mut b, f, 1);
     b
 }
 

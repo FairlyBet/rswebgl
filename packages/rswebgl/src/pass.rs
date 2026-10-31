@@ -1,34 +1,47 @@
-// A render pass — the declarative unit the Renderer executes.
+// A render pass — the declarative unit the context executes.
 //
 // The shape mirrors the cost of switching GL state, coarsest first:
 //
 //   Pass    → one render target (framebuffer) + clear/invalidate + viewport
-//     Batch → one program + render state
-//       Draw → one VAO + uniforms + draw command
+//     Batch → one program + render state + default parameter groups
+//       Draw → one VAO + draw command (+ groups overriding the batch's)
 //
 // The user builds this tree and hands it to `Context::render`. Because every
 // draw carries everything it needs, there is no per-call ordering to get wrong:
 // the renderer walks the tree and diffs state between consecutive items itself.
-// Resources are referenced by handle; one destroyed after the pass was built is
-// reported and skipped when the pass runs.
+// Everything is referenced by handle, so a built pass picks up later writes to
+// its parameter groups; a resource destroyed meanwhile is reported and skipped.
 
 use wasm_bindgen::prelude::*;
 
+use crate::console;
 use crate::draw::{DrawCommand, Viewport};
 use crate::framebuffer::{ClearMask, InvalidateMask};
-use crate::ids::{FramebufferId, ProgramId, VertexArrayId};
+use crate::ids::{FramebufferId, ParamGroupId, ProgramId, VertexArrayId};
+use crate::param::GROUP_SLOTS;
 use crate::render_state::RenderState;
-use crate::uniform_values::UniformValues;
+
+fn slot_index(slot: u32) -> Option<usize> {
+    let s = slot as usize;
+    if s >= GROUP_SLOTS {
+        console::error(&format!(
+            "[rswebgl] group slot {slot} is out of range (0..{GROUP_SLOTS}); ignored"
+        ));
+        return None;
+    }
+    Some(s)
+}
 
 // ---------------------------------------------------------------------------
-// Draw — innermost: geometry + bindings + the draw command.
+// Draw — innermost: geometry + the draw command.
 // ---------------------------------------------------------------------------
 
 #[wasm_bindgen]
 pub struct Draw {
     // NULL = no VAO bound (vertex-pulling shaders that use gl_VertexID etc.).
     pub(crate) vao: VertexArrayId,
-    pub(crate) uniforms: UniformValues,
+    // NULL = use the batch's group for that slot.
+    pub(crate) groups: [ParamGroupId; GROUP_SLOTS],
     pub(crate) command: DrawCommand,
 }
 
@@ -36,15 +49,17 @@ pub struct Draw {
 // Batch — a program + render state and the draws sharing them.
 // ---------------------------------------------------------------------------
 
-// Uniforms: each draw sees the batch's uniforms plus its own, the draw's winning
-// on a name clash. Anything neither sets keeps whatever an earlier draw of the
-// program left — the renderer reports such uniforms once (see
-// `Context::set_validate_uniforms`).
+/// A program, render state and parameter groups shared by a list of draws.
+///
+/// Parameters: each draw sees the batch's group in every slot, except where it
+/// sets its own. A program input that none of a draw's groups provides keeps
+/// whatever an earlier draw left — reported once (see
+/// `Context::set_validate_uniforms`).
 #[wasm_bindgen]
 pub struct Batch {
     pub(crate) program: ProgramId,
     pub(crate) render_state: RenderState,
-    pub(crate) uniforms: UniformValues,
+    pub(crate) groups: [ParamGroupId; GROUP_SLOTS],
     pub(crate) draws: Vec<Draw>,
 }
 
@@ -55,40 +70,71 @@ impl Batch {
         Self {
             program,
             render_state: render_state.clone(),
-            uniforms: UniformValues::new(),
+            groups: [ParamGroupId::NULL; GROUP_SLOTS],
             draws: Vec::new(),
         }
     }
 
-    /// Uniforms shared by every draw in the batch (camera, lights, time, …).
-    /// Kept as a live handle like a draw's uniforms: later changes to
-    /// `uniforms` are seen by the batch. A draw that sets the same name
-    /// overrides it for that draw only.
-    pub fn set_uniforms(&mut self, uniforms: &UniformValues) {
-        self.uniforms = uniforms.clone();
+    /// The group every draw sees in `slot` unless it sets its own.
+    pub fn set_group(&mut self, slot: u32, group: ParamGroupId) {
+        if let Some(s) = slot_index(slot) {
+            self.groups[s] = group;
+        }
     }
 
-    /// Adds a draw that binds `vao` for its geometry.
-    pub fn draw(&mut self, vao: VertexArrayId, uniforms: &UniformValues, command: DrawCommand) {
+    /// Adds a draw that binds `vao` and uses the batch's groups.
+    pub fn draw(&mut self, vao: VertexArrayId, command: DrawCommand) {
         self.draws.push(Draw {
             vao,
-            uniforms: uniforms.clone(),
+            groups: [ParamGroupId::NULL; GROUP_SLOTS],
+            command,
+        });
+    }
+
+    /// Adds a draw that uses `group` in `slot` (typically the object's own
+    /// parameters) and the batch's groups elsewhere.
+    pub fn draw_with_group(
+        &mut self,
+        vao: VertexArrayId,
+        slot: u32,
+        group: ParamGroupId,
+        command: DrawCommand,
+    ) {
+        let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
+        if let Some(s) = slot_index(slot) {
+            groups[s] = group;
+        }
+        self.draws.push(Draw {
+            vao,
+            groups,
             command,
         });
     }
 
     /// Adds a draw with no VAO — for vertex-pulling shaders that source vertices
     /// from `gl_VertexID` (or bound buffers) rather than vertex attributes.
-    pub fn draw_vertexless(&mut self, uniforms: &UniformValues, command: DrawCommand) {
-        self.draws.push(Draw {
-            vao: VertexArrayId::NULL,
-            uniforms: uniforms.clone(),
-            command,
-        });
+    pub fn draw_vertexless(&mut self, command: DrawCommand) {
+        self.draw(VertexArrayId::NULL, command);
     }
 
     pub fn draw_count(&self) -> usize {
         self.draws.len()
+    }
+}
+
+impl Batch {
+    /// Adds a draw with its own group per slot (NULL = the batch's).
+    pub fn draw_with_groups(
+        &mut self,
+        vao: VertexArrayId,
+        groups: [ParamGroupId; GROUP_SLOTS],
+        command: DrawCommand,
+    ) {
+        self.draws.push(Draw {
+            vao,
+            groups,
+            command,
+        });
     }
 }
 

@@ -11,10 +11,10 @@ use rswebgl::context::{Context, ContextOptions};
 use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
 use rswebgl::framebuffer::ClearMask;
 use rswebgl::ids::UniformBufferId;
+use rswebgl::param::ParamLayoutBuilder;
 use rswebgl::pass::{Batch, Pass};
 use rswebgl::render_state::{DepthFunc, RenderState};
-use rswebgl::uniform_buffer::{Std140Type, UboLayout};
-use rswebgl::uniform_values::UniformValues;
+use rswebgl::uniform_buffer::{UboLayout, UniformType};
 use rswebgl::vao_builder::{AttrKind, VaoBuilder};
 
 // The MVP comes from a uniform block (UBO) instead of a plain uniform. The block
@@ -99,17 +99,20 @@ fn build_scene(ctx: &Context) -> Result<Scene, String> {
     let draw_cmd = DrawCommand::elements(DrawMode::Triangles, 36, IndexType::UnsignedShort, 0);
 
     // One mat4 in a std140 block, updated each frame and bound by block name.
-    let layout = UboLayout::new().field("u_mvp", Std140Type::Mat4);
+    let layout = UboLayout::new().field("u_mvp", UniformType::Mat4);
     let ubo = ctx.create_uniform_buffer(&layout, BufferUsage::DynamicDraw)?;
-    let uniforms = UniformValues::new();
-    uniforms.set_uniform_block("Matrices", ubo);
+    // The block reaches the draw through a parameter group in slot 0.
+    let params_layout = ctx.create_param_layout(&ParamLayoutBuilder::new().block("Matrices"))?;
+    let params = ctx.create_param_group(params_layout)?;
+    ctx.param_set_block_by_name(params, "Matrices", ubo);
 
     // One pass to the canvas, clearing first, with a single batch (program +
     // state) holding one draw.
     let mut pass = Pass::to_default();
     pass.set_clear(ClearMask::color_depth());
     let mut batch = Batch::new(program, &render_state);
-    batch.draw(vao, &uniforms, draw_cmd);
+    batch.set_group(0, params);
+    batch.draw(vao, draw_cmd);
     pass.add(batch);
 
     Ok(Scene { pass, ubo })

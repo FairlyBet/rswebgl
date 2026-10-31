@@ -34,7 +34,7 @@ fn cmd() -> DrawCommand {
 
 fn red_batch(f: &Fixture, program: ProgramId, col: i32) -> Batch {
     let mut b = Batch::new(program, &RenderState::new());
-    b.draw(f.quad, &quad_uniforms(col, 0), cmd());
+    draw_quad(&mut b, f, col);
     b
 }
 
@@ -125,7 +125,7 @@ fn buffer_in_use_by_vertex_array_survives_until_released() {
     assert_eq!(f.ctx.buffer_size(vbo), 0);
     // …but the GL buffers live on while the vertex array uses them.
     let mut b = Batch::new(program, &RenderState::new());
-    b.draw(vao, &quad_uniforms(1, 0), cmd());
+    b.draw_with_group(vao, QUAD_SLOT, quad(&f, 1), cmd());
     render(&f, vec![b]);
     assert_eq!(read_quads(&f.gl), [BLACK, RED, BLACK]);
 

@@ -27,13 +27,14 @@ use wasm_bindgen::prelude::*;
 use crate::console;
 use crate::context::Context;
 use crate::draw::{DrawCommand, DrawMode, Viewport};
-use crate::ids::{FramebufferId, ProgramId, TextureId};
+use crate::ids::{FramebufferId, ParamGroupId, ParamLayoutId, ProgramId, TextureId};
+use crate::param::{ParamField, ParamLayoutBuilder};
 use crate::pass::{Batch, Pass};
 use crate::render_state::RenderState;
 use crate::texture::{
     TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget, mip_levels,
 };
-use crate::uniform_values::UniformValues;
+use crate::uniform_buffer::UniformType;
 
 /// A colour channel — used both to pick a source channel and to address an
 /// output channel.
@@ -179,6 +180,13 @@ pub struct TexturePacker {
     fbo: FramebufferId,
     // 1×1 complete texture bound to unused sampler slots so the draw is valid.
     dummy: TextureId,
+    layout: ParamLayoutId,
+    params: ParamGroupId,
+    f_src: [ParamField; 4],
+    f_mode: ParamField,
+    f_slot: ParamField,
+    f_chan: ParamField,
+    f_const: ParamField,
 }
 
 #[wasm_bindgen]
@@ -197,11 +205,37 @@ impl TexturePacker {
         // texStorage zero-initialises, so the dummy reads (0,0,0,0); it only ever
         // backs slots no output channel samples.
         ctx.texture_storage_2d(dummy, 1, &TextureFormat::rgba8(), 1, 1);
+
+        let layout = ctx.create_param_layout(
+            &ParamLayoutBuilder::new()
+                .texture("u_src0")
+                .texture("u_src1")
+                .texture("u_src2")
+                .texture("u_src3")
+                .uniform_array("u_out_mode", UniformType::I32, 4)
+                .uniform_array("u_out_src", UniformType::I32, 4)
+                .uniform_array("u_out_chan", UniformType::I32, 4)
+                .uniform_array("u_out_const", UniformType::F32, 4),
+        )?;
+        let params = ctx.create_param_group(layout)?;
+        let field = |name: &str| ctx.param_field(layout, name);
         Ok(Self {
             ctx: ctx.clone(),
             program,
             fbo,
             dummy,
+            layout,
+            params,
+            f_src: [
+                field("u_src0")?,
+                field("u_src1")?,
+                field("u_src2")?,
+                field("u_src3")?,
+            ],
+            f_mode: field("u_out_mode")?,
+            f_slot: field("u_out_src")?,
+            f_chan: field("u_out_chan")?,
+            f_const: field("u_out_const")?,
         })
     }
 
@@ -209,14 +243,22 @@ impl TexturePacker {
     /// drop / `free()`). Textures it produced are the caller's and stay. Safe to
     /// call twice, and after a context loss.
     pub fn destroy(&self) {
-        let (program, fbo, dummy) = {
+        let (program, fbo, dummy, params, layout) = {
             let res = self.ctx.res();
             (
                 res.programs.contains(self.program.0),
                 res.framebuffers.contains(self.fbo.0),
                 res.textures.contains(self.dummy.0),
+                res.param_groups.contains(self.params.0),
+                res.param_layouts.contains(self.layout.0),
             )
         };
+        if params {
+            self.ctx.destroy_param_group(self.params);
+        }
+        if layout {
+            self.ctx.destroy_param_layout(self.layout);
+        }
         if program {
             self.ctx.destroy_program(self.program);
         }
@@ -309,21 +351,22 @@ impl TexturePacker {
     fn run_pass(&self, spec: &PackSpec, width: i32, height: i32) -> Result<(), String> {
         self.ctx.check_framebuffer(self.fbo)?;
 
-        let uniforms = UniformValues::new();
-        for i in 0..4 {
+        let ctx = &self.ctx;
+        for (i, &field) in self.f_src.iter().enumerate() {
             let tex = spec.sources.get(i).copied().unwrap_or(self.dummy);
-            uniforms.set_sampler(&format!("u_src{i}"), tex);
+            ctx.param_set_texture(self.params, field, tex);
         }
-        uniforms.set_int_array("u_out_mode", &spec.mode);
-        uniforms.set_int_array("u_out_src", &spec.src_slot);
-        uniforms.set_int_array("u_out_chan", &spec.src_chan);
-        uniforms.set_float_array("u_out_const", &spec.consts);
+        ctx.param_set_ints(self.params, self.f_mode, &spec.mode);
+        ctx.param_set_ints(self.params, self.f_slot, &spec.src_slot);
+        ctx.param_set_ints(self.params, self.f_chan, &spec.src_chan);
+        ctx.param_set_floats(self.params, self.f_const, &spec.consts);
 
         // The triangle covers the whole target, so no clear is needed. Default
         // render state (no depth/blend/cull, full colour mask) writes every texel.
         let state = RenderState::new();
         let mut batch = Batch::new(self.program, &state);
-        batch.draw_vertexless(&uniforms, DrawCommand::arrays(DrawMode::Triangles, 0, 3));
+        batch.set_group(0, self.params);
+        batch.draw_vertexless(DrawCommand::arrays(DrawMode::Triangles, 0, 3));
 
         let mut pass = Pass::new(self.fbo);
         pass.set_viewport(Viewport::new(0, 0, width, height));

@@ -11,15 +11,17 @@ use crate::ids::UniformBufferId;
 use crate::limits;
 
 // ---------------------------------------------------------------------------
-// Std140Type — the primitive a UBO field can hold.
+// UniformType — the primitive a uniform (plain, in a block, or in a parameter
+// group) can hold.
 // ---------------------------------------------------------------------------
 
-/// A primitive type usable as a uniform-block field. Matrices are column-major,
-/// matching GLSL and glam's `to_cols_array`. (JS-facing mirror of the
-/// foundation's `FieldType`, which carries the std140 layout rules.)
+/// A uniform's primitive type: for uniform-block fields and parameter-group
+/// fields. Matrices are column-major, matching GLSL and glam's
+/// `to_cols_array`. (JS-facing mirror of the foundation's `FieldType`, which
+/// carries the layout rules.)
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Std140Type {
+pub enum UniformType {
     F32,
     I32,
     U32,
@@ -44,9 +46,9 @@ pub enum Std140Type {
     Mat4x3,
 }
 
-impl From<Std140Type> for FieldType {
-    fn from(t: Std140Type) -> FieldType {
-        use Std140Type as S;
+impl From<UniformType> for FieldType {
+    fn from(t: UniformType) -> FieldType {
+        use UniformType as S;
         match t {
             S::F32 => FieldType::F32,
             S::I32 => FieldType::I32,
@@ -86,13 +88,13 @@ impl From<Std140Type> for FieldType {
 /// The builder methods consume and return `self`, so they chain:
 /// ```ignore
 /// let light = UboLayout::new()
-///     .field("pos", Std140Type::Vec3)
-///     .field("intensity", Std140Type::F32)
-///     .field("color", Std140Type::Vec4);
+///     .field("pos", UniformType::Vec3)
+///     .field("intensity", UniformType::F32)
+///     .field("color", UniformType::Vec4);
 /// let block = UboLayout::new()
-///     .field("u_view", Std140Type::Mat4)
+///     .field("u_view", UniformType::Mat4)
 ///     .struct_array("lights", &light, 4)
-///     .field("u_count", Std140Type::I32);
+///     .field("u_count", UniformType::I32);
 /// ```
 #[wasm_bindgen]
 #[derive(Clone, Default)]
@@ -108,7 +110,7 @@ impl UboLayout {
     }
 
     /// A scalar / vector / matrix field.
-    pub fn field(self, name: &str, ty: Std140Type) -> Self {
+    pub fn field(self, name: &str, ty: UniformType) -> Self {
         Self {
             builder: self.builder.field(name, ty.into()),
         }
@@ -116,7 +118,7 @@ impl UboLayout {
 
     /// An array of `count` primitives (each element aligned to 16 per std140).
     /// Address elements with an indexed path, e.g. `set_vec4("offsets[3]", …)`.
-    pub fn array(self, name: &str, ty: Std140Type, count: u32) -> Self {
+    pub fn array(self, name: &str, ty: UniformType, count: u32) -> Self {
         Self {
             builder: self.builder.array(name, ty.into(), count),
         }
@@ -408,8 +410,8 @@ mod tests {
     fn std140_type_maps_onto_field_type() {
         // Layout math lives in the foundation; spot-check the bridge.
         let l = UboLayout::new()
-            .field("t", Std140Type::F32)
-            .field("m", Std140Type::Mat3)
+            .field("t", UniformType::F32)
+            .field("m", UniformType::Mat3)
             .builder
             .build(LayoutRule::Std140);
         assert_eq!(l.field(l.field_id("m").unwrap()).offset, 16);

@@ -119,6 +119,26 @@ impl FieldType {
     pub fn is_matrix(self) -> bool {
         self.shape().columns > 1
     }
+
+    /// The kind of each component.
+    pub fn scalar(self) -> Scalar {
+        use FieldType::*;
+        match self {
+            I32 | IVec2 | IVec3 | IVec4 => Scalar::I32,
+            U32 | UVec2 | UVec3 | UVec4 => Scalar::U32,
+            Bool => Scalar::Bool,
+            _ => Scalar::F32,
+        }
+    }
+}
+
+/// Component kind of a [`FieldType`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scalar {
+    F32,
+    I32,
+    U32,
+    Bool,
 }
 
 #[derive(Clone, Debug)]
