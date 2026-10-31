@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
@@ -7,24 +7,24 @@ use web_sys::{WebGl2RenderingContext, WebGlProgram, WebGlShader, WebGlUniformLoc
 
 use crate::console;
 use crate::context_loss;
+use crate::limits;
 use crate::uniform_cache::UniformCache;
+use crate::uniform_values::UniformValues;
 
 const COMPLETION_STATUS_KHR: u32 = 0x91B1;
 // getUniformBlockIndex returns this for a name that isn't an active uniform block.
 const INVALID_INDEX: u32 = 0xFFFF_FFFF;
 
-// Cached per-program state for one uniform block: its resolved index and the
-// binding point it's currently linked to (via uniformBlockBinding).
-#[derive(Debug)]
-struct BlockBinding {
-    index: u32,
-    point: Option<u32>,
-}
-
 // Everything that changes after construction. It lives in the shared inner, so
 // all clones of a Program see one finalize / one uniform-location cache, and the
 // mutating methods take `&self` (a Program held inside a render `Batch` needs no
 // `&mut`).
+//
+// Texture units and uniform-buffer binding points are assigned here, per program
+// and by name, in order of first use: the sampler's uniform1i / the block's
+// uniformBlockBinding is then written once for the program's lifetime, and
+// samplers/blocks coming from different UniformValues (batch + draw) can never
+// collide on a slot. `None` = no such active sampler/block in the shader.
 #[derive(Debug)]
 struct ProgramState {
     vert: Option<WebGlShader>,
@@ -32,8 +32,12 @@ struct ProgramState {
     ready: bool,
     valid: bool,
     cache: UniformCache,
-    // Resolved/linked uniform blocks, keyed by GLSL block name.
-    blocks: HashMap<String, BlockBinding>,
+    sampler_units: HashMap<String, Option<u32>>,
+    block_points: HashMap<String, Option<u32>>,
+    // Active non-block uniforms (array names without "[0]"), read lazily.
+    active: Option<Vec<String>>,
+    // Uniforms already reported as unset, so each is reported once.
+    reported_unset: HashSet<String>,
 }
 
 #[derive(Debug)]
@@ -42,9 +46,17 @@ struct ProgramInner {
     raw: WebGlProgram,
     // Context generation it was created in (see context_loss).
     generation: u32,
-    // Whether to check uniform-block layouts against the shader on first bind.
-    validate_blocks: bool,
+    validate: Validation,
     state: RefCell<ProgramState>,
+}
+
+/// Debug checks a program runs while drawing (each reported once).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Validation {
+    /// Uniform-block size vs our std140 layout, on first bind.
+    pub blocks: bool,
+    /// Active uniforms that neither the batch nor the draw sets.
+    pub uniforms: bool,
 }
 
 impl Drop for ProgramInner {
@@ -73,7 +85,7 @@ impl Program {
         vert_src: &str,
         frag_src: &str,
         parallel: bool,
-        validate_blocks: bool,
+        validate: Validation,
     ) -> Result<Program, String> {
         let vert = create_shader(gl, WebGl2RenderingContext::VERTEX_SHADER, vert_src)?;
         let frag = create_shader(gl, WebGl2RenderingContext::FRAGMENT_SHADER, frag_src)?;
@@ -88,14 +100,17 @@ impl Program {
                 gl: gl.clone(),
                 raw,
                 generation: context_loss::generation(gl),
-                validate_blocks,
+                validate,
                 state: RefCell::new(ProgramState {
                     vert: Some(vert),
                     frag: Some(frag),
                     ready: false,
                     valid: false,
                     cache: UniformCache::new(),
-                    blocks: HashMap::new(),
+                    sampler_units: HashMap::new(),
+                    block_points: HashMap::new(),
+                    active: None,
+                    reported_unset: HashSet::new(),
                 }),
             }),
         };
@@ -110,36 +125,94 @@ impl Program {
         Ok(program)
     }
 
-    // Links the uniform block named `name` to binding point `point` for this
-    // program. The first time a block is seen it's resolved with
-    // getUniformBlockIndex and (if validation is on) its shader-reported size is
-    // checked against `expected_size` (our computed std140 size). Both the index
-    // and the last-linked point are cached, so the steady-state per-draw cost is
-    // at most one uniformBlockBinding — and zero once the point stops changing.
-    pub(crate) fn bind_block(&self, name: &str, point: u32, expected_size: u32) {
+    // The texture unit sampler `name` reads from. Assigned and written to the
+    // sampler uniform (uniform1i) the first time it's asked for, so the program
+    // must be in use then.
+    pub(crate) fn sampler_unit(&self, name: &str) -> Option<u32> {
+        if let Some(unit) = self.inner.state.borrow().sampler_units.get(name) {
+            return *unit;
+        }
+        let loc = self.loc(name);
+        let mut st = self.inner.state.borrow_mut();
+        let unit = loc.and_then(|loc| {
+            let next = st.sampler_units.values().flatten().count() as u32;
+            let max = limits::max_combined_texture_units();
+            if next >= max {
+                console::warn(&format!(
+                    "[rswebgl] sampler \"{name}\": all {max} texture units are in use"
+                ));
+                return None;
+            }
+            self.inner.gl.uniform1i(Some(&loc), next as i32);
+            Some(next)
+        });
+        st.sampler_units.insert(name.to_string(), unit);
+        unit
+    }
+
+    // The uniform-buffer binding point block `name` reads from. On first use the
+    // block is resolved, linked to its point (uniformBlockBinding) and, if
+    // validation is on, its shader-reported size checked against `expected_size`
+    // (our computed std140 size).
+    pub(crate) fn block_point(&self, name: &str, expected_size: u32) -> Option<u32> {
+        if let Some(point) = self.inner.state.borrow().block_points.get(name) {
+            return *point;
+        }
         let gl = &self.inner.gl;
         let raw = &self.inner.raw;
         let mut st = self.inner.state.borrow_mut();
-
-        if !st.blocks.contains_key(name) {
-            let index = gl.get_uniform_block_index(raw, name);
-            if index == INVALID_INDEX {
-                console::warn(&format!("[rswebgl] uniform block not found: \"{name}\""));
-            } else if self.inner.validate_blocks {
+        let index = gl.get_uniform_block_index(raw, name);
+        let point = if index == INVALID_INDEX {
+            console::warn(&format!("[rswebgl] uniform block not found: \"{name}\""));
+            None
+        } else {
+            if self.inner.validate.blocks {
                 validate_block_size(gl, raw, index, name, expected_size);
             }
-            st.blocks
-                .insert(name.to_string(), BlockBinding { index, point: None });
-        }
+            let next = st.block_points.values().flatten().count() as u32;
+            let max = limits::max_uniform_buffer_bindings();
+            if next >= max {
+                console::warn(&format!(
+                    "[rswebgl] uniform block \"{name}\": all {max} binding points are in use"
+                ));
+                None
+            } else {
+                gl.uniform_block_binding(raw, index, next);
+                Some(next)
+            }
+        };
+        st.block_points.insert(name.to_string(), point);
+        point
+    }
 
-        let binding = st.blocks.get_mut(name).expect("inserted above");
-        if binding.index == INVALID_INDEX {
+    // Reports (once per name) active uniforms that none of `sources` sets: such a
+    // uniform silently keeps whatever an earlier draw of this program left in it.
+    pub(crate) fn check_uniforms_set(&self, sources: &[&UniformValues]) {
+        if !self.inner.validate.uniforms {
             return;
         }
-        if binding.point != Some(point) {
-            gl.uniform_block_binding(raw, binding.index, point);
-            binding.point = Some(point);
+        self.ensure_active();
+        let mut st = self.inner.state.borrow_mut();
+        let st = &mut *st;
+        for name in st.active.iter().flatten() {
+            if st.reported_unset.contains(name) || sources.iter().any(|u| u.contains(name)) {
+                continue;
+            }
+            console::warn(&format!(
+                "[rswebgl] uniform \"{name}\" is set by neither the batch nor the draw, so it \
+                 keeps the value an earlier draw of this program left. Set it on the Batch to \
+                 share it across draws."
+            ));
+            st.reported_unset.insert(name.clone());
         }
+    }
+
+    fn ensure_active(&self) {
+        if self.inner.state.borrow().active.is_some() {
+            return;
+        }
+        let names = active_uniforms(&self.inner.gl, &self.inner.raw);
+        self.inner.state.borrow_mut().active = Some(names);
     }
 
     pub(crate) fn gl(&self) -> &WebGl2RenderingContext {
@@ -238,6 +311,13 @@ impl Program {
     pub fn is_valid(&self) -> bool {
         self.inner.state.borrow().valid
     }
+
+    /// Names of the program's active uniforms outside uniform blocks (samplers
+    /// included; arrays as their base name, without `[0]`), sorted.
+    pub fn active_uniform_names(&self) -> Vec<String> {
+        self.ensure_active();
+        self.inner.state.borrow().active.clone().unwrap_or_default()
+    }
 }
 
 impl PartialEq for Program {
@@ -276,6 +356,38 @@ fn validate_block_size(
              layout computes {expected}. Check field order/types/counts against the GLSL block."
         ));
     }
+}
+
+// Active uniforms that live outside uniform blocks (block members are set
+// through the block's buffer, not one by one). Empty for an unlinked program.
+fn active_uniforms(gl: &WebGl2RenderingContext, program: &WebGlProgram) -> Vec<String> {
+    let count = gl
+        .get_program_parameter(program, WebGl2RenderingContext::ACTIVE_UNIFORMS)
+        .as_f64()
+        .unwrap_or(0.0) as u32;
+    if count == 0 {
+        return Vec::new();
+    }
+    let indices: js_sys::Array = (0..count).map(JsValue::from).collect();
+    let block_of = js_sys::Array::from(&gl.get_active_uniforms(
+        program,
+        &indices,
+        WebGl2RenderingContext::UNIFORM_BLOCK_INDEX,
+    ));
+    let mut names: Vec<String> = (0..count)
+        .filter(|&i| block_of.get(i).as_f64() == Some(-1.0))
+        .filter_map(|i| gl.get_active_uniform(program, i))
+        .map(|info| {
+            let name = info.name();
+            match name.strip_suffix("[0]") {
+                Some(base) => base.to_string(),
+                None => name,
+            }
+        })
+        .filter(|n| !n.starts_with("gl_"))
+        .collect();
+    names.sort();
+    names
 }
 
 fn create_shader(

@@ -43,6 +43,8 @@
 | Vector (vec2–4, ivec, uvec) | ✅     | `src/uniforms.rs`       |
 | Matrix (mat2–4, non-square) | ✅     | `src/uniforms.rs`       |
 | Sampler binding             | ✅     | `src/uniform_values.rs` |
+| Batch-level uniforms        | ✅     | `src/pass.rs`           |
+| Unset-uniform check (debug) | ✅     | `src/program.rs`        |
 | Rust trait `UniformValue`   | ✅     | `src/uniform_value.rs`  |
 | Uniform location cache      | ✅     | `src/uniform_cache.rs`  |
 | Uniform Buffer Object (UBO) | ✅     | `src/uniform_buffer.rs` |
@@ -128,7 +130,7 @@
 | Entity                      | Status | File |
 |-----------------------------|--------|------|
 | getActiveAttrib             | ❌     | —                |
-| getActiveUniform            | ❌     | —                |
+| getActiveUniform            | ✅     | `src/program.rs` (names) |
 | getAttribLocation           | ❌     | —                |
 | getUniformBlockIndex        | ✅     | `src/program.rs` |
 | uniformBlockBinding         | ✅     | `src/program.rs` |

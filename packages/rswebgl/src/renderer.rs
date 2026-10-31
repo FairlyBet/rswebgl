@@ -138,7 +138,14 @@ fn execute_pass(s: &RendererInner, pass: &Pass, t: &mut StateTracker) {
         t.use_program(&batch.program);
         for d in &batch.draws {
             t.bind_vao(&d.vao);
+            // Batch first, then the draw's own (overrides win). Re-syncing the
+            // batch per draw restores any value the previous draw overrode;
+            // unchanged ones cost a compare, not a GL call.
+            t.upload_uniforms(&batch.uniforms, &batch.program);
             t.upload_uniforms(&d.uniforms, &batch.program);
+            batch
+                .program
+                .check_uniforms_set(&[&batch.uniforms, &d.uniforms]);
             d.command.execute(gl);
         }
     }

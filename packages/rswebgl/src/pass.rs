@@ -37,10 +37,15 @@ pub struct Draw {
 // Batch — a program + render state and the draws sharing them.
 // ---------------------------------------------------------------------------
 
+// Uniforms: each draw sees the batch's uniforms plus its own, the draw's winning
+// on a name clash. Anything neither sets keeps whatever an earlier draw of the
+// program left — the renderer reports such uniforms once (see
+// `Context::set_validate_uniforms`).
 #[wasm_bindgen]
 pub struct Batch {
     pub(crate) program: Program,
     pub(crate) render_state: RenderState,
+    pub(crate) uniforms: UniformValues,
     pub(crate) draws: Vec<Draw>,
 }
 
@@ -51,8 +56,17 @@ impl Batch {
         Self {
             program: program.clone(),
             render_state: render_state.clone(),
+            uniforms: UniformValues::new(),
             draws: Vec::new(),
         }
+    }
+
+    /// Uniforms shared by every draw in the batch (camera, lights, time, …).
+    /// Kept as a live handle like a draw's uniforms: later changes to
+    /// `uniforms` are seen by the batch. A draw that sets the same name
+    /// overrides it for that draw only.
+    pub fn set_uniforms(&mut self, uniforms: &UniformValues) {
+        self.uniforms = uniforms.clone();
     }
 
     /// Adds a draw that binds `vao` for its geometry.

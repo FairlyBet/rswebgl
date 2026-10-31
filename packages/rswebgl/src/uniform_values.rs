@@ -62,14 +62,14 @@ pub enum Uniform {
         transpose: bool,
         data: SmallVec<[f32; 12]>,
     },
+    // Texture unit / binding point are the program's business (assigned per
+    // program by name, see `Program::sampler_unit` / `block_point`).
     Sampler {
-        unit: u32,
         texture: Texture,
     },
-    // A uniform block bound to `binding`. `range` is None for the whole buffer
-    // (bindBufferBase) or Some((offset, size)) for a sub-range (bindBufferRange).
+    // `range` is None for the whole buffer (bindBufferBase) or
+    // Some((offset, size)) for a sub-range (bindBufferRange).
     Block {
-        binding: u32,
         ubo: UniformBuffer,
         range: Option<(i32, i32)>,
     },
@@ -105,56 +105,11 @@ impl UniformValues {
         }
     }
 
-    fn assign_unit(&self, name: &str) -> u32 {
-        let max = limits::max_combined_texture_units() as usize;
-        let mut used: SmallVec<[bool; 32]> = SmallVec::from_elem(false, max);
-        for (k, v) in self.entries.borrow().iter() {
-            if let Uniform::Sampler { unit, .. } = v {
-                if k.as_ref() == name {
-                    return *unit;
-                }
-                let idx = *unit as usize;
-                if idx < max {
-                    used[idx] = true;
-                }
-            }
-        }
-        match used.iter().position(|b| !b) {
-            Some(i) => i as u32,
-            None => {
-                console::warn(&format!(
-                    "[rswebgl] sampler \"{name}\": all {max} texture units occupied"
-                ));
-                0
-            }
-        }
-    }
-
-    // Mirror of `assign_unit` for uniform-block binding points (a separate GL
-    // namespace): reuse this block's point if already set, else the first free one.
-    fn assign_block_binding(&self, name: &str) -> u32 {
-        let max = limits::max_uniform_buffer_bindings() as usize;
-        let mut used: SmallVec<[bool; 32]> = SmallVec::from_elem(false, max);
-        for (k, v) in self.entries.borrow().iter() {
-            if let Uniform::Block { binding, .. } = v {
-                if k.as_ref() == name {
-                    return *binding;
-                }
-                let idx = *binding as usize;
-                if idx < max {
-                    used[idx] = true;
-                }
-            }
-        }
-        match used.iter().position(|b| !b) {
-            Some(i) => i as u32,
-            None => {
-                console::warn(&format!(
-                    "[rswebgl] uniform block \"{name}\": all {max} binding points occupied"
-                ));
-                0
-            }
-        }
+    pub(crate) fn contains(&self, name: &str) -> bool {
+        self.entries
+            .borrow()
+            .binary_search_by(|(k, _)| k.as_ref().cmp(name))
+            .is_ok()
     }
 
     fn check_stride(name: &str, len: usize, stride: usize) -> bool {
@@ -244,40 +199,39 @@ fn apply_value(program: &Program, name: &str, value: &Uniform) {
     }
 }
 
-// Links the block to its binding point for this program (cached) and binds the
-// buffer (or sub-range) to that point. Does NOT flush — binding is independent of
-// content currency, so the caller flushes separately (always) and only calls this
-// when the block entry actually changed.
-fn bind_block_buffer(
+// Binds a sampler's texture / a block's buffer to the slot the program assigned
+// that name. Returns false for plain values (nothing to bind).
+fn apply_binding(
     program: &Program,
     name: &str,
-    binding: u32,
-    ubo: &UniformBuffer,
-    range: Option<(i32, i32)>,
-) {
-    program.bind_block(name, binding, ubo.byte_size());
-    bind_block_point(program.gl(), binding, ubo, range);
-}
-
-// Full unconditional apply (flush + bind), for the non-diffing `upload` path.
-fn apply_block(
-    program: &Program,
-    name: &str,
-    binding: u32,
-    ubo: &UniformBuffer,
-    range: Option<(i32, i32)>,
-) {
-    ubo.flush();
-    bind_block_buffer(program, name, binding, ubo, range);
+    value: &Uniform,
+    bindings: &mut GlBindings,
+) -> bool {
+    match value {
+        Uniform::Sampler { texture } => {
+            if let Some(unit) = program.sampler_unit(name) {
+                bindings.bind_texture(program.gl(), unit, texture);
+            }
+            true
+        }
+        Uniform::Block { ubo, range } => {
+            // The UBO's bytes can be dirty while the entry is unchanged, so
+            // flush unconditionally.
+            ubo.flush();
+            if let Some(point) = program.block_point(name, ubo.byte_size()) {
+                bindings.bind_block(program.gl(), point, ubo, *range);
+            }
+            true
+        }
+        _ => false,
+    }
 }
 
 // What's actually bound to each texture unit / uniform-buffer binding point, for
 // the lifetime of one render call. These are *global* GL state, not program
-// state, so they can't be inferred from the per-name `applied` uniform cache: two
-// draws may put different textures on the same unit under different names (units
-// are assigned per `UniformValues`), and a name-keyed cache would then skip a
-// rebind the unit actually needs. Keyed by unit/point instead, it also survives
-// program switches, so an unchanged binding isn't re-issued after `useProgram`.
+// state: different programs (and draws) put different textures on the same unit,
+// so this is keyed by unit/point. It survives program switches, so an unchanged
+// binding isn't re-issued after `useProgram`.
 #[derive(Default)]
 pub(crate) struct GlBindings {
     active_unit: Option<u32>,
@@ -353,23 +307,6 @@ fn bind_block_point(
     }
 }
 
-fn apply_sampler(
-    program: &Program,
-    name: &str,
-    unit: u32,
-    texture: &Texture,
-    current_active: &mut Option<u32>,
-) {
-    let Some(loc) = program.loc(name) else { return };
-    let gl = program.gl();
-    if *current_active != Some(unit) {
-        gl.active_texture(WebGl2RenderingContext::TEXTURE0 + unit);
-        *current_active = Some(unit);
-    }
-    gl.bind_texture(texture.target_gl(), Some(texture.raw_gl()));
-    gl.uniform1i(Some(&loc), unit as i32);
-}
-
 #[wasm_bindgen]
 impl UniformValues {
     #[wasm_bindgen(constructor)]
@@ -392,7 +329,7 @@ impl UniformValues {
     }
 
     pub fn has(&self, name: &str) -> bool {
-        self.get(name).is_some()
+        self.contains(name)
     }
 
     pub fn remove(&self, name: &str) -> bool {
@@ -406,84 +343,46 @@ impl UniformValues {
         }
     }
 
+    /// Uploads every uniform to `program` and binds its textures and blocks,
+    /// without diffing. The program must be in use (`useProgram`).
     pub fn upload(&self, program: &Program) {
-        let mut current_active: Option<u32> = None;
+        let mut bindings = GlBindings::new();
         for (name, value) in self.entries.borrow().iter() {
-            match value {
-                Uniform::Sampler { unit, texture } => {
-                    apply_sampler(program, name, *unit, texture, &mut current_active);
-                }
-                Uniform::Block {
-                    binding,
-                    ubo,
-                    range,
-                } => apply_block(program, name, *binding, ubo, *range),
-                _ => apply_value(program, name, value),
+            if !apply_binding(program, name, value, &mut bindings) {
+                apply_value(program, name, value);
             }
         }
     }
 
     /// Diffs `incoming` against `self` — the renderer's per-program cache of what's
-    /// already in the program — uploading only uniforms that are new or changed and
-    /// recording them here in place. No whole-map clone: only individual changed
-    /// values are cloned. The caller must `clear` this cache on program switch,
-    /// since uniform locations belong to the active program.
+    /// already in the program — uploading only plain values that are new or
+    /// changed and recording them here in place. No whole-map clone: only
+    /// individual changed values are cloned. The caller must `clear` this cache on
+    /// program switch, since uniform locations belong to the active program.
     ///
-    /// Samplers and blocks are split in two: the part that is program state (the
-    /// sampler's unit via uniform1i, the block→point link via uniformBlockBinding)
-    /// diffs here by name, while the part that is global state (which texture sits
-    /// on a unit, which buffer sits on a point) diffs against `bindings`.
+    /// Samplers and blocks aren't cached here: their slot is fixed per program,
+    /// and what's bound to the slot (global state) diffs against `bindings`.
     pub(crate) fn sync_from(
         &self,
         incoming: &UniformValues,
         program: &Program,
         bindings: &mut GlBindings,
     ) {
-        let gl = program.gl();
         let incoming = incoming.entries.borrow();
         let mut applied = self.entries.borrow_mut();
         for (name, value) in incoming.iter() {
-            let slot = applied.binary_search_by(|(k, _)| k.as_ref().cmp(name.as_ref()));
-            let changed = match (slot.ok().map(|idx| &applied[idx].1), value) {
-                (Some(Uniform::Sampler { unit: pu, .. }), Uniform::Sampler { unit, .. }) => {
-                    pu != unit
-                }
-                (Some(Uniform::Block { binding: pb, .. }), Uniform::Block { binding, .. }) => {
-                    pb != binding
-                }
-                (Some(prev), v) => prev != v,
-                (None, _) => true,
-            };
-            match value {
-                Uniform::Sampler { unit, texture } => {
-                    bindings.bind_texture(gl, *unit, texture);
-                    if changed && let Some(loc) = program.loc(name) {
-                        gl.uniform1i(Some(&loc), *unit as i32);
-                    }
-                }
-                Uniform::Block {
-                    binding,
-                    ubo,
-                    range,
-                } => {
-                    // The UBO's bytes can be dirty while the entry is unchanged,
-                    // so flush unconditionally.
-                    ubo.flush();
-                    if changed {
-                        program.bind_block(name, *binding, ubo.byte_size());
-                    }
-                    bindings.bind_block(gl, *binding, ubo, *range);
-                }
-                _ => {
-                    if changed {
-                        apply_value(program, name, value);
-                    }
-                }
+            if apply_binding(program, name, value, bindings) {
+                continue;
             }
-            if changed {
-                match slot {
-                    Ok(idx) => applied[idx].1 = value.clone(),
-                    Err(idx) => applied.insert(idx, (name.clone(), value.clone())),
+            match applied.binary_search_by(|(k, _)| k.as_ref().cmp(name.as_ref())) {
+                Ok(idx) if &applied[idx].1 == value => {}
+                Ok(idx) => {
+                    apply_value(program, name, value);
+                    applied[idx].1 = value.clone();
+                }
+                Err(idx) => {
+                    apply_value(program, name, value);
+                    applied.insert(idx, (name.clone(), value.clone()));
                 }
             }
         }
@@ -558,27 +457,21 @@ impl UniformValues {
 
     // --- sampler ---
 
+    /// Bind `texture` to the sampler uniform `name`. The texture unit is assigned
+    /// by the program (per sampler name), so samplers set on a Batch and on its
+    /// draws never collide.
     pub fn set_sampler(&self, name: &str, texture: &Texture) {
-        let unit = self.assign_unit(name);
         self.put(
             name,
             Uniform::Sampler {
-                unit,
                 texture: texture.clone(),
             },
         );
     }
 
-    pub fn get_sampler_unit(&self, name: &str) -> Option<u32> {
-        match self.get(name) {
-            Some(Uniform::Sampler { unit, .. }) => Some(unit),
-            _ => None,
-        }
-    }
-
     pub fn get_sampler_texture(&self, name: &str) -> Option<Texture> {
         match self.get(name) {
-            Some(Uniform::Sampler { texture, .. }) => Some(texture.clone()),
+            Some(Uniform::Sampler { texture }) => Some(texture),
             _ => None,
         }
     }
@@ -586,13 +479,11 @@ impl UniformValues {
     // --- uniform block (UBO) ---
 
     /// Bind a uniform block (whole buffer) by its GLSL block name. The binding
-    /// point is auto-assigned, mirroring sampler texture units.
+    /// point is assigned by the program (per block name), like sampler units.
     pub fn set_uniform_block(&self, name: &str, ubo: &UniformBuffer) {
-        let binding = self.assign_block_binding(name);
         self.put(
             name,
             Uniform::Block {
-                binding,
                 ubo: ubo.clone(),
                 range: None,
             },
@@ -609,11 +500,9 @@ impl UniformValues {
                  UNIFORM_BUFFER_OFFSET_ALIGNMENT ({align})"
             ));
         }
-        let binding = self.assign_block_binding(name);
         self.put(
             name,
             Uniform::Block {
-                binding,
                 ubo: ubo.clone(),
                 range: Some((offset, size)),
             },
@@ -623,13 +512,6 @@ impl UniformValues {
     pub fn get_uniform_block(&self, name: &str) -> Option<UniformBuffer> {
         match self.get(name) {
             Some(Uniform::Block { ubo, .. }) => Some(ubo),
-            _ => None,
-        }
-    }
-
-    pub fn get_uniform_block_binding(&self, name: &str) -> Option<u32> {
-        match self.get(name) {
-            Some(Uniform::Block { binding, .. }) => Some(binding),
             _ => None,
         }
     }

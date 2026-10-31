@@ -11,7 +11,7 @@ use crate::draw::Viewport;
 use crate::extension::Extension;
 use crate::framebuffer::{DefaultFramebuffer, Framebuffer};
 use crate::limits;
-use crate::program::Program;
+use crate::program::{Program, Validation};
 use crate::renderbuffer::{Renderbuffer, RenderbufferFormat};
 use crate::renderer::Renderer;
 use crate::texture::{Texture, TextureMagFilter, TextureMinFilter, TextureTarget};
@@ -134,9 +134,8 @@ pub struct Context {
     loss: Rc<LossState>,
     renderer: Renderer,
     default_fb: DefaultFramebuffer,
-    // Programs created while this is set check their uniform-block layouts against
-    // the shader on first bind (one-time introspection per block). On by default.
-    validate_uniform_blocks: bool,
+    // Debug checks for programs created from now on; all on by default.
+    validate: Validation,
 }
 
 #[wasm_bindgen]
@@ -218,7 +217,15 @@ impl Context {
     /// the per-frame upload path is never affected). On by default — turn off to
     /// skip the check in release builds.
     pub fn set_validate_uniform_blocks(&mut self, on: bool) {
-        self.validate_uniform_blocks = on;
+        self.validate.blocks = on;
+    }
+
+    /// Whether programs created from now on report (once per name) active
+    /// uniforms that a draw gets from neither its batch nor itself — such a
+    /// uniform silently keeps whatever an earlier draw left. Costs a lookup per
+    /// active uniform per draw; on by default — turn off in release builds.
+    pub fn set_validate_uniforms(&mut self, on: bool) {
+        self.validate.uniforms = on;
     }
 
     pub fn renderer(&self) -> Renderer {
@@ -319,13 +326,7 @@ impl Context {
     pub fn create_program(&self, vert_src: &str, frag_src: &str) -> Result<Program, String> {
         self.check_alive()?;
         let parallel = self.is_extension_enabled(Extension::KhrParallelShaderCompile);
-        Program::new(
-            &self.gl,
-            vert_src,
-            frag_src,
-            parallel,
-            self.validate_uniform_blocks,
-        )
+        Program::new(&self.gl, vert_src, frag_src, parallel, self.validate)
     }
 }
 
@@ -340,7 +341,10 @@ impl Context {
             loss,
             renderer,
             default_fb,
-            validate_uniform_blocks: true,
+            validate: Validation {
+                blocks: true,
+                uniforms: true,
+            },
         }
     }
 

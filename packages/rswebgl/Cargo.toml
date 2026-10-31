@@ -26,6 +26,7 @@ web-sys = { workspace = true, features = [
     "Url",
     "Window",
     "WebGl2RenderingContext",
+    "WebGlActiveInfo",
     "WebGlBuffer",
     "WebGlFramebuffer",
     "WebGlProgram",
