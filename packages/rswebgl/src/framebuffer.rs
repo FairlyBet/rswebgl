@@ -342,7 +342,7 @@ impl DefaultFramebuffer {
 // surface is builder methods on Framebuffer instead). Each variant *owns* a
 // clone of the texture/renderbuffer — the implicit "FBO references this object"
 // GL binding becomes explicit Rust ownership, and the resource lives at least as
-// long as the FBO via its RefCount. The three texture variants encode the only
+// long as the FBO via its shared handle. The three texture variants encode the only
 // three ways WebGL2 attaches a texture: a 2D image, a cube-map face, or a layer
 // of a 3D / 2D-array texture.
 
@@ -669,7 +669,7 @@ impl Clone for Framebuffer {
 
 impl PartialEq for Framebuffer {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.inner, &other.inner) || self.inner.borrow().raw == other.inner.borrow().raw
+        Rc::ptr_eq(&self.inner, &other.inner)
     }
 }
 

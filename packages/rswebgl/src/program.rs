@@ -6,7 +6,6 @@ use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlProgram, WebGlShader, WebGlUniformLocation};
 
 use crate::console;
-use crate::ref_count::{RefCount, ref_counted};
 use crate::uniform_cache::UniformCache;
 
 const COMPLETION_STATUS_KHR: u32 = 0x91B1;
@@ -21,12 +20,10 @@ struct BlockBinding {
     point: Option<u32>,
 }
 
-// Everything that changes after construction. A Program is a clone-able handle
-// (like Buffer/Texture/VAO), so all mutable state lives here behind one shared
-// `Rc<RefCell>` — otherwise clones would fork it and drift: one clone finalizing
-// (or caching a uniform location) would leave the others stale. Sharing it also
-// lets the mutating methods take `&self`, so a Program held inside a render
-// `Batch` needs no `&mut`.
+// Everything that changes after construction. It lives in the shared inner, so
+// all clones of a Program see one finalize / one uniform-location cache, and the
+// mutating methods take `&self` (a Program held inside a render `Batch` needs no
+// `&mut`).
 #[derive(Debug)]
 struct ProgramState {
     vert: Option<WebGlShader>,
@@ -38,23 +35,31 @@ struct ProgramState {
     blocks: HashMap<String, BlockBinding>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ProgramInner {
     gl: WebGl2RenderingContext,
     raw: WebGlProgram,
     // Whether to check uniform-block layouts against the shader on first bind.
     validate_blocks: bool,
-    state: Rc<RefCell<ProgramState>>,
+    state: RefCell<ProgramState>,
 }
 
-ref_counted!(Program wraps ProgramInner; drop(self) {
-    {
-        let mut st = self.inner.state.borrow_mut();
-        self.inner.gl.delete_shader(st.vert.take().as_ref());
-        self.inner.gl.delete_shader(st.frag.take().as_ref());
+impl Drop for ProgramInner {
+    fn drop(&mut self) {
+        let st = self.state.get_mut();
+        self.gl.delete_shader(st.vert.take().as_ref());
+        self.gl.delete_shader(st.frag.take().as_ref());
+        self.gl.delete_program(Some(&self.raw));
     }
-    self.inner.gl.delete_program(Some(&self.inner.raw));
-});
+}
+
+/// A shared handle to a linked GL program: clones point at the same program,
+/// which is deleted when the last handle drops.
+#[wasm_bindgen]
+#[derive(Debug, Clone)]
+pub struct Program {
+    inner: Rc<ProgramInner>,
+}
 
 impl Program {
     pub(crate) fn new(
@@ -73,26 +78,25 @@ impl Program {
         gl.link_program(&raw);
 
         let program = Program {
-            inner: ProgramInner {
+            inner: Rc::new(ProgramInner {
                 gl: gl.clone(),
                 raw,
                 validate_blocks,
-                state: Rc::new(RefCell::new(ProgramState {
+                state: RefCell::new(ProgramState {
                     vert: Some(vert),
                     frag: Some(frag),
                     ready: false,
                     valid: false,
                     cache: UniformCache::new(),
                     blocks: HashMap::new(),
-                })),
-            },
-            rc: RefCount::new(),
+                }),
+            }),
         };
 
         // Without parallel compile the first status query blocks on the link
         // anyway, so do it now and hand compile/link errors back to the caller.
-        // With it, the link finishes in the background; `is_ready` polls it and
-        // the renderer skips the program until then (and for good if it failed).
+        // With it, the link finishes in the background; `is_ready` polls it
+        // without blocking, and the renderer waits on it at first draw.
         if !parallel {
             program.finalize()?;
         }
@@ -227,7 +231,7 @@ impl Program {
 
 impl PartialEq for Program {
     fn eq(&self, other: &Self) -> bool {
-        self.inner.raw == other.inner.raw
+        Rc::ptr_eq(&self.inner, &other.inner)
     }
 }
 

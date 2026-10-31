@@ -1,7 +1,7 @@
+use std::rc::Rc;
+
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlRenderbuffer};
-
-use crate::ref_count::{RefCount, ref_counted};
 
 // ---------------------------------------------------------------------------
 // RenderbufferFormat
@@ -39,7 +39,7 @@ impl RenderbufferFormat {
 // Renderbuffer
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct RenderbufferInner {
     gl: WebGl2RenderingContext,
     raw: WebGlRenderbuffer,
@@ -49,9 +49,19 @@ struct RenderbufferInner {
     format: RenderbufferFormat,
 }
 
-ref_counted!(Renderbuffer wraps RenderbufferInner; drop(self) {
-    self.inner.gl.delete_renderbuffer(Some(&self.inner.raw));
-});
+impl Drop for RenderbufferInner {
+    fn drop(&mut self) {
+        self.gl.delete_renderbuffer(Some(&self.raw));
+    }
+}
+
+/// A shared handle to a GL renderbuffer: clones point at the same renderbuffer,
+/// which is deleted when the last handle drops.
+#[wasm_bindgen]
+#[derive(Debug, Clone)]
+pub struct Renderbuffer {
+    inner: Rc<RenderbufferInner>,
+}
 
 impl Renderbuffer {
     pub(crate) fn new(
@@ -72,15 +82,14 @@ impl Renderbuffer {
         );
         gl.bind_renderbuffer(WebGl2RenderingContext::RENDERBUFFER, None);
         Ok(Self {
-            inner: RenderbufferInner {
+            inner: Rc::new(RenderbufferInner {
                 gl: gl.clone(),
                 raw,
                 width,
                 height,
                 samples: 0,
                 format,
-            },
-            rc: RefCount::new(),
+            }),
         })
     }
 
@@ -104,15 +113,14 @@ impl Renderbuffer {
         );
         gl.bind_renderbuffer(WebGl2RenderingContext::RENDERBUFFER, None);
         Ok(Self {
-            inner: RenderbufferInner {
+            inner: Rc::new(RenderbufferInner {
                 gl: gl.clone(),
                 raw,
                 width,
                 height,
                 samples,
                 format,
-            },
-            rc: RefCount::new(),
+            }),
         })
     }
 

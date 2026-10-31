@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
@@ -21,13 +20,13 @@ struct RendererInner {
 
 #[wasm_bindgen]
 pub struct Renderer {
-    inner: Rc<RefCell<RendererInner>>,
+    inner: Rc<RendererInner>,
 }
 
 impl Renderer {
     pub(crate) fn new(gl: WebGl2RenderingContext, default_fb: DefaultFramebuffer) -> Self {
         Self {
-            inner: Rc::new(RefCell::new(RendererInner { gl, default_fb })),
+            inner: Rc::new(RendererInner { gl, default_fb }),
         }
     }
 
@@ -44,9 +43,9 @@ impl Renderer {
     /// call — nothing about the bound program/VAO/framebuffer is assumed on entry,
     /// so anything a user object did to global GL state in between can't desync us.
     pub fn render(&self, pass: &Pass) {
-        let s = self.inner.borrow();
+        let s = &*self.inner;
         let mut tracker = StateTracker::new(&s.gl);
-        execute_pass(&s, pass, &mut tracker);
+        execute_pass(s, pass, &mut tracker);
     }
 
     /// Executes several passes under one state tracker, so redundant binds across
@@ -61,7 +60,7 @@ impl Renderer {
     /// reads the status, then restores the default framebuffer (the next `render`
     /// re-binds its own target anyway).
     pub fn check_framebuffer(&self, fb: &Framebuffer) -> Result<(), String> {
-        let s = self.inner.borrow();
+        let s = &*self.inner;
         let gl = &s.gl;
         gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&fb.raw_gl()));
         let status = gl.check_framebuffer_status(WebGl2RenderingContext::FRAMEBUFFER);
@@ -83,10 +82,10 @@ impl Renderer {
     /// across pass boundaries (same program/VAO/render state) are skipped.
     /// Rust-only: a `&[Pass]` doesn't cross the wasm_bindgen boundary.
     pub fn render_passes(&self, passes: &[Pass]) {
-        let s = self.inner.borrow();
+        let s = &*self.inner;
         let mut tracker = StateTracker::new(&s.gl);
         for pass in passes {
-            execute_pass(&s, pass, &mut tracker);
+            execute_pass(s, pass, &mut tracker);
         }
     }
 }

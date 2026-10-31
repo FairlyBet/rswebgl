@@ -1,7 +1,7 @@
+use std::rc::Rc;
+
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlBuffer};
-
-use crate::ref_count::{RefCount, ref_counted};
 
 #[wasm_bindgen]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,7 +55,7 @@ pub(crate) enum BufferKind {
     Index,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct BufferInner {
     gl: WebGl2RenderingContext,
     raw: WebGlBuffer,
@@ -63,9 +63,19 @@ struct BufferInner {
     kind: BufferKind,
 }
 
-ref_counted!(Buffer wraps BufferInner; drop(self) {
-    self.inner.gl.delete_buffer(Some(&self.inner.raw));
-});
+impl Drop for BufferInner {
+    fn drop(&mut self) {
+        self.gl.delete_buffer(Some(&self.raw));
+    }
+}
+
+/// A shared handle to a GL buffer: clones point at the same buffer, which is
+/// deleted when the last handle drops.
+#[wasm_bindgen]
+#[derive(Debug, Clone)]
+pub struct Buffer {
+    inner: Rc<BufferInner>,
+}
 
 // The scratch slot a data transfer binds to. Generic buffers use COPY_WRITE_BUFFER:
 // no pipeline side effects, and it isn't VAO state, so an upload can't disturb the
@@ -106,13 +116,12 @@ impl Buffer {
         gl.buffer_data_with_u8_array(t, data, usage.as_gl());
         gl.bind_buffer(t, None);
         Ok(Self {
-            inner: BufferInner {
+            inner: Rc::new(BufferInner {
                 gl: gl.clone(),
                 raw,
                 size: data.len() as u32,
                 kind,
-            },
-            rc: RefCount::new(),
+            }),
         })
     }
 
@@ -127,13 +136,12 @@ impl Buffer {
         gl.buffer_data_with_i32(t, size as i32, usage.as_gl());
         gl.bind_buffer(t, None);
         Ok(Self {
-            inner: BufferInner {
+            inner: Rc::new(BufferInner {
                 gl: gl.clone(),
                 raw,
                 size,
                 kind,
-            },
-            rc: RefCount::new(),
+            }),
         })
     }
 }

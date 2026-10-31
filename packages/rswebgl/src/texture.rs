@@ -12,7 +12,6 @@ use web_sys::{
 use crate::compressed_format::CompressedFormat;
 use crate::console;
 use crate::pixel_unpack::PixelUnpack;
-use crate::ref_count::{RefCount, ref_counted};
 use crate::render_state::DepthFunc;
 
 /// Self-referential slot for a one-shot image-load handler (see
@@ -299,16 +298,26 @@ impl TextureFormat {
 // Texture
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct TextureInner {
     gl: WebGl2RenderingContext,
     raw: WebGlTexture,
     target: TextureTarget,
 }
 
-ref_counted!(Texture wraps TextureInner; drop(self) {
-    self.inner.gl.delete_texture(Some(&self.inner.raw));
-});
+impl Drop for TextureInner {
+    fn drop(&mut self) {
+        self.gl.delete_texture(Some(&self.raw));
+    }
+}
+
+/// A shared handle to a GL texture: clones point at the same texture, which is
+/// deleted when the last handle drops.
+#[wasm_bindgen]
+#[derive(Debug, Clone)]
+pub struct Texture {
+    inner: Rc<TextureInner>,
+}
 
 impl Texture {
     pub(crate) fn new(
@@ -349,12 +358,11 @@ impl Texture {
         gl.bind_texture(t, None);
 
         Ok(Self {
-            inner: TextureInner {
+            inner: Rc::new(TextureInner {
                 gl: gl.clone(),
                 raw,
                 target,
-            },
-            rc: RefCount::new(),
+            }),
         })
     }
 
@@ -389,7 +397,7 @@ pub(crate) fn mip_levels(w: i32, h: i32) -> i32 {
 
 impl PartialEq for Texture {
     fn eq(&self, other: &Self) -> bool {
-        self.inner.raw == other.inner.raw
+        Rc::ptr_eq(&self.inner, &other.inner)
     }
 }
 

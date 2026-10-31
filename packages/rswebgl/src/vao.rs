@@ -5,7 +5,6 @@ use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlVertexArrayObject};
 
 use crate::buffer::Buffer;
-use crate::ref_count::{RefCount, ref_counted};
 
 // ---------------------------------------------------------------------------
 // AttrType
@@ -110,40 +109,48 @@ impl VertexAttr {
 // ---------------------------------------------------------------------------
 
 // The buffers a VAO keeps alive (so they outlive the GL VAO that references them)
-// belong to the GL object, not to a particular handle. They live behind a shared
-// `Rc<RefCell>` so cloning a `VertexArray` is a handle copy, not a fork — otherwise
-// configuring one clone would leave the others' keep-alive lists stale, and a
-// buffer one clone holds could be freed while the shared GL VAO still uses it.
+// belong to the GL object, not to a particular handle, so they sit in the shared
+// inner: configuring one clone is seen by all, and a buffer can't be freed while
+// the shared GL VAO still uses it.
 #[derive(Debug)]
 struct VertexArrayState {
     attribs: Vec<Option<(Buffer, VertexAttr)>>,
     index_buffer: Option<Buffer>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct VertexArrayInner {
     gl: WebGl2RenderingContext,
     raw: WebGlVertexArrayObject,
-    state: Rc<RefCell<VertexArrayState>>,
+    state: RefCell<VertexArrayState>,
 }
 
-ref_counted!(VertexArray wraps VertexArrayInner; drop(self) {
-    self.inner.gl.delete_vertex_array(Some(&self.inner.raw));
-});
+impl Drop for VertexArrayInner {
+    fn drop(&mut self) {
+        self.gl.delete_vertex_array(Some(&self.raw));
+    }
+}
+
+/// A shared handle to a GL vertex array: clones point at the same VAO, which is
+/// deleted when the last handle drops.
+#[wasm_bindgen]
+#[derive(Debug, Clone)]
+pub struct VertexArray {
+    inner: Rc<VertexArrayInner>,
+}
 
 impl VertexArray {
     pub(crate) fn new(gl: &WebGl2RenderingContext) -> Result<Self, String> {
         let raw = gl.create_vertex_array().ok_or("createVertexArray failed")?;
         Ok(Self {
-            inner: VertexArrayInner {
+            inner: Rc::new(VertexArrayInner {
                 gl: gl.clone(),
                 raw,
-                state: Rc::new(RefCell::new(VertexArrayState {
+                state: RefCell::new(VertexArrayState {
                     attribs: Vec::new(),
                     index_buffer: None,
-                })),
-            },
-            rc: RefCount::new(),
+                }),
+            }),
         })
     }
 
@@ -154,7 +161,7 @@ impl VertexArray {
 
 impl PartialEq for VertexArray {
     fn eq(&self, other: &Self) -> bool {
-        self.inner.raw == other.inner.raw
+        Rc::ptr_eq(&self.inner, &other.inner)
     }
 }
 
