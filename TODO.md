@@ -49,9 +49,6 @@ Proposed rule:
   array-stride pitfalls) — deferred.
 - `bindBufferRange` (sub-allocation: several blocks in one buffer) is wired
   (`set_uniform_block_range`) but unexercised; no example yet.
-- Cross-program redundant `bindBufferBase`: a program switch clears the applied
-  cache and re-binds even when the point already holds the right buffer. Could
-  add a dedicated binding-point→buffer map to `StateTracker` to skip it; minor.
 
 ## Extensions worth first-class integration
 

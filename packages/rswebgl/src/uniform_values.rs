@@ -256,21 +256,7 @@ fn bind_block_buffer(
     range: Option<(i32, i32)>,
 ) {
     program.bind_block(name, binding, ubo.byte_size());
-    let gl = program.gl();
-    match range {
-        Some((offset, size)) => gl.bind_buffer_range_with_i32_and_i32(
-            WebGl2RenderingContext::UNIFORM_BUFFER,
-            binding,
-            Some(ubo.buffer_raw()),
-            offset,
-            size,
-        ),
-        None => gl.bind_buffer_base(
-            WebGl2RenderingContext::UNIFORM_BUFFER,
-            binding,
-            Some(ubo.buffer_raw()),
-        ),
-    }
+    bind_block_point(program.gl(), binding, ubo, range);
 }
 
 // Full unconditional apply (flush + bind), for the non-diffing `upload` path.
@@ -285,12 +271,93 @@ fn apply_block(
     bind_block_buffer(program, name, binding, ubo, range);
 }
 
+// What's actually bound to each texture unit / uniform-buffer binding point, for
+// the lifetime of one render call. These are *global* GL state, not program
+// state, so they can't be inferred from the per-name `applied` uniform cache: two
+// draws may put different textures on the same unit under different names (units
+// are assigned per `UniformValues`), and a name-keyed cache would then skip a
+// rebind the unit actually needs. Keyed by unit/point instead, it also survives
+// program switches, so an unchanged binding isn't re-issued after `useProgram`.
+#[derive(Default)]
+pub(crate) struct GlBindings {
+    active_unit: Option<u32>,
+    units: Vec<Option<Texture>>,
+    blocks: Vec<Option<BoundBlock>>,
+}
+
+// A buffer bound to a uniform-buffer point, with its sub-range (None = whole).
+type BoundBlock = (UniformBuffer, Option<(i32, i32)>);
+
+impl GlBindings {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    fn bind_texture(&mut self, gl: &WebGl2RenderingContext, unit: u32, texture: &Texture) {
+        let idx = unit as usize;
+        if self.units.get(idx).and_then(|t| t.as_ref()) == Some(texture) {
+            return;
+        }
+        if self.active_unit != Some(unit) {
+            gl.active_texture(WebGl2RenderingContext::TEXTURE0 + unit);
+            self.active_unit = Some(unit);
+        }
+        gl.bind_texture(texture.target_gl(), Some(texture.raw_gl()));
+        if idx >= self.units.len() {
+            self.units.resize_with(idx + 1, || None);
+        }
+        self.units[idx] = Some(texture.clone());
+    }
+
+    fn bind_block(
+        &mut self,
+        gl: &WebGl2RenderingContext,
+        point: u32,
+        ubo: &UniformBuffer,
+        range: Option<(i32, i32)>,
+    ) {
+        let idx = point as usize;
+        if let Some(Some((cur, cur_range))) = self.blocks.get(idx)
+            && cur == ubo
+            && *cur_range == range
+        {
+            return;
+        }
+        bind_block_point(gl, point, ubo, range);
+        if idx >= self.blocks.len() {
+            self.blocks.resize_with(idx + 1, || None);
+        }
+        self.blocks[idx] = Some((ubo.clone(), range));
+    }
+}
+
+fn bind_block_point(
+    gl: &WebGl2RenderingContext,
+    point: u32,
+    ubo: &UniformBuffer,
+    range: Option<(i32, i32)>,
+) {
+    match range {
+        Some((offset, size)) => gl.bind_buffer_range_with_i32_and_i32(
+            WebGl2RenderingContext::UNIFORM_BUFFER,
+            point,
+            Some(ubo.buffer_raw()),
+            offset,
+            size,
+        ),
+        None => gl.bind_buffer_base(
+            WebGl2RenderingContext::UNIFORM_BUFFER,
+            point,
+            Some(ubo.buffer_raw()),
+        ),
+    }
+}
+
 fn apply_sampler(
     program: &Program,
     name: &str,
     unit: u32,
     texture: &Texture,
-    write_uniform: bool,
     current_active: &mut Option<u32>,
 ) {
     let Some(loc) = program.loc(name) else { return };
@@ -300,31 +367,7 @@ fn apply_sampler(
         *current_active = Some(unit);
     }
     gl.bind_texture(texture.target_gl(), Some(texture.raw_gl()));
-    if write_uniform {
-        gl.uniform1i(Some(&loc), unit as i32);
-    }
-}
-
-// Uploads a single uniform that is known to be new or changed. For samplers,
-// `unit_changed` gates the uniform1i write (the texture bind always happens).
-fn apply_changed(
-    program: &Program,
-    name: &str,
-    value: &Uniform,
-    unit_changed: bool,
-    current_active: &mut Option<u32>,
-) {
-    match value {
-        Uniform::Sampler { unit, texture } => {
-            apply_sampler(program, name, *unit, texture, unit_changed, current_active);
-        }
-        Uniform::Block {
-            binding,
-            ubo,
-            range,
-        } => apply_block(program, name, *binding, ubo, *range),
-        _ => apply_value(program, name, value),
-    }
+    gl.uniform1i(Some(&loc), unit as i32);
 }
 
 #[wasm_bindgen]
@@ -368,7 +411,7 @@ impl UniformValues {
         for (name, value) in self.entries.borrow().iter() {
             match value {
                 Uniform::Sampler { unit, texture } => {
-                    apply_sampler(program, name, *unit, texture, true, &mut current_active);
+                    apply_sampler(program, name, *unit, texture, &mut current_active);
                 }
                 Uniform::Block {
                     binding,
@@ -385,57 +428,62 @@ impl UniformValues {
     /// recording them here in place. No whole-map clone: only individual changed
     /// values are cloned. The caller must `clear` this cache on program switch,
     /// since uniform locations belong to the active program.
-    pub(crate) fn sync_from(&self, incoming: &UniformValues, program: &Program) {
+    ///
+    /// Samplers and blocks are split in two: the part that is program state (the
+    /// sampler's unit via uniform1i, the block→point link via uniformBlockBinding)
+    /// diffs here by name, while the part that is global state (which texture sits
+    /// on a unit, which buffer sits on a point) diffs against `bindings`.
+    pub(crate) fn sync_from(
+        &self,
+        incoming: &UniformValues,
+        program: &Program,
+        bindings: &mut GlBindings,
+    ) {
+        let gl = program.gl();
         let incoming = incoming.entries.borrow();
         let mut applied = self.entries.borrow_mut();
-        let mut current_active: Option<u32> = None;
         for (name, value) in incoming.iter() {
-            // Blocks split the two concerns the equality-skip conflates: the UBO's
-            // bytes can be dirty while the entry is unchanged, so we ALWAYS flush —
-            // but the bindBufferBase only needs redoing when the entry (buffer /
-            // binding / range) actually changed, so that part still diffs. A program
-            // switch clears `applied`, which re-binds and keeps the global binding
-            // points consistent.
-            if let Uniform::Block {
-                binding,
-                ubo,
-                range,
-            } = value
-            {
-                ubo.flush();
-                let slot = applied.binary_search_by(|(k, _)| k.as_ref().cmp(name.as_ref()));
-                let changed = match slot {
-                    Ok(idx) => &applied[idx].1 != value,
-                    Err(_) => true,
-                };
-                if changed {
-                    bind_block_buffer(program, name, *binding, ubo, *range);
-                    match slot {
-                        Ok(idx) => applied[idx].1 = value.clone(),
-                        Err(idx) => applied.insert(idx, (name.clone(), value.clone())),
+            let slot = applied.binary_search_by(|(k, _)| k.as_ref().cmp(name.as_ref()));
+            let changed = match (slot.ok().map(|idx| &applied[idx].1), value) {
+                (Some(Uniform::Sampler { unit: pu, .. }), Uniform::Sampler { unit, .. }) => {
+                    pu != unit
+                }
+                (Some(Uniform::Block { binding: pb, .. }), Uniform::Block { binding, .. }) => {
+                    pb != binding
+                }
+                (Some(prev), v) => prev != v,
+                (None, _) => true,
+            };
+            match value {
+                Uniform::Sampler { unit, texture } => {
+                    bindings.bind_texture(gl, *unit, texture);
+                    if changed && let Some(loc) = program.loc(name) {
+                        gl.uniform1i(Some(&loc), *unit as i32);
                     }
                 }
-                continue;
+                Uniform::Block {
+                    binding,
+                    ubo,
+                    range,
+                } => {
+                    // The UBO's bytes can be dirty while the entry is unchanged,
+                    // so flush unconditionally.
+                    ubo.flush();
+                    if changed {
+                        program.bind_block(name, *binding, ubo.byte_size());
+                    }
+                    bindings.bind_block(gl, *binding, ubo, *range);
+                }
+                _ => {
+                    if changed {
+                        apply_value(program, name, value);
+                    }
+                }
             }
-            match applied.binary_search_by(|(k, _)| k.as_ref().cmp(name.as_ref())) {
-                // Already present: skip if identical, otherwise re-upload + update.
-                Ok(idx) => {
-                    if &applied[idx].1 == value {
-                        continue;
-                    }
-                    let unit_changed = match (&applied[idx].1, value) {
-                        (Uniform::Sampler { unit: pu, .. }, Uniform::Sampler { unit, .. }) => {
-                            pu != unit
-                        }
-                        _ => true,
-                    };
-                    apply_changed(program, name, value, unit_changed, &mut current_active);
-                    applied[idx].1 = value.clone();
-                }
-                // New uniform: upload and insert, keeping `entries` sorted.
-                Err(idx) => {
-                    apply_changed(program, name, value, true, &mut current_active);
-                    applied.insert(idx, (name.clone(), value.clone()));
+            if changed {
+                match slot {
+                    Ok(idx) => applied[idx].1 = value.clone(),
+                    Err(idx) => applied.insert(idx, (name.clone(), value.clone())),
                 }
             }
         }

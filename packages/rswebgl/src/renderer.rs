@@ -11,7 +11,7 @@ use crate::framebuffer::{
 use crate::pass::Pass;
 use crate::program::Program;
 use crate::render_state::RenderState;
-use crate::uniform_values::UniformValues;
+use crate::uniform_values::{GlBindings, UniformValues};
 use crate::vao::VertexArray;
 
 struct RendererInner {
@@ -185,6 +185,9 @@ struct StateTracker<'a> {
     // in place (no per-draw clone); cleared on program switch since locations are
     // per-program.
     applied_uniforms: UniformValues,
+    // What's bound to each texture unit / uniform-buffer point. Global state, so
+    // unlike `applied_uniforms` it's kept across program switches.
+    bindings: GlBindings,
 }
 
 impl<'a> StateTracker<'a> {
@@ -197,6 +200,7 @@ impl<'a> StateTracker<'a> {
             program: None,
             vao: None,
             applied_uniforms: UniformValues::new(),
+            bindings: GlBindings::new(),
         }
     }
 
@@ -277,7 +281,8 @@ impl<'a> StateTracker<'a> {
     }
 
     fn upload_uniforms(&mut self, uniforms: &UniformValues, program: &Program) {
-        self.applied_uniforms.sync_from(uniforms, program);
+        self.applied_uniforms
+            .sync_from(uniforms, program, &mut self.bindings);
     }
 }
 
