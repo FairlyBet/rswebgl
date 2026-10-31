@@ -7,6 +7,7 @@ edition = "2024"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+rswebgl-foundation = { path = "../rswebgl-foundation" }
 smallvec = { workspace = true }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }

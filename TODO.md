@@ -18,16 +18,11 @@ buffers, renderbuffer size and samples. Left:
 
 ## Uniform buffers (UBO)
 
-- **Dirty tracking by 16-byte chunks.** `UniformBuffer` tracks dirty as one
-  contiguous `[lo, hi)` range (`src/uniform_buffer.rs`), so *scattered* writes
-  coalesce: touching offset 0 and offset 1000 marks `[0, 1004)` and `flush`
-  re-uploads the ~1000 untouched bytes between them. Fine for small/clustered
-  blocks (the common case). If large blocks with sparse, spread-out updates show
-  up (e.g. a big array-of-structs where only a few elements change per frame),
-  switch to a bitmap of 16-byte chunks (std140's granularity): a write sets the
-  bits it touches, and `flush` uploads only dirty chunks, coalescing adjacent
-  ones into runs. More bookkeeping; only worth it when writes are actually
-  scattered.
+- ~~Dirty tracking by 16-byte chunks.~~ Done: `UniformBuffer` uses the
+  foundation's `DirtyBits` and `Layout`; scattered writes upload as separate
+  runs. Still to check on real hardware: whether many small `bufferSubData`
+  runs beat one larger one on mobile drivers (may want a gap threshold that
+  merges runs separated by only a few chunks).
 - Layout validation is size-only (`UNIFORM_BLOCK_DATA_SIZE` vs our std140 size).
   Catches most drift (field count/types/array counts shift the total) but not
   same-size permutations or per-field offset errors. Per-field offset validation

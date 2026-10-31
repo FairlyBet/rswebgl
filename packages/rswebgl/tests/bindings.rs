@@ -140,3 +140,34 @@ fn block_point_rebinds_across_programs() {
 
     assert_eq!(read_quads(&f.gl), [RED, BLUE, RED]);
 }
+
+// Two writes far apart in one block upload as separate runs; both must land.
+#[wasm_bindgen_test]
+fn scattered_ubo_writes_reach_the_gpu() {
+    const FRAG: &str = r#"#version 300 es
+precision highp float;
+uniform Big { vec4 head; vec4 filler[60]; vec4 tail; };
+out vec4 frag_color;
+void main() {
+    frag_color = head + tail + filler[0] * 0.0;
+}
+"#;
+    let f = fixture();
+    let program = f.ctx.create_program(VERT, FRAG).expect("program");
+    let layout = UboLayout::new()
+        .field("head", Std140Type::Vec4)
+        .array("filler", Std140Type::Vec4, 60)
+        .field("tail", Std140Type::Vec4);
+    let ubo = f
+        .ctx
+        .create_uniform_buffer(&layout, BufferUsage::DynamicDraw)
+        .expect("ubo");
+    ubo.set_vec4("head", 1.0, 0.0, 0.0, 0.5);
+    ubo.set_vec4("tail", 0.0, 0.0, 1.0, 0.5);
+
+    let u = UniformValues::new();
+    u.set_uniform_block("Big", &ubo);
+    render(&f, vec![quad_batch(&f, &program, 1, u)]);
+
+    assert_eq!(read_quads(&f.gl), [BLACK, [255, 0, 255, 255], BLACK]);
+}

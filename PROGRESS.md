@@ -162,3 +162,19 @@ color; deferred items (skinning, animation, KTX2/Draco, …) are in `TODO.md`.
 Separate occlusion + metallic-roughness maps are GPU-packed into one ORM texture
 (`src/pack.rs` + `texture_packer`); a reference PBR shader interface lives in
 `packages/rswebgl-gltf/shaders/pbr/`.
+
+## Foundation (`packages/rswebgl-foundation`)
+
+Stage 1 of `docs/design/architecture.md`: the data layer shared by the renderer
+and the future ECS. Nothing in it touches WebGL.
+
+| Entity                                   | Status | File               |
+|------------------------------------------|--------|--------------------|
+| Generational `u32` handles, typed ids    | ✅     | `src/handle.rs`    |
+| Pool: FIFO reuse, slot retirement, deferred destroy (use counts) | ✅ | `src/pool.rs` |
+| Layout: std140 + packed, path → FieldId  | ✅     | `src/layout.rs`    |
+| Dirty tracking by chunk, coalesced runs  | ✅     | `src/dirty.rs`     |
+| Columns with zero-copy JS views + version counters | ✅ | `src/column.rs` |
+
+The renderer's `UniformBuffer` already runs on `Layout` + `DirtyBits`; pools and
+handles get adopted in stage 2.

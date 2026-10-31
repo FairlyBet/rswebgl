@@ -258,11 +258,21 @@ name = "rswebgl"
 version = "0.1.0"
 dependencies = [
  "js-sys",
+ "rswebgl-foundation",
  "smallvec",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
+]
+
+[[package]]
+name = "rswebgl-foundation"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
 ]
 
 [[package]]
