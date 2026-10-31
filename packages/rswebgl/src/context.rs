@@ -16,7 +16,9 @@ use crate::framebuffer::{DefaultFramebuffer, FramebufferObj};
 use crate::limits;
 use crate::param::{ParamGroupObj, ParamLayoutObj};
 use crate::program::{ProgramObj, Validation};
+use crate::render_state::RenderState;
 use crate::renderbuffer::RenderbufferObj;
+use crate::renderer::GlState;
 use crate::texture::TextureObj;
 use crate::uniform_buffer::UniformBufferObj;
 use crate::vao::VertexArrayObj;
@@ -145,6 +147,7 @@ pub(crate) struct Resources {
     pub(crate) uniform_buffers: Pool<UniformBufferObj>,
     pub(crate) param_layouts: Pool<ParamLayoutObj>,
     pub(crate) param_groups: Pool<ParamGroupObj>,
+    pub(crate) render_states: Pool<RenderState>,
 }
 
 impl Resources {
@@ -204,6 +207,13 @@ pub(crate) struct Core {
     pub(crate) default_fb: DefaultFramebuffer,
     pub(crate) validate: Cell<Validation>,
     pub(crate) loss: LossState,
+    // What the renderer last left bound, kept across frames so an unchanged
+    // binding isn't re-issued. Anything else that binds resets the part it
+    // touched (`GlState::forget_*`).
+    state: RefCell<GlState>,
+    // Set when GL state may differ from `state` in unknown ways (context loss
+    // or restore, `invalidate_state`); `state` is reset on its next access.
+    state_stale: Cell<bool>,
 }
 
 impl Core {
@@ -216,7 +226,21 @@ impl Core {
         res
     }
 
+    /// The GL state cache. Not reentrant, like `res`.
+    pub(crate) fn gl_state(&self) -> RefMut<'_, GlState> {
+        let mut s = self.state.borrow_mut();
+        if self.state_stale.replace(false) {
+            s.reset();
+        }
+        s
+    }
+
+    pub(crate) fn invalidate_state(&self) {
+        self.state_stale.set(true);
+    }
+
     pub(crate) fn forget_all(&self) {
+        self.invalidate_state();
         match self.res.try_borrow_mut() {
             Ok(mut res) => res.forget_all(),
             Err(_) => self.forget_pending.set(true),
@@ -383,6 +407,8 @@ impl Context {
                 uniforms: true,
             }),
             loss: LossState::new(),
+            state: RefCell::new(GlState::default()),
+            state_stale: Cell::new(false),
         });
         context_loss::install(&core);
         Context { core }
@@ -415,5 +441,9 @@ impl Context {
 
     pub(crate) fn res(&self) -> RefMut<'_, Resources> {
         self.core.res()
+    }
+
+    pub(crate) fn gl_state(&self) -> RefMut<'_, GlState> {
+        self.core.gl_state()
     }
 }

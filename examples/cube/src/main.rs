@@ -95,6 +95,7 @@ fn build_scene(ctx: &Context) -> Result<Scene, String> {
     let mut render_state = RenderState::new();
     render_state.depth_test = true;
     render_state.depth_func = DepthFunc::Less;
+    let render_state = ctx.render_state(&render_state);
 
     let draw_cmd = DrawCommand::elements(DrawMode::Triangles, 36, IndexType::UnsignedShort, 0);
 
@@ -110,7 +111,7 @@ fn build_scene(ctx: &Context) -> Result<Scene, String> {
     // state) holding one draw.
     let mut pass = Pass::to_default();
     pass.set_clear(ClearMask::color_depth());
-    let mut batch = Batch::new(program, &render_state);
+    let mut batch = Batch::new(program, render_state);
     batch.set_group(0, params);
     batch.draw(vao, draw_cmd);
     pass.add(batch);

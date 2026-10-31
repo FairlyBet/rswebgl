@@ -462,7 +462,7 @@ impl ProgramObj {
     }
 
     /// Uploads plain field `field` of `group` (through mapping `m`) if it
-    /// differs from what the program already holds.
+    /// differs from what the program already holds; returns whether it did.
     pub(crate) fn upload_field(
         &mut self,
         gl: &Gl,
@@ -470,9 +470,9 @@ impl ProgramObj {
         field: usize,
         f: &PlainField,
         group: &ParamGroupObj,
-    ) {
+    ) -> bool {
         let Some(ui) = self.mappings[m].plain[field] else {
-            return;
+            return false;
         };
         let refl = self.refl.as_mut().expect("linked");
         let u = &mut refl.uniforms[ui as usize];
@@ -481,11 +481,12 @@ impl ProgramObj {
         let src = &group.uints(f)[..n];
         let shadow = &mut refl.shadow[u.shadow..u.shadow + n];
         if u.known && shadow == src {
-            return;
+            return false;
         }
         upload(gl, &u.loc, u.ty, src);
         shadow.copy_from_slice(src);
         u.known = true;
+        true
     }
 
     /// The binding point of block `i`, checking (once, if enabled) that the

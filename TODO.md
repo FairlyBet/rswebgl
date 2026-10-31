@@ -161,13 +161,13 @@ FBO blit). Done. Deferred polish:
   that share a block name ("Frame") may put it on different points and rebind
   more than needed. A context-wide name→point registry would let them share.
 
-- `Pass`/`Batch` snapshot `RenderState` by value, so mutating a `RenderState`
-  after `Batch::new` doesn't reflect (unlike uniforms, which now share via
-  `Rc<RefCell>`). Either document this, or make `RenderState` a shared handle for
-  a consistent mental model. Low impact (render state is usually static).
-- `UniformValues` is now `RefCell`-backed, so misuse (reentrant borrow) is a
-  runtime panic rather than a compile error. All call sites are internal today,
-  but keep in mind if `sync_from`-like methods are ever exposed.
+- Draw list: the default sort key truncates handle indices (program 15 bits,
+  state 12, material 20, VAO 16), so very large scenes group slightly worse —
+  never wrong. No depth-sort helper for transparent draws yet (`KEY_LAST` +
+  your own depth bits). `ctx.render_state` interns by linear search: fine for
+  tens of states, not thousands.
+- The GL state cache trusts that only the library binds. Raw GL on the same
+  context needs `ctx.invalidate_state()` afterwards.
 - MSAA → texture resolve (`blitFramebuffer`) and `invalidateSubFramebuffer` are
   still unimplemented (deferred from the FBO work).
 - `copyTex(Sub)Image2D/3D` deferred: they copy from the bound READ framebuffer,

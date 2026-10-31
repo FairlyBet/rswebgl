@@ -50,7 +50,7 @@ async fn wait_for(cond: impl Fn() -> bool) -> bool {
 }
 
 fn red_middle_quad(f: &Fixture, program: rswebgl::ids::ProgramId) -> Batch {
-    let mut b = Batch::new(program, &RenderState::new());
+    let mut b = Batch::new(program, f.ctx.render_state(&RenderState::new()));
 
     draw_quad(&mut b, f, 1);
     b

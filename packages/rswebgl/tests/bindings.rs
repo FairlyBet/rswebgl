@@ -103,7 +103,7 @@ fn block_group(f: &Fixture, name: &str, ubo: UniformBufferId) -> ParamGroupId {
 
 // One batch drawing quad `col` with `program` and `group` in slot 0.
 fn quad_batch(f: &Fixture, program: ProgramId, col: i32, group: ParamGroupId) -> Batch {
-    let mut b = Batch::new(program, &RenderState::new());
+    let mut b = Batch::new(program, f.ctx.render_state(&RenderState::new()));
     b.set_group(0, group);
     draw_quad(&mut b, f, col);
     b

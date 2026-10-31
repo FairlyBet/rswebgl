@@ -1,6 +1,9 @@
 use wasm_bindgen::prelude::*;
 use web_sys::WebGl2RenderingContext;
 
+use crate::context::Context;
+use crate::ids::StateId;
+
 // ---------------------------------------------------------------------------
 // DepthFunc
 // ---------------------------------------------------------------------------
@@ -156,7 +159,7 @@ impl StencilOp {
 // ---------------------------------------------------------------------------
 
 #[wasm_bindgen]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RenderState {
     pub depth_test: bool,
     pub depth_func: DepthFunc,
@@ -253,71 +256,52 @@ impl Default for RenderState {
 }
 
 impl RenderState {
+    // Every parameter is set, enabled or not: `apply_diff` compares them all,
+    // so a parameter skipped here would be assumed set by the next diff.
     pub(crate) fn apply(&self, gl: &WebGl2RenderingContext) {
-        // Depth
-        if self.depth_test {
-            gl.enable(WebGl2RenderingContext::DEPTH_TEST);
-            gl.depth_func(self.depth_func.as_gl());
-        } else {
-            gl.disable(WebGl2RenderingContext::DEPTH_TEST);
-        }
+        type Gl = WebGl2RenderingContext;
+        let toggle = |cap: u32, on: bool| {
+            if on { gl.enable(cap) } else { gl.disable(cap) }
+        };
+
+        toggle(Gl::DEPTH_TEST, self.depth_test);
+        gl.depth_func(self.depth_func.as_gl());
         gl.depth_mask(self.depth_mask);
 
-        // Blend
-        if self.blend {
-            gl.enable(WebGl2RenderingContext::BLEND);
-            gl.blend_func_separate(
-                self.blend_src_rgb.as_gl(),
-                self.blend_dst_rgb.as_gl(),
-                self.blend_src_alpha.as_gl(),
-                self.blend_dst_alpha.as_gl(),
-            );
-            gl.blend_equation_separate(self.blend_eq_rgb.as_gl(), self.blend_eq_alpha.as_gl());
-        } else {
-            gl.disable(WebGl2RenderingContext::BLEND);
-        }
+        toggle(Gl::BLEND, self.blend);
+        gl.blend_func_separate(
+            self.blend_src_rgb.as_gl(),
+            self.blend_dst_rgb.as_gl(),
+            self.blend_src_alpha.as_gl(),
+            self.blend_dst_alpha.as_gl(),
+        );
+        gl.blend_equation_separate(self.blend_eq_rgb.as_gl(), self.blend_eq_alpha.as_gl());
 
-        // Cull face
-        if self.cull_face {
-            gl.enable(WebGl2RenderingContext::CULL_FACE);
-            gl.cull_face(self.cull_mode.as_gl());
-        } else {
-            gl.disable(WebGl2RenderingContext::CULL_FACE);
-        }
+        toggle(Gl::CULL_FACE, self.cull_face);
+        gl.cull_face(self.cull_mode.as_gl());
         gl.front_face(self.front_face.as_gl());
 
-        // Stencil
-        if self.stencil_test {
-            gl.enable(WebGl2RenderingContext::STENCIL_TEST);
-            gl.stencil_func(
-                self.stencil_func.as_gl(),
-                self.stencil_ref,
-                self.stencil_mask,
-            );
-            gl.stencil_op(
-                self.stencil_fail.as_gl(),
-                self.stencil_depth_fail.as_gl(),
-                self.stencil_pass.as_gl(),
-            );
-            gl.stencil_mask(self.stencil_write_mask);
-        } else {
-            gl.disable(WebGl2RenderingContext::STENCIL_TEST);
-        }
+        toggle(Gl::STENCIL_TEST, self.stencil_test);
+        gl.stencil_func(
+            self.stencil_func.as_gl(),
+            self.stencil_ref,
+            self.stencil_mask,
+        );
+        gl.stencil_op(
+            self.stencil_fail.as_gl(),
+            self.stencil_depth_fail.as_gl(),
+            self.stencil_pass.as_gl(),
+        );
+        gl.stencil_mask(self.stencil_write_mask);
 
-        // Scissor
-        if self.scissor_test {
-            gl.enable(WebGl2RenderingContext::SCISSOR_TEST);
-            gl.scissor(
-                self.scissor_x,
-                self.scissor_y,
-                self.scissor_width,
-                self.scissor_height,
-            );
-        } else {
-            gl.disable(WebGl2RenderingContext::SCISSOR_TEST);
-        }
+        toggle(Gl::SCISSOR_TEST, self.scissor_test);
+        gl.scissor(
+            self.scissor_x,
+            self.scissor_y,
+            self.scissor_width,
+            self.scissor_height,
+        );
 
-        // Color mask
         gl.color_mask(
             self.color_mask_r,
             self.color_mask_g,
@@ -325,13 +309,8 @@ impl RenderState {
             self.color_mask_a,
         );
 
-        // Polygon offset
-        if self.polygon_offset_fill {
-            gl.enable(WebGl2RenderingContext::POLYGON_OFFSET_FILL);
-            gl.polygon_offset(self.polygon_offset_factor, self.polygon_offset_units);
-        } else {
-            gl.disable(WebGl2RenderingContext::POLYGON_OFFSET_FILL);
-        }
+        toggle(Gl::POLYGON_OFFSET_FILL, self.polygon_offset_fill);
+        gl.polygon_offset(self.polygon_offset_factor, self.polygon_offset_units);
     }
 
     pub(crate) fn apply_diff(&self, prev: &Self, gl: &WebGl2RenderingContext) {
@@ -469,5 +448,22 @@ impl RenderState {
         {
             gl.polygon_offset(self.polygon_offset_factor, self.polygon_offset_units);
         }
+    }
+}
+
+#[wasm_bindgen]
+impl Context {
+    /// The id of `state`, interned: equal states get the same id, so draws
+    /// compare render states as numbers and the full diff runs only on an
+    /// actual change. States are small and never freed (an app has a handful).
+    pub fn render_state(&self, state: &RenderState) -> StateId {
+        let mut res = self.res();
+        if let Some((h, _)) = res.render_states.iter().find(|(_, s)| *s == state) {
+            return h.into();
+        }
+        res.render_states
+            .insert(state.clone())
+            .map(Into::into)
+            .unwrap_or(StateId::NULL)
     }
 }

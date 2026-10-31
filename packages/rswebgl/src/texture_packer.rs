@@ -363,8 +363,8 @@ impl TexturePacker {
 
         // The triangle covers the whole target, so no clear is needed. Default
         // render state (no depth/blend/cull, full colour mask) writes every texel.
-        let state = RenderState::new();
-        let mut batch = Batch::new(self.program, &state);
+        let state = ctx.render_state(&RenderState::new());
+        let mut batch = Batch::new(self.program, state);
         batch.set_group(0, self.params);
         batch.draw_vertexless(DrawCommand::arrays(DrawMode::Triangles, 0, 3));
 

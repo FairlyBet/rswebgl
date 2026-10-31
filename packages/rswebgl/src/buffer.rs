@@ -171,6 +171,8 @@ impl Context {
     /// separate kind.
     pub fn create_index_buffer(&self, usage: BufferUsage, data: &[u8]) -> Result<BufferId, String> {
         self.check_alive()?;
+        // The upload unbinds any VAO (see `bind_for_upload`).
+        self.gl_state().forget_vao();
         let obj = create_raw(self.gl(), BufferKind::Index, usage, Init::Data(data))?;
         self.insert_buffer(obj)
     }
@@ -181,6 +183,9 @@ impl Context {
         let Some(b) = res.buffers.get(buffer.0) else {
             return stale("buffer", "buffer_write", buffer);
         };
+        if b.kind == BufferKind::Index {
+            self.gl_state().forget_vao();
+        }
         write_raw(self.gl(), b.kind, &b.raw, offset, data);
     }
 

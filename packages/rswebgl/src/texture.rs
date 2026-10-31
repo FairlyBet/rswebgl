@@ -385,6 +385,7 @@ impl Context {
         };
         let gl = self.gl();
         let t = obj.target_gl();
+        self.gl_state().forget_texture_unit();
         gl.bind_texture(t, Some(&obj.raw));
         let out = f(gl, t, obj);
         gl.bind_texture(t, None);
@@ -417,6 +418,7 @@ impl Context {
         let gl = self.gl();
         let raw = gl.create_texture().ok_or("createTexture failed")?;
         let t = target.as_gl();
+        self.gl_state().forget_texture_unit();
         gl.bind_texture(t, Some(&raw));
         gl.tex_parameteri(
             t,

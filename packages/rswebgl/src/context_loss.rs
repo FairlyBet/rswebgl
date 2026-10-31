@@ -92,6 +92,7 @@ pub(crate) fn install(core: &Rc<Core>) {
         console::log("[rswebgl] WebGL context restored");
         note_lost(false);
         if let Some(core) = weak.upgrade() {
+            core.invalidate_state();
             for ext in core.loss.extensions.borrow().iter() {
                 let _ = core.gl.get_extension(ext.name());
             }

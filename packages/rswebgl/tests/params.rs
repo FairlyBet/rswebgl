@@ -80,7 +80,7 @@ fn draw_override_does_not_leak_into_next_draw() {
     let red = color_group(&f, layout, RED);
     let blue = color_group(&f, layout, BLUE);
 
-    let mut batch = Batch::new(program, &RenderState::new());
+    let mut batch = Batch::new(program, f.ctx.render_state(&RenderState::new()));
     batch.set_group(1, red);
     draw_quad(&mut batch, &f, 0);
     let mut groups = [ParamGroupId::NULL; 4];
@@ -99,7 +99,7 @@ fn group_writes_after_building_are_seen() {
     let f = fixture();
     let program = f.ctx.create_program(VERT, COLOR_FRAG).unwrap();
     let g = color_group(&f, color_layout(&f), RED);
-    let mut batch = Batch::new(program, &RenderState::new());
+    let mut batch = Batch::new(program, f.ctx.render_state(&RenderState::new()));
     batch.set_group(0, g);
     draw_quad(&mut batch, &f, 1);
     set_color(&f, g, GREEN);
@@ -128,7 +128,7 @@ fn batch_and_draw_samplers_get_distinct_units() {
 
     let green = solid_texture(&f.ctx, GREEN);
     let blue = solid_texture(&f.ctx, BLUE);
-    let mut batch = Batch::new(program, &RenderState::new());
+    let mut batch = Batch::new(program, f.ctx.render_state(&RenderState::new()));
     batch.set_group(0, shared);
     for (col, tex) in [(0, blue), (1, green), (2, blue)] {
         let g = f.ctx.create_param_group(b_layout).unwrap();
@@ -153,7 +153,7 @@ fn unchanged_values_are_not_reuploaded() {
     let layout = color_layout(&f);
     let red = color_group(&f, layout, RED);
     let also_red = color_group(&f, layout, RED);
-    let mut batch = Batch::new(program, &RenderState::new());
+    let mut batch = Batch::new(program, f.ctx.render_state(&RenderState::new()));
     batch.set_group(0, red);
     draw_quad(&mut batch, &f, 0);
     draw_quad(&mut batch, &f, 1);
@@ -207,7 +207,7 @@ void main() {
 fn input_in_no_group_is_reported_once() {
     let f = fixture();
     let program = f.ctx.create_program(VERT, COLOR_FRAG).unwrap();
-    let mut batch = Batch::new(program, &RenderState::new());
+    let mut batch = Batch::new(program, f.ctx.render_state(&RenderState::new()));
     for col in 0..3 {
         draw_quad(&mut batch, &f, col);
     }
@@ -228,7 +228,7 @@ fn type_mismatch_is_reported_and_skipped() {
     let g = f.ctx.create_param_group(layout).unwrap();
     f.ctx
         .param_set_floats_by_name(g, "u_color", &[1.0, 1.0, 1.0]);
-    let mut batch = Batch::new(program, &RenderState::new());
+    let mut batch = Batch::new(program, f.ctx.render_state(&RenderState::new()));
     batch.set_group(0, g);
     draw_quad(&mut batch, &f, 1);
     let warnings = capture_console("warn", || render(&f, vec![batch]));

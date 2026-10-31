@@ -196,6 +196,7 @@ impl Context {
             return;
         }
 
+        self.gl_state().forget_vao();
         gl.bind_vertex_array(Some(&v.raw));
         gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER, Some(&b.raw));
         if attr.integer {
@@ -241,6 +242,7 @@ impl Context {
         let Some(v) = res.vertex_arrays.get_mut(vao.0) else {
             return stale("vertex array", "vertex_array_remove_attr", vao);
         };
+        self.gl_state().forget_vao();
         gl.bind_vertex_array(Some(&v.raw));
         gl.disable_vertex_attrib_array(index);
         gl.bind_vertex_array(None);
@@ -266,6 +268,7 @@ impl Context {
             );
             return;
         }
+        self.gl_state().forget_vao();
         gl.bind_vertex_array(Some(&v.raw));
         gl.bind_buffer(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER, Some(&b.raw));
         gl.bind_vertex_array(None);
@@ -283,6 +286,7 @@ impl Context {
         let Some(v) = res.vertex_arrays.get_mut(vao.0) else {
             return stale("vertex array", "vertex_array_remove_index_buffer", vao);
         };
+        self.gl_state().forget_vao();
         gl.bind_vertex_array(Some(&v.raw));
         gl.bind_buffer(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER, None);
         gl.bind_vertex_array(None);

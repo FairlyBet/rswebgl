@@ -733,6 +733,7 @@ impl Context {
         }
         let prev = std::mem::replace(&mut f.color[idx], att);
 
+        self.gl_state().forget_target();
         gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&f.raw));
         let point = WebGl2RenderingContext::COLOR_ATTACHMENT0 + index;
         match &f.color[idx] {
@@ -772,6 +773,7 @@ impl Context {
         }
         let prev = std::mem::replace(&mut f.depth, att);
 
+        self.gl_state().forget_target();
         gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&f.raw));
         detach_depth_points(gl);
         if let Some(d) = &f.depth {

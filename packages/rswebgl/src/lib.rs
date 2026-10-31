@@ -1,6 +1,7 @@
 //! WebGL2 wrapper: GL objects live in pools owned by a [`context::Context`] and
 //! are addressed by numeric handles ([`ids`]) with explicit `destroy_*`; a
-//! declarative Pass → Batch → Draw renderer diffs GL state between draws.
+//! renderer executes passes of sortable draw lists, diffing against a GL state
+//! cache kept across frames.
 //!
 //! Handles are generational: using one after its object was destroyed (or
 //! after a context loss) is detected and reported, never undefined behavior.

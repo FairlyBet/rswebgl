@@ -41,3 +41,7 @@ typed_handle!(
     /// Values for a parameter layout, referenced by batches and draws.
     pub struct ParamGroupId
 );
+typed_handle!(
+    /// An interned `RenderState`: equal states share one id.
+    pub struct StateId
+);

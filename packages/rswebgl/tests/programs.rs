@@ -58,9 +58,9 @@ fn renderer_skips_program_that_failed_to_link() {
         .expect("deferred: no error until the link completes");
     let good = f.ctx.create_program(VERT, RED_FRAG).expect("program");
 
-    let mut bad_batch = Batch::new(broken, &RenderState::new());
+    let mut bad_batch = Batch::new(broken, f.ctx.render_state(&RenderState::new()));
     draw_quad(&mut bad_batch, &f, 0);
-    let mut good_batch = Batch::new(good, &RenderState::new());
+    let mut good_batch = Batch::new(good, f.ctx.render_state(&RenderState::new()));
     draw_quad(&mut good_batch, &f, 1);
     render(&f, vec![bad_batch, good_batch]);
 

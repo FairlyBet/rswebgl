@@ -10,8 +10,9 @@ use rswebgl::buffer::BufferUsage;
 use rswebgl::console;
 use rswebgl::context::{Context, ContextOptions};
 use rswebgl::framebuffer::ClearMask;
+use rswebgl::ids::ParamGroupId;
 use rswebgl::param::ParamLayoutBuilder;
-use rswebgl::pass::{Batch, Pass};
+use rswebgl::pass::{KEY_LAST, Pass, default_key};
 use rswebgl::uniform_buffer::{UboLayout, UniformType};
 use rswebgl_gltf::Model;
 
@@ -138,16 +139,25 @@ fn run(ctx: Context, model: Model) {
             .expect("object params");
         ctx.param_set_block_by_name(object, "Matrices", ubo);
 
-        let mut batch = Batch::new(program, &di.render_state());
-        batch.set_group(1, di.material_group());
-        batch.draw_with_group(di.vao(), 2, object, di.draw_command());
-        pass.add(batch);
+        // Opaque draws sort by program / state / material / mesh; blended ones
+        // go after all of them.
+        let rs = di.render_state();
+        let state = ctx.render_state(&rs);
+        let material = di.material_group();
+        let mut key = default_key(program, state, material, di.vao());
+        if rs.blend {
+            key |= KEY_LAST;
+        }
+        let groups = [ParamGroupId::NULL, material, object, ParamGroupId::NULL];
+        pass.push_groups_with_key(key, program, state, di.vao(), groups, di.draw_command());
 
         items.push(Item {
             ubo,
             world: Mat4::from_cols_array(&di.model_cols()),
         });
     }
+
+    pass.sort();
 
     if items.is_empty() {
         console::warn("[example-gltf] model has no drawable primitives");

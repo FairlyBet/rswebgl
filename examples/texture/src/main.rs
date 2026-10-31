@@ -106,7 +106,7 @@ fn main() {
     let params = ctx.create_param_group(params_layout).expect("params");
     ctx.param_set_texture_by_name(params, "u_tex", tex);
 
-    let render_state = RenderState::new();
+    let render_state = ctx.render_state(&RenderState::new());
 
     let default_fb = ctx.default_framebuffer();
     default_fb.set_clear_color(0.05, 0.05, 0.08, 1.0);
@@ -116,7 +116,7 @@ fn main() {
 
     let mut pass = Pass::to_default();
     pass.set_clear(ClearMask::color());
-    let mut batch = Batch::new(program, &render_state);
+    let mut batch = Batch::new(program, render_state);
     batch.set_group(0, params);
     batch.draw(vao, draw_cmd);
     pass.add(batch);

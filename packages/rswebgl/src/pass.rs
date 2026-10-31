@@ -1,25 +1,24 @@
-// A render pass — the declarative unit the context executes.
+// A render pass — the unit the context executes: a render target with its
+// load/store ops, and a flat list of draws.
 //
-// The shape mirrors the cost of switching GL state, coarsest first:
+// Each draw carries everything it needs (program, render state, vertex array,
+// parameter groups, command), so there is no ordering to get wrong: the
+// renderer walks the list and diffs state between consecutive draws itself.
+// Sorting the list by key (`Pass::sort`) groups draws that share state so that
+// fewer switches reach GL. Everything is referenced by handle, so a built pass
+// picks up later writes to its parameter groups; a resource destroyed
+// meanwhile is reported and skipped.
 //
-//   Pass    → one render target (framebuffer) + clear/invalidate + viewport
-//     Batch → one program + render state + default parameter groups
-//       Draw → one VAO + draw command (+ groups overriding the batch's)
-//
-// The user builds this tree and hands it to `Context::render`. Because every
-// draw carries everything it needs, there is no per-call ordering to get wrong:
-// the renderer walks the tree and diffs state between consecutive items itself.
-// Everything is referenced by handle, so a built pass picks up later writes to
-// its parameter groups; a resource destroyed meanwhile is reported and skipped.
+// `Batch` is a convenience for building: a program, render state and default
+// groups shared by several draws, flattened into the pass by `Pass::add`.
 
 use wasm_bindgen::prelude::*;
 
 use crate::console;
 use crate::draw::{DrawCommand, Viewport};
 use crate::framebuffer::{ClearMask, InvalidateMask};
-use crate::ids::{FramebufferId, ParamGroupId, ProgramId, VertexArrayId};
+use crate::ids::{FramebufferId, ParamGroupId, ProgramId, StateId, VertexArrayId};
 use crate::param::GROUP_SLOTS;
-use crate::render_state::RenderState;
 
 fn slot_index(slot: u32) -> Option<usize> {
     let s = slot as usize;
@@ -33,23 +32,55 @@ fn slot_index(slot: u32) -> Option<usize> {
 }
 
 // ---------------------------------------------------------------------------
-// Draw — innermost: geometry + the draw command.
+// DrawItem — one entry of a pass's list.
 // ---------------------------------------------------------------------------
 
-#[wasm_bindgen]
-pub struct Draw {
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DrawItem {
+    pub(crate) key: u64,
+    // Insertion order: ties in `key` keep it, without a stable (allocating) sort.
+    seq: u32,
+    pub(crate) program: ProgramId,
+    pub(crate) state: StateId,
     // NULL = no VAO bound (vertex-pulling shaders that use gl_VertexID etc.).
     pub(crate) vao: VertexArrayId,
-    // NULL = use the batch's group for that slot.
     pub(crate) groups: [ParamGroupId; GROUP_SLOTS],
     pub(crate) command: DrawCommand,
 }
 
+/// Set on a sort key to draw after every draw with a default key — e.g.
+/// transparent draws. `default_key` never sets it.
+pub const KEY_LAST: u64 = 1 << 63;
+
+/// The sort key `Pass::push` assigns: most expensive switch first — program,
+/// then render state, then the slot-1 group (by convention the material), then
+/// the vertex array. Equal keys keep their insertion order. Bit 63 is left
+/// clear (see `KEY_LAST`).
+#[wasm_bindgen]
+pub fn default_key(
+    program: ProgramId,
+    state: StateId,
+    material: ParamGroupId,
+    vao: VertexArrayId,
+) -> u64 {
+    let ix =
+        |h: rswebgl_foundation::handle::Handle, bits: u32| h.index() as u64 & ((1 << bits) - 1);
+    ix(program.0, 15) << 48 | ix(state.0, 12) << 36 | ix(material.0, 20) << 16 | ix(vao.0, 16)
+}
+
 // ---------------------------------------------------------------------------
-// Batch — a program + render state and the draws sharing them.
+// Batch — a builder for draws sharing a program, state and default groups.
 // ---------------------------------------------------------------------------
 
-/// A program, render state and parameter groups shared by a list of draws.
+struct BatchDraw {
+    vao: VertexArrayId,
+    // NULL = use the batch's group for that slot.
+    groups: [ParamGroupId; GROUP_SLOTS],
+    command: DrawCommand,
+}
+
+/// A program, render state and parameter groups shared by several draws.
+/// `Pass::add` flattens it into the pass's draw list.
 ///
 /// Parameters: each draw sees the batch's group in every slot, except where it
 /// sets its own. A program input that none of a draw's groups provides keeps
@@ -57,19 +88,20 @@ pub struct Draw {
 /// `Context::set_validate_uniforms`).
 #[wasm_bindgen]
 pub struct Batch {
-    pub(crate) program: ProgramId,
-    pub(crate) render_state: RenderState,
-    pub(crate) groups: [ParamGroupId; GROUP_SLOTS],
-    pub(crate) draws: Vec<Draw>,
+    program: ProgramId,
+    state: StateId,
+    groups: [ParamGroupId; GROUP_SLOTS],
+    draws: Vec<BatchDraw>,
 }
 
 #[wasm_bindgen]
 impl Batch {
+    /// `state` comes from `Context::render_state`.
     #[wasm_bindgen(constructor)]
-    pub fn new(program: ProgramId, render_state: &RenderState) -> Self {
+    pub fn new(program: ProgramId, state: StateId) -> Self {
         Self {
             program,
-            render_state: render_state.clone(),
+            state,
             groups: [ParamGroupId::NULL; GROUP_SLOTS],
             draws: Vec::new(),
         }
@@ -84,11 +116,7 @@ impl Batch {
 
     /// Adds a draw that binds `vao` and uses the batch's groups.
     pub fn draw(&mut self, vao: VertexArrayId, command: DrawCommand) {
-        self.draws.push(Draw {
-            vao,
-            groups: [ParamGroupId::NULL; GROUP_SLOTS],
-            command,
-        });
+        self.draw_with_groups(vao, [ParamGroupId::NULL; GROUP_SLOTS], command);
     }
 
     /// Adds a draw that uses `group` in `slot` (typically the object's own
@@ -104,11 +132,7 @@ impl Batch {
         if let Some(s) = slot_index(slot) {
             groups[s] = group;
         }
-        self.draws.push(Draw {
-            vao,
-            groups,
-            command,
-        });
+        self.draw_with_groups(vao, groups, command);
     }
 
     /// Adds a draw with no VAO — for vertex-pulling shaders that source vertices
@@ -130,7 +154,7 @@ impl Batch {
         groups: [ParamGroupId; GROUP_SLOTS],
         command: DrawCommand,
     ) {
-        self.draws.push(Draw {
+        self.draws.push(BatchDraw {
             vao,
             groups,
             command,
@@ -139,9 +163,12 @@ impl Batch {
 }
 
 // ---------------------------------------------------------------------------
-// Pass — outermost: a render target with its load/store ops and batches.
+// Pass
 // ---------------------------------------------------------------------------
 
+/// A render target with its load/store ops and a list of draws. Reusable:
+/// `clear_draws` empties the list but keeps its memory, so a pass rebuilt every
+/// frame doesn't allocate.
 #[wasm_bindgen]
 pub struct Pass {
     // NULL = the default (canvas) framebuffer.
@@ -150,7 +177,7 @@ pub struct Pass {
     pub(crate) viewport: Option<Viewport>,
     pub(crate) clear: ClearMask,
     pub(crate) invalidate: InvalidateMask,
-    pub(crate) batches: Vec<Batch>,
+    pub(crate) items: Vec<DrawItem>,
 }
 
 impl Pass {
@@ -160,8 +187,44 @@ impl Pass {
             viewport: None,
             clear: ClearMask::none(),
             invalidate: InvalidateMask::none(),
-            batches: Vec::new(),
+            items: Vec::new(),
         }
+    }
+
+    /// Appends a draw with its groups as an array (NULL = none in that slot)
+    /// and the default sort key.
+    pub fn push_groups(
+        &mut self,
+        program: ProgramId,
+        state: StateId,
+        vao: VertexArrayId,
+        groups: [ParamGroupId; GROUP_SLOTS],
+        command: DrawCommand,
+    ) {
+        let key = default_key(program, state, groups[1], vao);
+        self.push_groups_with_key(key, program, state, vao, groups, command);
+    }
+
+    /// `push_groups` with an explicit sort key.
+    pub fn push_groups_with_key(
+        &mut self,
+        key: u64,
+        program: ProgramId,
+        state: StateId,
+        vao: VertexArrayId,
+        groups: [ParamGroupId; GROUP_SLOTS],
+        command: DrawCommand,
+    ) {
+        let seq = self.items.len() as u32;
+        self.items.push(DrawItem {
+            key,
+            seq,
+            program,
+            state,
+            vao,
+            groups,
+            command,
+        });
     }
 }
 
@@ -196,11 +259,68 @@ impl Pass {
         self.invalidate = mask;
     }
 
+    /// Appends a batch's draws (the batch is consumed).
     pub fn add(&mut self, batch: Batch) {
-        self.batches.push(batch);
+        for d in batch.draws {
+            let mut groups = batch.groups;
+            for (slot, g) in d.groups.iter().enumerate() {
+                if !g.is_null() {
+                    groups[slot] = *g;
+                }
+            }
+            self.push_groups(batch.program, batch.state, d.vao, groups, d.command);
+        }
     }
 
-    pub fn batch_count(&self) -> usize {
-        self.batches.len()
+    /// Appends one draw. Groups `g0..g3` go in slots 0..3 (NULL / 0 = none);
+    /// by convention 0 = frame, 1 = material, 2 = object. Gets the default
+    /// sort key (see `sort`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn push(
+        &mut self,
+        program: ProgramId,
+        state: StateId,
+        vao: VertexArrayId,
+        g0: ParamGroupId,
+        g1: ParamGroupId,
+        g2: ParamGroupId,
+        g3: ParamGroupId,
+        command: DrawCommand,
+    ) {
+        self.push_groups(program, state, vao, [g0, g1, g2, g3], command);
+    }
+
+    /// `push` with an explicit sort key — e.g. back-to-front depth for
+    /// transparent draws.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_with_key(
+        &mut self,
+        key: u64,
+        program: ProgramId,
+        state: StateId,
+        vao: VertexArrayId,
+        g0: ParamGroupId,
+        g1: ParamGroupId,
+        g2: ParamGroupId,
+        g3: ParamGroupId,
+        command: DrawCommand,
+    ) {
+        self.push_groups_with_key(key, program, state, vao, [g0, g1, g2, g3], command);
+    }
+
+    /// Orders the draws by sort key (equal keys keep insertion order). With
+    /// the default keys this groups draws by program, then render state, then
+    /// material, then vertex array — the fewest switches. Doesn't allocate.
+    pub fn sort(&mut self) {
+        self.items.sort_unstable_by_key(|d| (d.key, d.seq));
+    }
+
+    /// Empties the draw list, keeping its memory for reuse.
+    pub fn clear_draws(&mut self) {
+        self.items.clear();
+    }
+
+    pub fn draw_count(&self) -> usize {
+        self.items.len()
     }
 }

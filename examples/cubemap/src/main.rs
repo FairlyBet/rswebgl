@@ -116,7 +116,7 @@ fn main() {
     let options = ContextOptions::new();
     let ctx = Context::from_canvas(&canvas, &options).expect("ctx");
 
-    let render_state = RenderState::new(); // depth test & culling off — fine for fullscreen passes
+    let render_state = ctx.render_state(&RenderState::new()); // depth test & culling off — fine for fullscreen passes
 
     // ---- the cubemap we render into, then sample -------------------------
     // Linear filtering, single mip level; wrap defaults to CLAMP_TO_EDGE which is
@@ -165,7 +165,7 @@ fn main() {
         ctx.param_set_i32(bake_params, f_face, i as i32);
 
         let mut pass = Pass::new(fbo);
-        let mut batch = Batch::new(bake_program, &render_state);
+        let mut batch = Batch::new(bake_program, render_state);
         batch.set_group(0, bake_params);
         batch.draw_vertexless(tri);
         pass.add(batch);
@@ -214,7 +214,7 @@ fn main() {
         ctx.param_set_f32(sky, f_aspect, aspect);
 
         let mut pass = Pass::to_default();
-        let mut batch = Batch::new(sky_program, &render_state);
+        let mut batch = Batch::new(sky_program, render_state);
         batch.set_group(0, sky);
         batch.draw_vertexless(tri);
         pass.add(batch);

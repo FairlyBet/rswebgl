@@ -30,8 +30,10 @@
 
 | Entity                          | Status | File                                |
 |---------------------------------|--------|-------------------------------------|
-| Pass / Batch / Draw API         | ✅     | `src/pass.rs`, `src/renderer.rs`    |
-| Per-pass state tracking (diff)  | ✅     | `src/renderer.rs`                   |
+| Pass with flat draw list, sort keys (Batch as builder) | ✅ | `src/pass.rs` |
+| GL state cache kept across frames (+ `invalidate_state`) | ✅ | `src/renderer.rs` |
+| Interned render states (`StateId`) | ✅ | `src/render_state.rs` |
+| Frame stats (draws, binds, uploads) | ✅ | `src/renderer.rs` |
 | Render-state diff               | ✅     | `src/render_state.rs`               |
 | Uniform diff (shadow compare)   | ✅     | `src/program.rs`, `src/renderer.rs` |
 
