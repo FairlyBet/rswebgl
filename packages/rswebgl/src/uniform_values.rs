@@ -75,6 +75,9 @@ pub enum Uniform {
     },
 }
 
+// Name-sorted, so lookups are a binary search.
+type Entries = Vec<(Box<str>, Uniform)>;
+
 // `entries` lives behind a shared `Rc<RefCell>`, so cloning a `UniformValues`
 // yields another handle to the *same* data — consistent with the rest of the
 // library (Texture/Buffer/VertexArray/Program all share on clone). This is what
@@ -83,7 +86,7 @@ pub enum Uniform {
 #[wasm_bindgen]
 #[derive(Debug, Clone)]
 pub struct UniformValues {
-    entries: Rc<RefCell<Vec<(Box<str>, Uniform)>>>,
+    entries: Rc<RefCell<Entries>>,
 }
 
 impl UniformValues {
@@ -114,7 +117,7 @@ impl UniformValues {
 
     fn check_stride(name: &str, len: usize, stride: usize) -> bool {
         if len == 0 || !len.is_multiple_of(stride) {
-            console::warn(&format!(
+            console::warn_once(&format!(
                 "[rswebgl] uniform \"{name}\": length must be a non-zero multiple of {stride}, got {len}"
             ));
             false
@@ -495,7 +498,7 @@ impl UniformValues {
     pub fn set_uniform_block_range(&self, name: &str, ubo: &UniformBuffer, offset: i32, size: i32) {
         let align = limits::uniform_buffer_offset_alignment() as i32;
         if align > 0 && offset % align != 0 {
-            console::warn(&format!(
+            console::warn_once(&format!(
                 "[rswebgl] uniform block \"{name}\": offset {offset} is not a multiple of \
                  UNIFORM_BUFFER_OFFSET_ALIGNMENT ({align})"
             ));

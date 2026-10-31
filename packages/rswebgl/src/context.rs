@@ -106,7 +106,7 @@ impl ContextOptions {
 }
 
 impl ContextOptions {
-    fn to_js(&self) -> js_sys::Object {
+    fn to_js(self) -> js_sys::Object {
         let o = js_sys::Object::new();
         let set = |k: &str, v: JsValue| {
             let _ = js_sys::Reflect::set(&o, &JsValue::from_str(k), &v);

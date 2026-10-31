@@ -4,6 +4,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlRenderbuffer};
 
 use crate::context_loss;
+use crate::limits;
 
 // ---------------------------------------------------------------------------
 // RenderbufferFormat
@@ -76,6 +77,7 @@ impl Renderbuffer {
         width: i32,
         height: i32,
     ) -> Result<Self, String> {
+        check_size(width, height, 0)?;
         let raw = gl
             .create_renderbuffer()
             .ok_or("createRenderbuffer failed")?;
@@ -107,6 +109,7 @@ impl Renderbuffer {
         width: i32,
         height: i32,
     ) -> Result<Self, String> {
+        check_size(width, height, samples)?;
         let raw = gl
             .create_renderbuffer()
             .ok_or("createRenderbuffer failed")?;
@@ -155,4 +158,21 @@ impl Renderbuffer {
     pub fn format(&self) -> RenderbufferFormat {
         self.inner.format
     }
+}
+
+fn check_size(width: i32, height: i32, samples: i32) -> Result<(), String> {
+    let max = limits::max_renderbuffer_size();
+    if width < 1 || height < 1 || width as u32 > max || height as u32 > max {
+        return Err(format!(
+            "renderbuffer size {width}x{height} is out of range (1..={max}, \
+             MAX_RENDERBUFFER_SIZE)"
+        ));
+    }
+    let max_samples = limits::max_samples();
+    if samples < 0 || samples as u32 > max_samples {
+        return Err(format!(
+            "renderbuffer samples {samples} is out of range (0..={max_samples}, MAX_SAMPLES)"
+        ));
+    }
+    Ok(())
 }

@@ -2,33 +2,19 @@
 
 Deferred work / known weak spots. Not committed — scratch backlog.
 
-## Validation against GL limits
+## Errors and GL limits
 
-Only `MAX_COMBINED_TEXTURE_UNITS` is queried today (`src/limits.rs`,
-`uniform_values::assign_unit`). Feeding out-of-range values elsewhere yields
-opaque GL errors instead of a clear message. Add checks (warn or `Result`) for:
+Done: the rule is documented at the top of `src/lib.rs` (`Result` / `error` +
+no-op / `warn`, per-frame problems reported once), and `src/limits.rs` checks
+vertex attribs, texture sizes / layers / mip levels, color attachments + draw
+buffers, renderbuffer size and samples. Left:
 
-- max vertex attributes (`MAX_VERTEX_ATTRIBS`) — `VertexArray::attr` index.
-- max texture size / 3D size / array layers — `Texture` uploads.
-- max color attachments + max draw buffers (`MAX_COLOR_ATTACHMENTS`,
-  `MAX_DRAW_BUFFERS`) — `Framebuffer` MRT attach.
-- max samples (`MAX_SAMPLES`) — `Renderbuffer::new_multisample`.
-- max texture units already partly handled; surface a hard error vs silent 0.
-
-## Unified error handling
-
-Three conventions coexist; pick one and apply it everywhere:
-
-- `Result<_, String>` — `create_*`, `check_framebuffer`.
-- `console::error` + return `()` — texture uploads (`sub_image_2d`, etc.).
-- silent `console::warn` + skip — uniform stride/units, "uniform not found".
-
-Proposed rule:
-
-- **`Result`** when the call cannot proceed (object creation, completeness).
-- **`warn` + no-op** when ignoring bad input is the sane recovery (a bad
-  uniform name, an over-long array) — but do it *consistently*, and consider a
-  debug-only validation toggle so release builds skip the checks.
+- `MAX_SAMPLES` is the overall cap; a format can allow fewer
+  (`getInternalformatParameter(SAMPLES)`), which still surfaces as a GL error.
+- Texture *sub-image* regions aren't checked against the allocated level size;
+  GL rejects them and we log its exception.
+- Limits come from the first context and are process-wide; fine unless one
+  page mixes very different GPUs.
 
 ## Uniform buffers (UBO)
 

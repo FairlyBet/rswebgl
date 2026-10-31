@@ -12,6 +12,7 @@ use web_sys::{
 use crate::compressed_format::CompressedFormat;
 use crate::console;
 use crate::context_loss;
+use crate::limits;
 use crate::pixel_unpack::PixelUnpack;
 use crate::render_state::DepthFunc;
 
@@ -376,6 +377,50 @@ impl Texture {
         &self.inner.raw
     }
 
+    // Checks a texStorage request against the implementation limits for this
+    // target (`depth` is 1 for 2D / cube). Reports and returns false if it
+    // can't be allocated, so the caller skips the GL call.
+    fn storage_fits(&self, levels: i32, width: i32, height: i32, depth: i32) -> bool {
+        let (max_wh, max_d, what) = match self.inner.target {
+            TextureTarget::Texture2D => (limits::max_texture_size(), 1, "MAX_TEXTURE_SIZE"),
+            TextureTarget::TextureCubeMap => (
+                limits::max_cube_map_texture_size(),
+                1,
+                "MAX_CUBE_MAP_TEXTURE_SIZE",
+            ),
+            TextureTarget::Texture3D => {
+                let m = limits::max_3d_texture_size();
+                (m, m, "MAX_3D_TEXTURE_SIZE")
+            }
+            TextureTarget::Texture2DArray => (
+                limits::max_texture_size(),
+                limits::max_array_texture_layers(),
+                "MAX_TEXTURE_SIZE / MAX_ARRAY_TEXTURE_LAYERS",
+            ),
+        };
+        let problem = if width < 1 || height < 1 || depth < 1 {
+            Some(format!("size {width}x{height}x{depth} must be at least 1"))
+        } else if width as u32 > max_wh || height as u32 > max_wh || depth as u32 > max_d {
+            Some(format!(
+                "size {width}x{height}x{depth} exceeds {what} ({max_wh}x{max_wh}x{max_d})"
+            ))
+        } else if levels < 1 || levels > mip_levels(width.max(depth), height) {
+            Some(format!(
+                "{levels} mip levels is out of range for {width}x{height}x{depth} \
+                 (1..={})",
+                mip_levels(width.max(depth), height)
+            ))
+        } else {
+            None
+        };
+        if let Some(p) = &problem {
+            console::error(&format!(
+                "[rswebgl] texture storage {p}; storage not allocated"
+            ));
+        }
+        problem.is_none()
+    }
+
     pub(crate) fn target_gl(&self) -> u32 {
         self.inner.target.as_gl()
     }
@@ -421,6 +466,9 @@ impl Texture {
     /// TEXTURE_CUBE_MAP (the latter allocates all six faces). `levels` is the
     /// mip count (≥1). Can only be called once per texture.
     pub fn storage_2d(&self, levels: i32, format: &TextureFormat, width: i32, height: i32) {
+        if !self.storage_fits(levels, width, height, 1) {
+            return;
+        }
         let t = self.inner.target.as_gl();
         self.inner.gl.bind_texture(t, Some(&self.inner.raw));
         self.inner
@@ -439,6 +487,9 @@ impl Texture {
         height: i32,
         depth: i32,
     ) {
+        if !self.storage_fits(levels, width, height, depth) {
+            return;
+        }
         let t = self.inner.target.as_gl();
         self.inner.gl.bind_texture(t, Some(&self.inner.raw));
         self.inner
@@ -456,6 +507,9 @@ impl Texture {
         width: i32,
         height: i32,
     ) {
+        if !self.storage_fits(levels, width, height, 1) {
+            return;
+        }
         let t = self.inner.target.as_gl();
         self.inner.gl.bind_texture(t, Some(&self.inner.raw));
         self.inner
@@ -473,6 +527,9 @@ impl Texture {
         height: i32,
         depth: i32,
     ) {
+        if !self.storage_fits(levels, width, height, depth) {
+            return;
+        }
         let t = self.inner.target.as_gl();
         self.inner.gl.bind_texture(t, Some(&self.inner.raw));
         self.inner

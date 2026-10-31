@@ -5,7 +5,9 @@ use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlVertexArrayObject};
 
 use crate::buffer::Buffer;
+use crate::console;
 use crate::context_loss;
+use crate::limits;
 
 // ---------------------------------------------------------------------------
 // AttrType
@@ -176,6 +178,9 @@ impl Eq for VertexArray {}
 #[wasm_bindgen]
 impl VertexArray {
     pub fn attr(&self, index: u32, buffer: &Buffer, attr: &VertexAttr) {
+        if !attr_index_in_range(index) {
+            return;
+        }
         let gl = &self.inner.gl;
         gl.bind_vertex_array(Some(&self.inner.raw));
         gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER, Some(buffer.raw_gl()));
@@ -213,6 +218,9 @@ impl VertexArray {
     }
 
     pub fn remove_attr(&self, index: u32) {
+        if !attr_index_in_range(index) {
+            return;
+        }
         let gl = &self.inner.gl;
         gl.bind_vertex_array(Some(&self.inner.raw));
         gl.disable_vertex_attrib_array(index);
@@ -253,4 +261,15 @@ impl VertexArray {
     pub fn unbind(&self) {
         self.inner.gl.bind_vertex_array(None);
     }
+}
+
+fn attr_index_in_range(index: u32) -> bool {
+    let max = limits::max_vertex_attribs();
+    if index >= max {
+        console::error(&format!(
+            "[rswebgl] vertex attribute index {index} is out of range (MAX_VERTEX_ATTRIBS = \
+             {max}); ignored"
+        ));
+    }
+    index < max
 }

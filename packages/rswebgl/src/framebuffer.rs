@@ -5,9 +5,11 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, ResizeObserver, WebGl2RenderingContext, WebGlFramebuffer};
 
+use crate::console;
 use crate::context::ColorSpace;
 use crate::context_loss;
 use crate::draw::Viewport;
+use crate::limits;
 use crate::renderbuffer::Renderbuffer;
 use crate::texture::{CubeMapFace, Texture};
 
@@ -764,6 +766,9 @@ impl Framebuffer {
     // --- color attachments (applied to GL immediately; FBO left bound) ---
 
     pub fn attach_color_texture_2d(&self, index: u32, tex: &Texture, level: i32) {
+        if !color_index_in_range(index) {
+            return;
+        }
         let mut s = self.inner.borrow_mut();
         store_color(
             &mut s,
@@ -777,6 +782,9 @@ impl Framebuffer {
     }
 
     pub fn attach_color_cube_face(&self, index: u32, tex: &Texture, face: CubeMapFace, level: i32) {
+        if !color_index_in_range(index) {
+            return;
+        }
         let mut s = self.inner.borrow_mut();
         store_color(
             &mut s,
@@ -791,6 +799,9 @@ impl Framebuffer {
     }
 
     pub fn attach_color_layer(&self, index: u32, tex: &Texture, level: i32, layer: i32) {
+        if !color_index_in_range(index) {
+            return;
+        }
         let mut s = self.inner.borrow_mut();
         store_color(
             &mut s,
@@ -805,12 +816,18 @@ impl Framebuffer {
     }
 
     pub fn attach_color_renderbuffer(&self, index: u32, rb: &Renderbuffer) {
+        if !color_index_in_range(index) {
+            return;
+        }
         let mut s = self.inner.borrow_mut();
         store_color(&mut s, index, ColorAttachment::Renderbuffer(rb.clone()));
         realize_color_slot(&s, index);
     }
 
     pub fn detach_color(&self, index: u32) {
+        if !color_index_in_range(index) {
+            return;
+        }
         let mut s = self.inner.borrow_mut();
         let idx = index as usize;
         if idx < s.color.len() {
@@ -952,4 +969,19 @@ pub(crate) fn framebuffer_status_str(status: u32) -> &'static str {
         0x8D56 => "FRAMEBUFFER_INCOMPLETE_MULTISAMPLE",
         _ => "FRAMEBUFFER_INCOMPLETE (unknown status)",
     }
+}
+
+// Color slots must exist (MAX_COLOR_ATTACHMENTS), and since every attached slot
+// is listed in drawBuffers, also fit MAX_DRAW_BUFFERS.
+fn color_index_in_range(index: u32) -> bool {
+    let max = limits::max_color_attachments().min(limits::max_draw_buffers());
+    if index >= max {
+        console::error(&format!(
+            "[rswebgl] color attachment index {index} is out of range (MAX_COLOR_ATTACHMENTS = \
+             {}, MAX_DRAW_BUFFERS = {}); ignored",
+            limits::max_color_attachments(),
+            limits::max_draw_buffers()
+        ));
+    }
+    index < max
 }

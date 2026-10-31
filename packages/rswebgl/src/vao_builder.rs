@@ -6,6 +6,7 @@ use web_sys::WebGl2RenderingContext;
 use crate::buffer::{Buffer, BufferKind, BufferUsage};
 use crate::console;
 use crate::context::Context;
+use crate::limits;
 use crate::vao::{VertexArray, VertexAttr};
 
 // ---------------------------------------------------------------------------
@@ -377,12 +378,20 @@ impl VaoBuilder {
         }
         let vertex_count = vertex_count.unwrap_or(0);
 
-        // 3. No attribute slot collisions (matrices span multiple slots)
+        // 3. Slots in range, no collisions (matrices span multiple slots)
+        let max_slots = limits::max_vertex_attribs();
         let mut used: BTreeSet<u32> = BTreeSet::new();
         for e in &self.attrs {
             let d = e.kind.desc();
             for s in 0..d.slots {
                 let slot = e.index + s;
+                if slot >= max_slots {
+                    return Err(format!(
+                        "VaoBuilder: {:?} at index {} needs attribute slot {}, beyond \
+                         MAX_VERTEX_ATTRIBS = {}",
+                        e.kind, e.index, slot, max_slots
+                    ));
+                }
                 if !used.insert(slot) {
                     return Err(format!(
                         "VaoBuilder: attribute slot {} used by multiple entries (collision from {:?} at index {})",

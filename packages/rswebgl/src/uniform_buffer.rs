@@ -486,11 +486,11 @@ impl UniformBuffer {
     pub fn set_mat(&self, path: &str, data: &[f32]) {
         let mut st = self.state.borrow_mut();
         let Some(&(offset, ty)) = st.fields.get(path) else {
-            console::warn(&format!("[rswebgl] UBO field not found: \"{path}\""));
+            console::warn_once(&format!("[rswebgl] UBO field not found: \"{path}\""));
             return;
         };
         if !ty.is_matrix() {
-            console::warn(&format!(
+            console::warn_once(&format!(
                 "[rswebgl] UBO field \"{path}\" is {ty:?}, not a matrix"
             ));
             return;
@@ -498,7 +498,7 @@ impl UniformBuffer {
         let info = ty.info();
         let need = (info.columns * info.comps) as usize;
         if data.len() != need {
-            console::warn(&format!(
+            console::warn_once(&format!(
                 "[rswebgl] UBO field \"{path}\" ({ty:?}) expects {need} floats, got {}",
                 data.len()
             ));
@@ -515,11 +515,11 @@ impl UniformBuffer {
     fn put<T: Word>(&self, path: &str, expect: Std140Type, vals: &[T]) {
         let mut st = self.state.borrow_mut();
         let Some(&(offset, ty)) = st.fields.get(path) else {
-            console::warn(&format!("[rswebgl] UBO field not found: \"{path}\""));
+            console::warn_once(&format!("[rswebgl] UBO field not found: \"{path}\""));
             return;
         };
         if ty != expect {
-            console::warn(&format!(
+            console::warn_once(&format!(
                 "[rswebgl] UBO field \"{path}\" is {ty:?}, not {expect:?}"
             ));
             return;

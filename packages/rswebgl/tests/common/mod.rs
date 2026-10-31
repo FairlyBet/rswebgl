@@ -105,3 +105,15 @@ pub fn read_quads(gl: &WebGl2RenderingContext) -> [[u8; 4]; 3] {
     assert_eq!(gl.get_error(), WebGl2RenderingContext::NO_ERROR);
     out
 }
+
+// Messages logged via `console.<method>` ("warn", "error") while `f` runs.
+pub fn capture_console(method: &str, f: impl FnOnce()) -> Vec<String> {
+    let console = js_sys::Reflect::get(&js_sys::global(), &"console".into()).unwrap();
+    let original = js_sys::Reflect::get(&console, &method.into()).unwrap();
+    let log = js_sys::Array::new();
+    let push = js_sys::Function::new_with_args("m", "this.push(String(m))").bind0(&log);
+    js_sys::Reflect::set(&console, &method.into(), &push).unwrap();
+    f();
+    js_sys::Reflect::set(&console, &method.into(), &original).unwrap();
+    log.iter().filter_map(|v| v.as_string()).collect()
+}

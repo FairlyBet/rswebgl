@@ -4,7 +4,6 @@
 
 mod common;
 
-use wasm_bindgen::JsValue;
 use wasm_bindgen_test::*;
 
 use rswebgl::context::Context;
@@ -148,18 +147,6 @@ void main() {
     );
 }
 
-// Captures console.warn messages while `f` runs.
-fn capture_warnings(f: impl FnOnce()) -> Vec<String> {
-    let console = js_sys::Reflect::get(&js_sys::global(), &"console".into()).unwrap();
-    let original = js_sys::Reflect::get(&console, &"warn".into()).unwrap();
-    let log = js_sys::Array::new();
-    let push = js_sys::Function::new_with_args("m", "this.push(String(m))").bind0(&log);
-    js_sys::Reflect::set(&console, &"warn".into(), &push).unwrap();
-    f();
-    js_sys::Reflect::set(&console, &"warn".into(), &original).unwrap();
-    log.iter().filter_map(|v: JsValue| v.as_string()).collect()
-}
-
 // A uniform set by neither the batch nor the draw is reported, once.
 #[wasm_bindgen_test]
 fn unset_uniform_is_reported_once() {
@@ -173,7 +160,7 @@ fn unset_uniform_is_reported_once() {
     batch.draw(&f.quad, &quad_uniforms(1, 0), cmd());
     batch.draw(&f.quad, &quad_uniforms(2, 0), cmd());
 
-    let warnings = capture_warnings(|| render(&f, vec![batch]));
+    let warnings = capture_console("warn", || render(&f, vec![batch]));
     let about_color: Vec<_> = warnings.iter().filter(|w| w.contains("u_color")).collect();
     assert_eq!(about_color.len(), 1, "{warnings:?}");
 }
