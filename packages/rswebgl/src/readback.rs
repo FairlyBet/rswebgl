@@ -296,7 +296,7 @@ impl PendingRead {
 // Yields to the event loop for about `d`. A timer rather than
 // requestAnimationFrame: it keeps polling in background tabs and workers,
 // and the wait is usually a frame or two.
-async fn sleep(d: Duration) {
+pub(crate) async fn sleep(d: Duration) {
     let p = js_sys::Promise::new(&mut |resolve, _| {
         let global = js_sys::global();
         let set_timeout = js_sys::Reflect::get(&global, &"setTimeout".into())

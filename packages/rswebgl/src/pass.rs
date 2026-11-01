@@ -17,7 +17,7 @@ use wasm_bindgen::prelude::*;
 use crate::console;
 use crate::draw::{DrawCommand, Viewport};
 use crate::framebuffer::{ClearMask, InvalidateMask};
-use crate::ids::{FramebufferId, ParamGroupId, ProgramId, StateId, VertexArrayId};
+use crate::ids::{FramebufferId, ParamGroupId, ProgramId, QueryId, StateId, VertexArrayId};
 use crate::param::GROUP_SLOTS;
 
 fn slot_index(slot: u32) -> Option<usize> {
@@ -46,6 +46,8 @@ pub(crate) struct DrawItem {
     pub(crate) vao: VertexArrayId,
     pub(crate) groups: [ParamGroupId; GROUP_SLOTS],
     pub(crate) command: DrawCommand,
+    // NULL = none; else an occlusion query around this draw.
+    pub(crate) query: QueryId,
 }
 
 /// Set on a sort key to draw after every draw with a default key — e.g.
@@ -183,6 +185,8 @@ pub struct Pass {
     pub(crate) invalidate: InvalidateMask,
     // Some(NULL) = resolve into the canvas.
     pub(crate) resolve: Option<FramebufferId>,
+    // NULL = none; else a TimeElapsed query around the whole pass.
+    pub(crate) timer: QueryId,
     pub(crate) items: Vec<DrawItem>,
 }
 
@@ -194,6 +198,7 @@ impl Pass {
             clear: ClearMask::none(),
             invalidate: InvalidateMask::none(),
             resolve: None,
+            timer: QueryId::NULL,
             items: Vec::new(),
         }
     }
@@ -231,6 +236,7 @@ impl Pass {
             vao,
             groups,
             command: *command,
+            query: QueryId::NULL,
         });
     }
 }
@@ -283,6 +289,32 @@ impl Pass {
     #[wasm_bindgen(js_name = clearResolve)]
     pub fn clear_resolve(&mut self) {
         self.resolve = None;
+    }
+
+    /// Measures the GPU time of the whole pass (clear, draws, resolve) with
+    /// `query`, a `TimeElapsed` query; read it with `Context::query_result`
+    /// a frame or so later.
+    #[wasm_bindgen(js_name = setTimer)]
+    pub fn set_timer(&mut self, query: QueryId) {
+        self.timer = query;
+    }
+
+    #[wasm_bindgen(js_name = clearTimer)]
+    pub fn clear_timer(&mut self) {
+        self.timer = QueryId::NULL;
+    }
+
+    /// Wraps the most recently added draw in occlusion query `query`
+    /// (`AnySamplesPassed*`): did any of its samples pass the depth test? The
+    /// usual use is a cheap proxy draw (a bounding box, color writes off)
+    /// that decides whether to draw the real object next frame. One draw per
+    /// query: a second one would overwrite the first's result.
+    #[wasm_bindgen(js_name = setLastDrawQuery)]
+    pub fn set_last_draw_query(&mut self, query: QueryId) {
+        match self.items.last_mut() {
+            Some(d) => d.query = query,
+            None => console::error("[rswebgl] set_last_draw_query: the pass has no draws; ignored"),
+        }
     }
 
     /// Appends a batch's draws. The batch is left as is, so it can be added

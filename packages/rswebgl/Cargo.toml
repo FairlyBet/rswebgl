@@ -36,6 +36,7 @@ web-sys = { workspace = true, features = [
     "WebGlShader",
     "WebGlSampler",
     "WebGlSync",
+    "WebGlQuery",
     "WebGlTexture",
     "WebGlUniformLocation",
     "WebGlVertexArrayObject",

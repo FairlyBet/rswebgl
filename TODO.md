@@ -53,9 +53,13 @@ attached. Left:
 
 ### Useful — maps onto subsystems we already have / have queued
 
-- **`EXT_disjoint_timer_query_webgl2`.** GPU timing. Pairs with the `Query`
-  object (backlog, ❌ in PROGRESS) — gives per-pass "how long did the GPU spend"
-  profiling once Query lands.
+- ~~**`EXT_disjoint_timer_query_webgl2`.**~~ Done: `QueryKind::TimeElapsed` on
+  `Pass::set_timer`. Left: a ready-made per-pass profiler (a ring of timer
+  queries, results a few frames behind) instead of the app juggling them; a
+  timer spanning several passes; `TIMESTAMP_EXT` isn't exposed by WebGL2.
+- Occlusion queries wrap one draw (`Pass::set_last_draw_query`). Not done: a
+  query around several draws (a whole object of many primitives), and
+  `TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN` (comes with transform feedback).
 - **`WEBGL_multi_draw`.** Several draws in one JS call (offset/count arrays).
   Real perf win for many-object scenes; fits `draw.rs`/`DrawCommand` as a
   `multi_draw_*` variant.

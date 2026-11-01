@@ -27,6 +27,7 @@ use crate::ids::{
 use crate::param::{GROUP_SLOTS, ParamGroupObj, ParamLayoutObj};
 use crate::pass::Pass;
 use crate::program::ProgramObj;
+use crate::query::{self, QueryUse};
 use crate::render_state::RenderState;
 use crate::sampler::SamplerObj;
 use crate::texture::TextureObj;
@@ -133,7 +134,26 @@ impl Context {
 // Pass execution
 // ---------------------------------------------------------------------------
 
+// A pass, inside its timer query if it has one.
 fn execute_pass(
+    gl: &WebGl2RenderingContext,
+    default_fb: &DefaultFramebuffer,
+    res: &mut Resources,
+    pass: &Pass,
+    st: &mut GlState,
+) {
+    let timer = if pass.timer.is_null() {
+        None
+    } else {
+        query::begin(gl, &mut res.queries, pass.timer, QueryUse::Pass)
+    };
+    run_pass(gl, default_fb, res, pass, st);
+    if let Some(target) = timer {
+        gl.end_query(target);
+    }
+}
+
+fn run_pass(
     gl: &WebGl2RenderingContext,
     default_fb: &DefaultFramebuffer,
     res: &mut Resources,
@@ -150,6 +170,7 @@ fn execute_pass(
         param_layouts,
         param_groups,
         render_states,
+        queries,
         ..
     } = res;
 
@@ -259,7 +280,15 @@ fn execute_pass(
             n_used += 1;
         }
         program.check_covered(&used[..n_used]);
+        let occlusion = if d.query.is_null() {
+            None
+        } else {
+            query::begin(gl, queries, d.query, QueryUse::Draw)
+        };
         d.command.execute(gl);
+        if let Some(target) = occlusion {
+            gl.end_query(target);
+        }
         st.stats.draws += 1;
     }
 

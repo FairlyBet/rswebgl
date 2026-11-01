@@ -24,7 +24,7 @@
 | Renderbuffer multisample    | ✅     | `src/renderbuffer.rs` |
 | Sampler object              | ✅     | `src/sampler.rs`      |
 | Transform Feedback          | ❌     | —                     |
-| Query                       | ❌     | —                     |
+| Query (occlusion per draw, GPU timer per pass) | ✅ | `src/query.rs` |
 | Sync                        | 🔶     | `src/readback.rs` (fences for async reads; not exposed) |
 
 ## Rendering

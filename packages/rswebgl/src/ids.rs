@@ -50,3 +50,8 @@ typed_handle!(
     /// whatever texture is sampled through it.
     pub struct SamplerId
 );
+typed_handle!(
+    /// A query object: an occlusion test or a GPU timer, attached to a draw or
+    /// a pass; its result arrives a frame or so later.
+    pub struct QueryId
+);
