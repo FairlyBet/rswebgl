@@ -8,7 +8,10 @@
 //! const camera = scene.spawn();
 //! scene.setPerspectiveCamera(camera, Math.PI / 4, 0.1, 100);
 //! scene.lookAt(camera, 0, 2, 6, 0, 0, 0);
-//! const ring = scene.addModel(await loadModel(ctx, url), program);
+//! const sun = scene.spawn();
+//! scene.setDirectionalLight(sun, 1, 1, 1, 3);
+//! scene.lookAt(sun, 1, 2, 1, 0, 0, 0);
+//! const ring = scene.addModel(await loadModel(ctx, url)); // built-in PBR
 //!
 //! function frame() {
 //!   scene.setCameraAspect(camera, canvas.width / canvas.height);
@@ -35,7 +38,9 @@ use wasm_bindgen::prelude::*;
 use crate::camera::Camera;
 use crate::culling::Bounds;
 use crate::hierarchy::{TransformSystem, despawn_recursive, set_parent};
+use crate::light::Light;
 use crate::model::{Name, find_by_name, spawn_model};
+use crate::pbr::PbrShaders;
 use crate::render::{MeshRenderer, RenderStats, SceneRenderer, Visible};
 use crate::transform::{Transform, WorldMatrix};
 
@@ -51,6 +56,7 @@ pub struct Scene {
     // Models added with `addModel`, by their root entity: their GPU
     // resources go when the root is despawned.
     models: HashMap<Entity, Model>,
+    pbr: PbrShaders,
     stats: RenderStats,
 }
 
@@ -71,6 +77,7 @@ impl Scene {
             transforms: TransformSystem::new(),
             renderer: SceneRenderer::new(ctx)?,
             models: HashMap::new(),
+            pbr: PbrShaders::new(),
             stats: RenderStats::default(),
         })
     }
@@ -289,8 +296,21 @@ impl Scene {
             vao,
             material,
             command: *command,
+            transparent: false,
         };
         self.insert(e, "setMesh", mesh);
+    }
+
+    /// Marks a drawing entity as blended: drawn after the opaque ones,
+    /// farthest first. Its render state should blend.
+    #[wasm_bindgen(js_name = setTransparent)]
+    pub fn set_transparent(&mut self, e: Entity, transparent: bool) {
+        match self.world.get_mut::<MeshRenderer>(e) {
+            Some(mut m) => m.transparent = transparent,
+            None => console::error_once(
+                "[rswebgl-scene] setTransparent: the entity has no mesh; ignored",
+            ),
+        }
     }
 
     /// Changes only the material of a drawing entity — e.g. a gem variant.
@@ -343,15 +363,110 @@ impl Scene {
         self.insert(e, "setVisible", Visible(visible));
     }
 
-    /// Spawns a loaded model under a new root entity and returns the root;
-    /// every primitive draws with `program`. The scene takes the model over:
-    /// its GPU resources are freed when the root is despawned (or the scene
+    /// Spawns a loaded model under a new root entity and returns the root,
+    /// shaded with the built-in glTF PBR shader (a variant per primitive and
+    /// material, compiled on first use). The scene takes the model over: its
+    /// GPU resources are freed when the root is despawned (or the scene
     /// destroyed). Parts keep their glTF node names (`findByName`).
     #[wasm_bindgen(js_name = addModel)]
-    pub fn add_model(&mut self, model: Model, program: ProgramId) -> Entity {
-        let root = spawn_model(&mut self.world, &model, program);
+    pub fn add_model(&mut self, model: Model) -> Entity {
+        let (ctx, pbr) = (&self.ctx, &mut self.pbr);
+        let root = spawn_model(&mut self.world, &model, |item| {
+            pbr.program_for(ctx, &model, item)
+                .map_err(|e| {
+                    console::error_once(&format!(
+                        "[rswebgl-scene] a PBR shader variant failed to build: {e}"
+                    ))
+                })
+                .ok()
+        });
         self.models.insert(root, model);
         root
+    }
+
+    /// `addModel` with your own `program` for every primitive (it gets the
+    /// frame block, the material group and the object uniforms).
+    #[wasm_bindgen(js_name = addModelWithProgram)]
+    pub fn add_model_with_program(&mut self, model: Model, program: ProgramId) -> Entity {
+        let root = spawn_model(&mut self.world, &model, |_| Some(program));
+        self.models.insert(root, model);
+        root
+    }
+
+    // --- lighting -------------------------------------------------------------
+
+    /// Makes `e` a directional light (`intensity` in lux) shining down its
+    /// local −Z — aim it with `lookAt` or a rotation.
+    #[wasm_bindgen(js_name = setDirectionalLight)]
+    pub fn set_directional_light(&mut self, e: Entity, r: f32, g: f32, b: f32, intensity: f32) {
+        self.insert(
+            e,
+            "setDirectionalLight",
+            Light::directional(Vec3::new(r, g, b), intensity),
+        );
+    }
+
+    /// Makes `e` a point light at its position (`intensity` in candela;
+    /// `range` 0 = no cutoff).
+    #[wasm_bindgen(js_name = setPointLight)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_point_light(
+        &mut self,
+        e: Entity,
+        r: f32,
+        g: f32,
+        b: f32,
+        intensity: f32,
+        range: f32,
+    ) {
+        self.insert(
+            e,
+            "setPointLight",
+            Light::point(Vec3::new(r, g, b), intensity, range),
+        );
+    }
+
+    /// Makes `e` a spot light down its local −Z; cone angles in radians from
+    /// the axis.
+    #[wasm_bindgen(js_name = setSpotLight)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_spot_light(
+        &mut self,
+        e: Entity,
+        r: f32,
+        g: f32,
+        b: f32,
+        intensity: f32,
+        range: f32,
+        inner_cone: f32,
+        outer_cone: f32,
+    ) {
+        let light = Light::spot(Vec3::new(r, g, b), intensity, range, inner_cone, outer_cone);
+        self.insert(e, "setSpotLight", light);
+    }
+
+    #[wasm_bindgen(js_name = removeLight)]
+    pub fn remove_light(&mut self, e: Entity) {
+        self.world.remove::<Light>(e);
+    }
+
+    /// Light from all around (linear RGB radiance), until image-based
+    /// lighting. Default 0.2 gray.
+    #[wasm_bindgen(js_name = setAmbient)]
+    pub fn set_ambient(&mut self, r: f32, g: f32, b: f32) {
+        self.renderer.set_ambient(Vec3::new(r, g, b));
+    }
+
+    /// Scales radiance before tone mapping. Default 1.
+    #[wasm_bindgen(js_name = setExposure)]
+    pub fn set_exposure(&mut self, exposure: f32) {
+        self.renderer.set_exposure(exposure);
+    }
+
+    /// Built-in PBR shader variants compiled so far.
+    #[wasm_bindgen(js_name = shaderVariantCount)]
+    pub fn shader_variant_count(&self) -> usize {
+        self.pbr.len()
     }
 
     /// Bounding sphere of a model added with `addModel`, as loaded (before
@@ -392,13 +507,14 @@ impl Scene {
         self.stats.objects_written
     }
 
-    /// Frees everything the scene owns: its renderer resources and the models
-    /// added with `addModel`. Handles you passed in (`setMesh`) stay yours.
+    /// Frees everything the scene owns: its renderer resources, the built-in
+    /// shaders and the models added with `addModel`. Handles you passed in (`setMesh`) stay yours.
     pub fn destroy(self) {
         for model in self.models.into_values() {
             model.destroy(&self.ctx);
         }
         self.renderer.destroy(&self.ctx);
+        self.pbr.destroy(&self.ctx);
     }
 }
 

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use glam::{Mat4, Vec3};
 use rswebgl::ids::ProgramId;
 use rswebgl_ecs::{Entity, World};
-use rswebgl_gltf::Model;
+use rswebgl_gltf::{DrawItem, Model};
 
 use crate::culling::Bounds;
 use crate::render::MeshRenderer;
@@ -22,17 +22,22 @@ pub struct Name(pub String);
 /// - each glTF node → an entity with the node's local `Transform`, a `Parent`
 ///   (its parent node, or the root) and its `Name` if it has one;
 /// - each primitive → a child entity of its node with a `MeshRenderer`
-///   (`program`, the primitive's state, vertex array, material group and
-///   draw command), its mesh-space `Bounds`, and the
+///   (the program `program_for` picks for it — e.g. `PbrShaders::program_for`
+///   — and the primitive's state, vertex array, material group, draw command,
+///   transparent if its material blends), its mesh-space `Bounds`, and the
 ///   `EXT_mesh_gpu_instancing` transform as its `Transform` (identity
-///   without it).
+///   without it). A primitive `program_for` returns None for is left out.
 ///
 /// The entities refer to the model's GPU resources; the model still owns
 /// them. Move or hide parts by their node entities (`find_by_name`).
 ///
 /// Front-face winding is fixed at load time from the node's world matrix: a
 /// part later mirrored by a negative scale draws inside out.
-pub fn spawn_model(world: &mut World, model: &Model, program: ProgramId) -> Entity {
+pub fn spawn_model(
+    world: &mut World,
+    model: &Model,
+    mut program_for: impl FnMut(&DrawItem) -> Option<ProgramId>,
+) -> Entity {
     let root = world.spawn();
     world.insert(root, Transform::IDENTITY);
     let mut by_index: HashMap<u32, Entity> = HashMap::with_capacity(model.nodes().len());
@@ -57,6 +62,9 @@ pub fn spawn_model(world: &mut World, model: &Model, program: ProgramId) -> Enti
         let Some(&node) = by_index.get(&item.node()) else {
             continue;
         };
+        let Some(program) = program_for(item) else {
+            continue;
+        };
         let e = world.spawn();
         world.insert(
             e,
@@ -73,6 +81,7 @@ pub fn spawn_model(world: &mut World, model: &Model, program: ProgramId) -> Enti
                 vao: item.vao(),
                 material: item.material_group(),
                 command: item.draw_command(),
+                transparent: item.render_state().blend,
             },
         );
     }

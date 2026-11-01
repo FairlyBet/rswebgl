@@ -129,6 +129,7 @@ fn walk(
                     instance: instance as u32,
                     model: world.to_cols_array(),
                     instance_matrix: local_instance.to_cols_array(),
+                    attributes: geo.attributes,
                     aabb_min: geo.aabb_min,
                     aabb_max: geo.aabb_max,
                 });

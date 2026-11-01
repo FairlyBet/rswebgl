@@ -5,9 +5,10 @@ A glTF model in a scene, driven from plain JS through the `Scene` facade of
 per frame does transforms, frustum culling and the draw list. The model's
 glTF nodes become entities you can find by name, move and hide.
 
-Default model: Khronos' Avocado (fetched from GitHub); another one with
+Default model: Khronos' DamagedHelmet (fetched from GitHub; all five PBR maps),
+shaded by the built-in glTF PBR with three directional lights; another one with
 `?model=<url>`. Keys: **V** hides / shows the model (through its root, so the
-whole subtree), **R** pauses the turntable.
+whole subtree), **R** pauses the turntable, **+ / −** change the exposure.
 
 ```bash
 wasm-pack build packages/rswebgl-scene --target web --out-dir ../../examples/js-scene/pkg

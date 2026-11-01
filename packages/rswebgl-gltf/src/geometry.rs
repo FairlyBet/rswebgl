@@ -3,7 +3,8 @@
 //!
 //! Attribute locations follow a fixed convention the shaders agree on:
 //!   0 = POSITION (vec3), 1 = NORMAL (vec3), 2 = TEXCOORD_0 (vec2),
-//!   3 = TANGENT (vec4), 4 = COLOR_0 (vec4).
+//!   3 = TANGENT (vec4), 4 = COLOR_0 (vec4), 5 = TEXCOORD_1 (vec2).
+//! Which of them a primitive has is in `PrimitiveGpu::attributes` (`ATTR_*`).
 //!
 //! Sharing: one GPU buffer per glTF *accessor*, so primitives that reuse an
 //! accessor (a multi-material mesh splitting one vertex set by index ranges,
@@ -24,6 +25,8 @@ use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
 use rswebgl::ids::{BufferId, VertexArrayId};
 use rswebgl::vao::VertexAttr;
 
+use crate::{ATTR_COLOR, ATTR_NORMAL, ATTR_TANGENT, ATTR_UV0, ATTR_UV1};
+
 /// One primitive on the GPU, plus its local-space bounds.
 #[derive(Clone)]
 pub struct PrimitiveGpu {
@@ -31,6 +34,8 @@ pub struct PrimitiveGpu {
     pub draw: DrawCommand,
     /// glTF material index, or -1 for the default material.
     pub material: i32,
+    /// `ATTR_*` bits: the optional attributes bound.
+    pub attributes: u32,
     pub aabb_min: [f32; 3],
     pub aabb_max: [f32; 3],
 }
@@ -115,15 +120,17 @@ impl GeometryCache {
             }
         };
 
-        // (location, semantic, components)
+        // (location, semantic, components, ATTR_* bit)
         let attrs = [
-            (0, gltf::Semantic::Positions, 3u8),
-            (1, gltf::Semantic::Normals, 3),
-            (2, gltf::Semantic::TexCoords(0), 2),
-            (3, gltf::Semantic::Tangents, 4),
-            (4, gltf::Semantic::Colors(0), 4),
+            (0, gltf::Semantic::Positions, 3u8, 0),
+            (1, gltf::Semantic::Normals, 3, ATTR_NORMAL),
+            (2, gltf::Semantic::TexCoords(0), 2, ATTR_UV0),
+            (3, gltf::Semantic::Tangents, 4, ATTR_TANGENT),
+            (4, gltf::Semantic::Colors(0), 4, ATTR_COLOR),
+            (5, gltf::Semantic::TexCoords(1), 2, ATTR_UV1),
         ];
-        for (loc, semantic, size) in attrs {
+        let mut attributes = 0;
+        for (loc, semantic, size, bit) in attrs {
             let Some(accessor) = primitive.get(&semantic) else {
                 continue;
             };
@@ -131,6 +138,7 @@ impl GeometryCache {
                 continue;
             };
             ctx.vertex_array_attr(vao, loc, buf, &VertexAttr::float(size));
+            attributes |= bit;
         }
 
         let mode = draw_mode(primitive.mode());
@@ -153,6 +161,7 @@ impl GeometryCache {
             vao,
             draw,
             material,
+            attributes,
             aabb_min,
             aabb_max,
         })

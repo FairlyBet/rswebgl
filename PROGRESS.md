@@ -164,8 +164,9 @@ API. Async load (fetches external buffers/images; textures fill in via the DOM
 image decoder). v1 covers static meshes + PBR metallic-roughness factors/base
 color; deferred items (skinning, animation, KTX2/Draco, …) are in `TODO.md`.
 Separate occlusion + metallic-roughness maps are GPU-packed into one ORM texture
-(`src/pack.rs` + `texture_packer`); a reference PBR shader interface lives in
-`packages/rswebgl-gltf/shaders/pbr/`.
+(`src/pack.rs` + `texture_packer`). Materials come out as parameter groups with
+every factor and all five maps; the PBR shader that reads them is in
+`packages/rswebgl-scene/shaders/`.
 
 ## Foundation (`packages/rswebgl-foundation`)
 
@@ -197,4 +198,5 @@ Design: `docs/design/ecs.md`. ECS and hierarchy: host tests; `SceneRenderer`: br
 | SceneRenderer: frame UBO, object groups, Pass assembly (E3) | ✅ | `rswebgl-scene/src/render.rs` |
 | glTF nodes → entities, `Name`, `find_by_name` (E4) | ✅ | `rswebgl-scene/src/model.rs` |
 | JS facade `Scene` (cdylib bundle; example `examples/js-scene`) | ✅ | `rswebgl-scene/src/js.rs` |
-| PBR materials, lights, IBL (E5)          | ⬜     |                              |
+| PBR shader variants, full glTF materials, lights, transparency (E5a) | ✅ | `rswebgl-scene/src/{pbr,light}.rs`, `shaders/` |
+| IBL (E5b), jewelry material extensions (E5c), viewer (E5d) | ⬜ |  |

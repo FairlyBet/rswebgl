@@ -133,6 +133,7 @@ fn build(ctx: &Context) -> Result<App, String> {
                 vao,
                 material: materials[(i % 2) as usize],
                 command,
+                transparent: false,
             },
         );
         set_parent(&mut world, e, Some(pivot)).map_err(|e| e.to_string())?;

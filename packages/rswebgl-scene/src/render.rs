@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use glam::{Mat3, Mat4};
+use glam::{Mat3, Mat4, Vec3, Vec4};
 use rswebgl::buffer::BufferUsage;
 use rswebgl::console;
 use rswebgl::context::Context;
@@ -14,12 +14,13 @@ use rswebgl::ids::{
     ParamGroupId, ParamLayoutId, ProgramId, StateId, UniformBufferId, VertexArrayId,
 };
 use rswebgl::param::{GROUP_SLOTS, ParamField, ParamLayoutBuilder};
-use rswebgl::pass::Pass;
+use rswebgl::pass::{KEY_LAST, Pass};
 use rswebgl::uniform_buffer::{UboLayout, UniformType};
 use rswebgl_ecs::{Entity, Tick, World};
 
 use crate::camera::Camera;
 use crate::culling::{Bounds, Frustum};
+use crate::light::Light;
 use crate::transform::{Parent, WorldMatrix};
 
 /// Name of the per-frame uniform block. Shaders declare it as
@@ -41,6 +42,28 @@ pub const FRAME_BLOCK: &str = "Frame";
 pub const MODEL_UNIFORM: &str = "u_model";
 pub const NORMAL_MATRIX_UNIFORM: &str = "u_normal_matrix";
 
+/// Name of the lights block, bound next to the frame block in slot 0:
+///
+/// ```glsl
+/// struct Light {
+///     vec4 position;  // xyz world position
+///     vec4 direction; // xyz world direction the light points
+///     vec4 color;     // rgb color, w intensity
+///     vec4 params;    // x range, y spot scale, z spot offset, w type (0 dir, 1 point, 2 spot)
+/// };
+/// layout(std140) uniform Lighting {
+///     Light u_lights[8];  // MAX_LIGHTS
+///     vec4 u_ambient;     // rgb ambient radiance
+///     vec4 u_lighting;    // x light count, y exposure
+/// };
+/// ```
+pub const LIGHTING_BLOCK: &str = "Lighting";
+/// Lights the lighting block holds; more are left out (reported once).
+pub const MAX_LIGHTS: usize = 8;
+
+// Ambient radiance until the app sets one: enough to see an unlit scene.
+const DEFAULT_AMBIENT: f32 = 0.2;
+
 /// Group slots the scene fills: 0 frame, 1 material, 2 object.
 pub const FRAME_SLOT: usize = 0;
 pub const MATERIAL_SLOT: usize = 1;
@@ -57,6 +80,9 @@ pub struct MeshRenderer {
     /// state, so objects sharing a material draw together.
     pub material: ParamGroupId,
     pub command: DrawCommand,
+    /// Blended: drawn after everything opaque, farthest first (by the
+    /// distance to its bounds' center, or its origin without `Bounds`).
+    pub transparent: bool,
 }
 
 /// Hides the entity and everything under it when false. No component =
@@ -106,6 +132,11 @@ struct Object {
 /// `destroy`; after a context loss, build a new `SceneRenderer`.
 pub struct SceneRenderer {
     frame_ubo: UniformBufferId,
+    lighting_ubo: UniformBufferId,
+    // What the lighting block holds, to write it only when it changes.
+    lighting: Vec<Vec4>,
+    ambient: Vec3,
+    exposure: f32,
     frame_layout: ParamLayoutId,
     frame_group: ParamGroupId,
     object_layout: ParamLayoutId,
@@ -125,10 +156,26 @@ impl SceneRenderer {
                 .field("u_camera_pos", UniformType::Vec4),
             BufferUsage::DynamicDraw,
         )?;
-        let frame_layout =
-            ctx.create_param_layout(&ParamLayoutBuilder::new().block(FRAME_BLOCK))?;
+        let light = UboLayout::new()
+            .field("position", UniformType::Vec4)
+            .field("direction", UniformType::Vec4)
+            .field("color", UniformType::Vec4)
+            .field("params", UniformType::Vec4);
+        let lighting_ubo = ctx.create_uniform_buffer(
+            &UboLayout::new()
+                .struct_array("u_lights", &light, MAX_LIGHTS as u32)
+                .field("u_ambient", UniformType::Vec4)
+                .field("u_lighting", UniformType::Vec4),
+            BufferUsage::DynamicDraw,
+        )?;
+        let frame_layout = ctx.create_param_layout(
+            &ParamLayoutBuilder::new()
+                .block(FRAME_BLOCK)
+                .block(LIGHTING_BLOCK),
+        )?;
         let frame_group = ctx.create_param_group(frame_layout)?;
         ctx.param_set_block_by_name(frame_group, FRAME_BLOCK, frame_ubo);
+        ctx.param_set_block_by_name(frame_group, LIGHTING_BLOCK, lighting_ubo);
         let object_layout = ctx.create_param_layout(
             &ParamLayoutBuilder::new()
                 .uniform(MODEL_UNIFORM, UniformType::Mat4)
@@ -136,6 +183,10 @@ impl SceneRenderer {
         )?;
         Ok(Self {
             frame_ubo,
+            lighting_ubo,
+            lighting: Vec::new(),
+            ambient: Vec3::splat(DEFAULT_AMBIENT),
+            exposure: 1.0,
             frame_layout,
             frame_group,
             object_layout,
@@ -166,6 +217,25 @@ impl SceneRenderer {
         self.stats
     }
 
+    /// Light reaching every surface from all around (linear RGB radiance),
+    /// until image-based lighting. Default: a dim gray.
+    pub fn set_ambient(&mut self, rgb: Vec3) {
+        self.ambient = rgb;
+    }
+
+    pub fn ambient(&self) -> Vec3 {
+        self.ambient
+    }
+
+    /// Scales scene radiance before tone mapping. Default 1.
+    pub fn set_exposure(&mut self, exposure: f32) {
+        self.exposure = exposure;
+    }
+
+    pub fn exposure(&self) -> f32 {
+        self.exposure
+    }
+
     /// Appends the visible `MeshRenderer`s, as seen from `camera`, to `pass`.
     /// Doesn't clear or sort the pass. An entity without a `WorldMatrix` yet
     /// (run `TransformSystem::update` first) is skipped.
@@ -179,9 +249,10 @@ impl SceneRenderer {
         self.stats = RenderStats::default();
         self.release_removed(world, ctx);
 
-        let Some(view_proj) = self.write_frame(world, ctx, camera) else {
+        let Some((view, view_proj)) = self.write_frame(world, ctx, camera) else {
             return self.stats;
         };
+        self.write_lighting(world, ctx);
         let frustum = Frustum::from_view_proj(&view_proj);
 
         let (Some(meshes), Some(worlds)) = (
@@ -203,12 +274,14 @@ impl SceneRenderer {
                 continue;
             };
             let m = worlds.data()[row as usize].0;
+            let mut center = m.w_axis.truncate();
             if let Some(b) = bounds.and_then(|b| b.get(e)) {
                 let (c, h) = b.transformed(&m);
                 if !frustum.intersects(c, h) {
                     self.stats.culled += 1;
                     continue;
                 }
+                center = c;
             }
 
             let tick = worlds.changed_tick(row);
@@ -245,7 +318,23 @@ impl SceneRenderer {
             groups[FRAME_SLOT] = self.frame_group;
             groups[MATERIAL_SLOT] = mesh.material;
             groups[OBJECT_SLOT] = group;
-            pass.push_groups(mesh.program, mesh.state, mesh.vao, groups, &mesh.command);
+            if mesh.transparent {
+                // After every default key, farthest first: the key grows as
+                // the distance shrinks (a non-negative float's bits order
+                // like the float).
+                let distance = (-view.transform_point3(center).z).max(0.0);
+                let key = KEY_LAST | u64::from(u32::MAX - distance.to_bits());
+                pass.push_groups_with_key(
+                    key,
+                    mesh.program,
+                    mesh.state,
+                    mesh.vao,
+                    groups,
+                    &mesh.command,
+                );
+            } else {
+                pass.push_groups(mesh.program, mesh.state, mesh.vao, groups, &mesh.command);
+            }
             self.stats.drawn += 1;
         }
         self.stats
@@ -261,10 +350,59 @@ impl SceneRenderer {
         ctx.destroy_param_layout(self.frame_layout);
         ctx.destroy_param_layout(self.object_layout);
         ctx.destroy_uniform_buffer(self.frame_ubo);
+        ctx.destroy_uniform_buffer(self.lighting_ubo);
     }
 
-    // Camera matrices into the frame block; the view-projection for culling.
-    fn write_frame(&self, world: &World, ctx: &Context, camera: Entity) -> Option<Mat4> {
+    // Lights, ambient and exposure into the lighting block, if anything in it
+    // changed since the last frame.
+    fn write_lighting(&mut self, world: &World, ctx: &Context) {
+        let mut data: Vec<Vec4> = Vec::with_capacity(MAX_LIGHTS * 4 + 2);
+        let mut count = 0;
+        if let (Some(lights), Some(worlds)) =
+            (world.storage::<Light>(), world.storage::<WorldMatrix>())
+        {
+            let any_hidden = world
+                .storage::<Visible>()
+                .is_some_and(|v| v.data().iter().any(|v| !v.0));
+            for (e, light) in lights.iter() {
+                let Some(m) = worlds.get(e) else {
+                    continue;
+                };
+                if any_hidden && hidden(world, e) {
+                    continue;
+                }
+                if count == MAX_LIGHTS {
+                    console::warn_once(&format!(
+                        "[rswebgl-scene] more than {MAX_LIGHTS} lights; the rest are ignored"
+                    ));
+                    break;
+                }
+                data.extend(light.packed(&m.0));
+                count += 1;
+            }
+        }
+        data.push(self.ambient.extend(0.0));
+        data.push(Vec4::new(count as f32, self.exposure, 0.0, 0.0));
+        if data == self.lighting {
+            return;
+        }
+        let ubo = self.lighting_ubo;
+        const MEMBERS: [&str; 4] = ["position", "direction", "color", "params"];
+        for (i, light) in data[..count * 4].chunks(4).enumerate() {
+            for (member, v) in MEMBERS.iter().zip(light) {
+                let path = format!("u_lights[{i}].{member}");
+                ctx.ubo_set_vec4(ubo, &path, v.x, v.y, v.z, v.w);
+            }
+        }
+        let [ambient, params] = [data[count * 4], data[count * 4 + 1]];
+        ctx.ubo_set_vec4(ubo, "u_ambient", ambient.x, ambient.y, ambient.z, 0.0);
+        ctx.ubo_set_vec4(ubo, "u_lighting", params.x, params.y, 0.0, 0.0);
+        self.lighting = data;
+    }
+
+    // Camera matrices into the frame block; the view and view-projection for
+    // sorting and culling.
+    fn write_frame(&self, world: &World, ctx: &Context, camera: Entity) -> Option<(Mat4, Mat4)> {
         let (Some(cam), Some(cam_world)) = (
             world.get::<Camera>(camera),
             world.get::<WorldMatrix>(camera),
@@ -283,7 +421,7 @@ impl SceneRenderer {
         ctx.ubo_set_mat(self.frame_ubo, "u_proj", &proj.to_cols_array());
         ctx.ubo_set_mat(self.frame_ubo, "u_view_proj", &view_proj.to_cols_array());
         ctx.ubo_set_vec4(self.frame_ubo, "u_camera_pos", eye.x, eye.y, eye.z, 1.0);
-        Some(view_proj)
+        Some((view, view_proj))
     }
 
     fn write_object(&mut self, ctx: &Context, group: ParamGroupId, m: &Mat4) {

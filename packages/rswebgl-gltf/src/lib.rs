@@ -30,7 +30,7 @@ mod pack;
 mod scene;
 mod textures;
 
-pub use material::{AlphaMode, Material};
+pub use material::{AlphaMode, Material, default_material};
 
 use rswebgl::context::Context;
 use rswebgl::draw::DrawCommand;
@@ -46,6 +46,18 @@ use wasm_bindgen::prelude::*;
 /// Extensions this crate handles itself; a file that *requires* one of them
 /// still loads (the `gltf` crate would reject it as unsupported).
 const HANDLED_EXTENSIONS: &[&str] = &["EXT_mesh_gpu_instancing"];
+
+// Optional vertex attributes a primitive can have (`DrawItem::attributes`).
+/// NORMAL at location 1.
+pub const ATTR_NORMAL: u32 = 1 << 0;
+/// TEXCOORD_0 at location 2.
+pub const ATTR_UV0: u32 = 1 << 1;
+/// TANGENT at location 3.
+pub const ATTR_TANGENT: u32 = 1 << 2;
+/// COLOR_0 at location 4 (always read as RGBA).
+pub const ATTR_COLOR: u32 = 1 << 3;
+/// TEXCOORD_1 at location 5.
+pub const ATTR_UV1: u32 = 1 << 4;
 
 /// One thing to draw: a primitive of a mesh, at one instance of it. Items of
 /// the same mesh share their vertex array.
@@ -65,6 +77,7 @@ pub struct DrawItem {
     // The EXT_mesh_gpu_instancing transform on top of the node (identity
     // without it), column-major.
     pub(crate) instance_matrix: [f32; 16],
+    pub(crate) attributes: u32,
     // The primitive's POSITION bounds, in mesh space.
     pub(crate) aabb_min: [f32; 3],
     pub(crate) aabb_max: [f32; 3],
@@ -98,6 +111,11 @@ impl DrawItem {
     #[wasm_bindgen(js_name = materialGroup)]
     pub fn material_group(&self) -> ParamGroupId {
         self.material_group
+    }
+    /// Optional vertex attributes present: bits 1 NORMAL, 2 TEXCOORD_0,
+    /// 4 TANGENT, 8 COLOR_0, 16 TEXCOORD_1 (`ATTR_*`).
+    pub fn attributes(&self) -> u32 {
+        self.attributes
     }
     /// glTF mesh index. Items with the same mesh share geometry.
     pub fn mesh(&self) -> u32 {
@@ -153,10 +171,15 @@ pub struct SceneNode {
 /// A translated glTF asset: a flat draw list plus the GPU resources behind it.
 ///
 /// Each material is a parameter group (layout `material_layout()`) with, by
-/// convention: `u_base_color_factor` (vec4), `u_base_color_tex` (sampler) +
-/// `u_has_base_color_tex` (bool), `u_alpha_cutoff` (float), `u_alpha_mode`
-/// (int: 0=OPAQUE 1=MASK 2=BLEND). The transform is the caller's job (it
-/// depends on the camera) — use `DrawItem::model_cols()`.
+/// convention: `u_base_color_factor` (vec4), `u_metallic_factor`,
+/// `u_roughness_factor`, `u_emissive_factor` (vec3), `u_emissive_strength`,
+/// `u_normal_scale`, `u_occlusion_strength`, `u_alpha_cutoff` (floats),
+/// `u_alpha_mode` (int: 0=OPAQUE 1=MASK 2=BLEND), `u_has_base_color_tex`
+/// (bool), and the maps `MAP_UNIFORMS` (samplers, each with the glTF
+/// sampler's state). Which maps exist and their TEXCOORD sets are on
+/// `Material`; which attributes a primitive has, on `DrawItem::attributes`.
+/// The transform is the caller's job (it depends on the camera) — use
+/// `DrawItem::model_cols()`.
 ///
 /// The model owns its resources; `destroy` frees them all.
 #[wasm_bindgen]
@@ -266,6 +289,11 @@ impl Model {
         &self.items
     }
 
+    /// The materials, by glTF index (`DrawItem::material_index`).
+    pub fn materials(&self) -> &[Material] {
+        &self.materials
+    }
+
     /// The default scene's nodes, parents before children.
     pub fn nodes(&self) -> &[SceneNode] {
         &self.nodes
@@ -320,9 +348,9 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
             .and_then(|i| set.doc_samplers.get(i).copied())
             .unwrap_or(SamplerId::NULL)
     };
-    let base_color_samplers: Vec<SamplerId> = materials
+    let map_samplers: Vec<[SamplerId; MAPS]> = materials
         .iter()
-        .map(|m| sampler_of(m.base_color_tex))
+        .map(|m| material_maps(m).map(|(tex, _)| sampler_of(tex)))
         .collect();
     for m in &mut materials {
         material::remap_textures(m, &set.remap);
@@ -342,7 +370,7 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
     );
 
     let (material_layout, material_groups) =
-        build_material_groups(ctx, &materials, &base_color_samplers, &textures)?;
+        build_material_groups(ctx, &materials, &map_samplers, &textures)?;
     for item in &mut items {
         let i = usize::try_from(item.material).unwrap_or(materials.len());
         item.material_group = material_groups[i];
@@ -386,26 +414,65 @@ fn js_err(e: JsValue) -> Error {
     e.as_string().unwrap_or_else(|| format!("{e:?}")).into()
 }
 
+// The material maps in the order of `MAP_UNIFORMS`: (texture index or -1,
+// TEXCOORD set).
+const MAPS: usize = 5;
+fn material_maps(m: &Material) -> [(i32, u32); MAPS] {
+    [
+        (m.base_color_tex, m.base_color_uv),
+        (m.metallic_roughness_tex, m.metallic_roughness_uv),
+        (m.normal_tex, m.normal_uv),
+        (m.occlusion_tex, m.occlusion_uv),
+        (m.emissive_tex, m.emissive_uv),
+    ]
+}
+
+/// Sampler uniforms of the material maps, as named in a material group.
+pub const MAP_UNIFORMS: [&str; MAPS] = [
+    "u_base_color_tex",
+    "u_metallic_roughness_tex",
+    "u_normal_tex",
+    "u_occlusion_tex",
+    "u_emissive_tex",
+];
+
 // One parameter group per material (plus the default material's, last).
 fn build_material_groups(
     ctx: &Context,
     materials: &[Material],
-    base_color_samplers: &[SamplerId],
+    map_samplers: &[[SamplerId; MAPS]],
     textures: &[TextureId],
 ) -> Result<(ParamLayoutId, Vec<ParamGroupId>), Error> {
-    let layout = ctx.create_param_layout(
-        &ParamLayoutBuilder::new()
-            .uniform("u_base_color_factor", UniformType::Vec4)
-            .uniform("u_alpha_cutoff", UniformType::F32)
-            .uniform("u_alpha_mode", UniformType::I32)
-            .uniform("u_has_base_color_tex", UniformType::Bool)
-            .texture("u_base_color_tex"),
-    )?;
-    let f_color = ctx.param_field(layout, "u_base_color_factor")?;
-    let f_cutoff = ctx.param_field(layout, "u_alpha_cutoff")?;
-    let f_mode = ctx.param_field(layout, "u_alpha_mode")?;
-    let f_has_tex = ctx.param_field(layout, "u_has_base_color_tex")?;
-    let f_tex = ctx.param_field(layout, "u_base_color_tex")?;
+    let mut builder = ParamLayoutBuilder::new()
+        .uniform("u_base_color_factor", UniformType::Vec4)
+        .uniform("u_metallic_factor", UniformType::F32)
+        .uniform("u_roughness_factor", UniformType::F32)
+        .uniform("u_emissive_factor", UniformType::Vec3)
+        .uniform("u_emissive_strength", UniformType::F32)
+        .uniform("u_normal_scale", UniformType::F32)
+        .uniform("u_occlusion_strength", UniformType::F32)
+        .uniform("u_alpha_cutoff", UniformType::F32)
+        .uniform("u_alpha_mode", UniformType::I32)
+        .uniform("u_has_base_color_tex", UniformType::Bool);
+    for name in MAP_UNIFORMS {
+        builder = builder.texture(name);
+    }
+    let layout = ctx.create_param_layout(&builder)?;
+    let field = |name| ctx.param_field(layout, name);
+    let f_color = field("u_base_color_factor")?;
+    let f_metallic = field("u_metallic_factor")?;
+    let f_roughness = field("u_roughness_factor")?;
+    let f_emissive = field("u_emissive_factor")?;
+    let f_emissive_strength = field("u_emissive_strength")?;
+    let f_normal_scale = field("u_normal_scale")?;
+    let f_occlusion = field("u_occlusion_strength")?;
+    let f_cutoff = field("u_alpha_cutoff")?;
+    let f_mode = field("u_alpha_mode")?;
+    let f_has_tex = field("u_has_base_color_tex")?;
+    let f_maps: Vec<_> = MAP_UNIFORMS
+        .iter()
+        .map(|name| field(name))
+        .collect::<Result<_, _>>()?;
 
     let default = material::default_material();
     let mut groups = Vec::with_capacity(materials.len() + 1);
@@ -416,19 +483,24 @@ fn build_material_groups(
     {
         let g = ctx.create_param_group(layout)?;
         ctx.param_set_floats(g, f_color, &m.base_color_factor);
+        ctx.param_set_f32(g, f_metallic, m.metallic);
+        ctx.param_set_f32(g, f_roughness, m.roughness);
+        ctx.param_set_floats(g, f_emissive, &m.emissive);
+        ctx.param_set_f32(g, f_emissive_strength, m.emissive_strength);
+        ctx.param_set_f32(g, f_normal_scale, m.normal_scale);
+        ctx.param_set_f32(g, f_occlusion, m.occlusion_strength);
         ctx.param_set_f32(g, f_cutoff, m.alpha_cutoff);
         ctx.param_set_i32(g, f_mode, m.alpha_mode as i32);
-        let tex = usize::try_from(m.base_color_tex)
-            .ok()
-            .and_then(|i| textures.get(i).copied());
-        ctx.param_set_bool(g, f_has_tex, tex.is_some());
-        if let Some(tex) = tex {
-            ctx.param_set_texture(g, f_tex, tex);
-            let sampler = base_color_samplers
-                .get(i)
-                .copied()
-                .unwrap_or(SamplerId::NULL);
-            ctx.param_set_sampler(g, f_tex, sampler);
+        let samplers = map_samplers.get(i).copied().unwrap_or_default();
+        for (map, ((tex, _), f)) in material_maps(m).into_iter().zip(&f_maps).enumerate() {
+            let Some(tex) = usize::try_from(tex).ok().and_then(|t| textures.get(t)) else {
+                continue;
+            };
+            ctx.param_set_texture(g, *f, *tex);
+            ctx.param_set_sampler(g, *f, samplers[map]);
+            if map == 0 {
+                ctx.param_set_bool(g, f_has_tex, true);
+            }
         }
         groups.push(g);
     }

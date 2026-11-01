@@ -119,21 +119,16 @@ texture) into VAOs/textures/draw-list with spec-correct render state. Deferred:
   context by value / a handle) so JS can call it.
 - **Normalized-integer attrs** kept as-is: everything is dequantized to `f32` and
   indices widened to `u32` on upload. Fine for v1; revisit for memory.
-- **Multi-UV** (TEXCOORD_1+) — only set 0 is read; `base_color_uv` is exposed but
-  the example assumes UV0. Non-PBR/extension textures (clearcoat, sheen, …) and
-  the metallic-roughness/normal/occlusion/emissive maps are parsed as indices but
-  the example only samples base color.
+- **UV sets** — TEXCOORD_0 and _1 are read (locations 2 and 5); _2+ aren't.
+  `KHR_texture_transform` isn't applied. Extension textures (clearcoat, sheen,
+  transmission, …) aren't read yet (E5c).
 - **KTX2/Basis, Draco, meshopt** compression — needs decoders; not wired.
 - **Sparse accessors** — not handled (rare).
-- **Material → shader/scene system.** The translator emits data + a documented
-  uniform convention (`write_uniforms`); a real material/scene/lighting system is
-  future work. Back-face normal flip currently lives in the example shader.
-  A reference PBR shader pair (`shaders/pbr/main.{vert,frag}`) already declares
-  the full spec data interface (all attributes, `Frame`/`Object`/`Material`/
-  `Skin`/`Lights` UBOs, the five PBR maps, alpha modes, MRT targets) behind
-  feature `#define`s — but its BRDF is a placeholder (`// TODO(pbr)`), and the
-  translator doesn't yet build these UBOs / select shader permutations / fill in
-  the Cook-Torrance + IBL lighting. That permutation+lighting layer is the work.
+- **Materials → shaders** live in `rswebgl-scene` (`PbrShaders`, E5a): the
+  loader fills material groups (factors + all five maps with their samplers);
+  the scene picks a shader variant per primitive and material. Missing:
+  MikkTSpace tangents for normal-mapped primitives without TANGENT (a
+  derivative-based frame stands in), skinning / morph targets.
 - **Texture sRGB role** decided by base-color/emissive usage scan; a texture
   shared across linear+sRGB roles would pick one. Acceptable in practice.
 - **ORM channel packing** (`src/pack.rs` + `texture_packer`) combines a *separate*
@@ -142,9 +137,9 @@ texture) into VAOs/textures/draw-list with spec-correct render state. Deferred:
   is kept). Conservative: only when each source is used exclusively in its role
   and the occ↔MR pairing is 1:1. The transient sources are forced to NEAREST
   before packing (safe — they're dropped right after), so a same-size pack is an
-  exact texel copy. Not yet exercised end-to-end — the example shader samples only
-  base color, so there's no visible consumer until the reference PBR shader is
-  wired in. Possible refinement: a metric/log of bytes saved vs. textures kept.
+  exact texel copy. The PBR shader samples both roles from it (DamagedHelmet in
+  `examples/js-scene`). Possible refinement: a metric/log of bytes saved vs.
+  textures kept.
 
 ## Texture packer (`packages/rswebgl/src/texture_packer.rs`)
 
@@ -207,17 +202,18 @@ FBO blit). Done. Deferred polish:
 
 - World-space AABBs are recomputed for culling every frame; cache them per
   `WorldMatrix` change if culling shows up in profiles (thousands of objects).
-- Transparency: a `MeshRenderer` flag → `KEY_LAST` + back-to-front depth in
-  the sort key (needed for the jewelry viewer's gems, with E5 materials).
 - Many copies of one mesh → one instanced draw instead of a draw per entity.
 - The frame block must be declared with all four members (std140 size has to
   match); consider reflecting the block and binding a range instead.
-- `addModel` draws every primitive with one program; primitives differ in
-  attributes (normals, UVs, tangents) — E5 picks a shader variant per
-  primitive.
+- Transparent draws sort per object (bounds center), not per triangle:
+  intersecting or concave blended meshes can still show order errors.
 - Front-face winding of a glTF part is fixed at load from its world matrix;
   a part mirrored later by a negative scale draws inside out.
 - A model added twice needs two loads (`addModel` takes the `Model`); sharing
   one model's GPU data between several roots would need reference counts.
 - JS reads (`worldMatrix`, `translation`, …) copy into a new `Float32Array`;
   zero-copy views over component storage when a viewer needs bulk reads.
+- PBR (E5a): lights are capped at 8 per frame (all lights reach every draw;
+  no per-object light lists); spot lights untested by pixels; no shadows.
+  The ambient term is a constant until IBL (E5b). `KHR_lights_punctual`
+  lights in a glTF file aren't spawned yet.

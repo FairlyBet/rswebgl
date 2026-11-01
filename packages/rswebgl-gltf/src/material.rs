@@ -31,9 +31,19 @@ pub struct Material {
     pub(crate) base_color_tex: i32,
     pub(crate) base_color_uv: u32,
     pub(crate) metallic_roughness_tex: i32,
+    pub(crate) metallic_roughness_uv: u32,
     pub(crate) normal_tex: i32,
+    pub(crate) normal_uv: u32,
+    pub(crate) normal_scale: f32,
     pub(crate) occlusion_tex: i32,
+    pub(crate) occlusion_uv: u32,
+    pub(crate) occlusion_strength: f32,
     pub(crate) emissive_tex: i32,
+    pub(crate) emissive_uv: u32,
+    // KHR_materials_emissive_strength (1 without it).
+    pub(crate) emissive_strength: f32,
+    // KHR_materials_unlit.
+    pub(crate) unlit: bool,
 }
 
 #[wasm_bindgen]
@@ -92,6 +102,43 @@ impl Material {
     pub fn emissive_texture(&self) -> i32 {
         self.emissive_tex
     }
+    /// TEXCOORD set of each map (`TEXCOORD_n`); 0 when the map is absent.
+    #[wasm_bindgen(getter, js_name = metallicRoughnessUv)]
+    pub fn metallic_roughness_uv(&self) -> u32 {
+        self.metallic_roughness_uv
+    }
+    #[wasm_bindgen(getter, js_name = normalUv)]
+    pub fn normal_uv(&self) -> u32 {
+        self.normal_uv
+    }
+    #[wasm_bindgen(getter, js_name = occlusionUv)]
+    pub fn occlusion_uv(&self) -> u32 {
+        self.occlusion_uv
+    }
+    #[wasm_bindgen(getter, js_name = emissiveUv)]
+    pub fn emissive_uv(&self) -> u32 {
+        self.emissive_uv
+    }
+    /// `normalTexture.scale` (1 without a normal map).
+    #[wasm_bindgen(getter, js_name = normalScale)]
+    pub fn normal_scale(&self) -> f32 {
+        self.normal_scale
+    }
+    /// `occlusionTexture.strength` (1 without an occlusion map).
+    #[wasm_bindgen(getter, js_name = occlusionStrength)]
+    pub fn occlusion_strength(&self) -> f32 {
+        self.occlusion_strength
+    }
+    /// `KHR_materials_emissive_strength` (1 without it).
+    #[wasm_bindgen(getter, js_name = emissiveStrength)]
+    pub fn emissive_strength(&self) -> f32 {
+        self.emissive_strength
+    }
+    /// `KHR_materials_unlit`: shade with the base color only.
+    #[wasm_bindgen(getter)]
+    pub fn unlit(&self) -> bool {
+        self.unlit
+    }
 }
 
 /// Translate one glTF material's data.
@@ -110,11 +157,21 @@ pub fn translate(mat: &gltf::Material) -> Material {
         alpha_cutoff: mat.alpha_cutoff().unwrap_or(0.5),
         double_sided: mat.double_sided(),
         base_color_tex: tex_index(pbr.base_color_texture().map(|i| i.texture())),
-        base_color_uv: pbr.base_color_texture().map(|i| i.tex_coord()).unwrap_or(0),
+        base_color_uv: pbr.base_color_texture().map_or(0, |i| i.tex_coord()),
         metallic_roughness_tex: tex_index(pbr.metallic_roughness_texture().map(|i| i.texture())),
+        metallic_roughness_uv: pbr
+            .metallic_roughness_texture()
+            .map_or(0, |i| i.tex_coord()),
         normal_tex: tex_index(mat.normal_texture().map(|i| i.texture())),
+        normal_uv: mat.normal_texture().map_or(0, |i| i.tex_coord()),
+        normal_scale: mat.normal_texture().map_or(1.0, |i| i.scale()),
         occlusion_tex: tex_index(mat.occlusion_texture().map(|i| i.texture())),
+        occlusion_uv: mat.occlusion_texture().map_or(0, |i| i.tex_coord()),
+        occlusion_strength: mat.occlusion_texture().map_or(1.0, |i| i.strength()),
         emissive_tex: tex_index(mat.emissive_texture().map(|i| i.texture())),
+        emissive_uv: mat.emissive_texture().map_or(0, |i| i.tex_coord()),
+        emissive_strength: mat.emissive_strength().unwrap_or(1.0),
+        unlit: mat.unlit(),
     }
 }
 
@@ -136,7 +193,8 @@ pub fn remap_textures(m: &mut Material, remap: &[i32]) {
     m.emissive_tex = map(m.emissive_tex);
 }
 
-/// The glTF default material (used for primitives that reference none).
+/// The glTF default material (used for primitives that reference none):
+/// white, fully metallic and rough, opaque.
 pub fn default_material() -> Material {
     Material {
         base_color_factor: [1.0, 1.0, 1.0, 1.0],
@@ -149,9 +207,17 @@ pub fn default_material() -> Material {
         base_color_tex: -1,
         base_color_uv: 0,
         metallic_roughness_tex: -1,
+        metallic_roughness_uv: 0,
         normal_tex: -1,
+        normal_uv: 0,
+        normal_scale: 1.0,
         occlusion_tex: -1,
+        occlusion_uv: 0,
+        occlusion_strength: 1.0,
         emissive_tex: -1,
+        emissive_uv: 0,
+        emissive_strength: 1.0,
+        unlit: false,
     }
 }
 

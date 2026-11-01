@@ -113,6 +113,7 @@ fn setup() -> Setup {
         vao,
         material,
         command: DrawCommand::arrays(DrawMode::Triangles, 0, 6),
+        transparent: false,
     };
     let red = mesh(material([1.0, 0.0, 0.0, 1.0]));
     let green = mesh(material([0.0, 1.0, 0.0, 1.0]));

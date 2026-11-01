@@ -171,7 +171,7 @@ async fn a_model_becomes_a_hierarchy_of_entities() {
     let model = load_model(&s.ctx, &asset_url()).await.expect("load");
     let buffers = model.buffers().to_vec();
     let program = s.ctx.create_program(VERT, FRAG).expect("program");
-    let root = s.scene.add_model(model, program);
+    let root = s.scene.add_model_with_program(model, program);
 
     // camera + root + 3 nodes + 2 primitives × 2 nodes with the mesh.
     assert_eq!(s.scene.entity_count(), 1 + 1 + 3 + 4);

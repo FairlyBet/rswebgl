@@ -22,6 +22,8 @@ gltf = { version = "1.4", default-features = false, features = [
     "names",
     "extras",
     "extensions",
+    "KHR_materials_emissive_strength",
+    "KHR_materials_unlit",
 ] }
 
 [dependencies.web-sys]

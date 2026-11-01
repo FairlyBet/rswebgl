@@ -1,6 +1,6 @@
 # ECS и сцена
 
-Статус: E1 сделан (`packages/rswebgl-ecs`), E2–E4 сделаны (`packages/rswebgl-scene`).
+Статус: E1 сделан (`packages/rswebgl-ecs`), E2–E4 и E5a сделаны (`packages/rswebgl-scene`).
 
 Продолжение §7 `architecture.md`: что там оставлено «для ECS-документа»,
 решается здесь.
@@ -125,8 +125,16 @@ ctx.render(pass);
   сборка `Pass`, UBO кадра. Пример: сетка кубов из `js-cube` через сцену.
 - **E4 — glTF в сцену и JS-фасад**: узлы glTF → сущности с иерархией,
   `loadModel` возвращает корневую сущность; JS-API сцены.
-- **E5 — PBR**: эталонный шейдер, материалы, свет, IBL; затем вьювер из
-  cgtools. Свои компоненты из JS — по необходимости.
+- **E5 — PBR**, по шагам:
+  - **E5a** — шейдер Cook-Torrance с вариантами под примитив и материал,
+    полные материалы glTF, сущности-источники света, тонмаппинг, прозрачные
+    draw'ы от дальних к ближним;
+  - **E5b** — IBL: HDR-окружение → irradiance, prefiltered cubemap, BRDF LUT;
+    фон;
+  - **E5c** — расширения для ювелирки: transmission, ior, volume, specular,
+    clearcoat (камни, металлы);
+  - **E5d** — вьювер из cgtools.
+  Свои компоненты из JS — по необходимости.
 
 **E1 — сделан.** `World`, `Entity` (typed_handle поверх `Handle`), `Storage<T>`
 (разреженное множество: `sparse` / `entities` / `data` / `changed` + журнал
@@ -230,3 +238,37 @@ ctx.render(pass);
 - Тесты в браузере (`tests/model.rs`): модель из data-URL, имена, иерархия,
   сдвиг узла/корня, наследуемая видимость, освобождение ресурсов.
   Пример `examples/js-scene`: модель glTF на поворотном столе из чистого JS.
+
+**E5a — сделан.** PBR-ядро.
+
+- `rswebgl-gltf`: у примитива — флаги атрибутов (`ATTR_*`: NORMAL, UV0,
+  TANGENT, COLOR_0, UV1; TEXCOORD_1 теперь на location 5); у материала —
+  все пять карт с их наборами UV и семплерами, `normalTexture.scale`,
+  `occlusionTexture.strength`, `KHR_materials_emissive_strength`,
+  `KHR_materials_unlit`. Группа материала несёт всё это (имена — в
+  документации `Model`).
+- `rswebgl-scene/shaders/pbr.{vert,frag}` — BRDF из приложения B спецификации
+  glTF (GGX, height-correlated Smith, Schlick, Lambert), пунктуальные
+  источники в единицах `KHR_lights_punctual`, постоянный ambient с
+  аналитическим env-BRDF (до IBL), эмиссия, альфа-режимы, экспозиция,
+  тонмаппер Khronos PBR Neutral, sRGB. Без касательных нормальная карта
+  берёт базис из производных.
+- `PbrShaders`: вариант на `PbrKey` (атрибуты × карты × UV1 × альфа ×
+  unlit), компиляция при первом использовании. `spawn_model` принимает
+  выбор программы на примитив; `Scene.addModel(model)` — встроенный PBR,
+  `addModelWithProgram` — свой шейдер.
+- `Light` (directional / point / spot) — компонент: светит вдоль −Z
+  сущности из её позиции. `SceneRenderer` пишет до 8 источников, ambient и
+  экспозицию в блок `Lighting` (рядом с `Frame` в слоте 0) — только когда
+  что-то изменилось. Скрытые (`Visible(false)`) источники не светят.
+- `MeshRenderer.transparent`: такие draw'ы идут после непрозрачных,
+  от дальних к ближним (ключ `KEY_LAST` + расстояние до центра bounds).
+  Для glTF — по `alphaMode: BLEND`.
+- JS: `setDirectionalLight` / `setPointLight` / `setSpotLight` /
+  `removeLight`, `setAmbient`, `setExposure`, `setTransparent`,
+  `shaderVariantCount`.
+- Тесты в браузере (`tests/pbr.rs`): все признаки компилируются и линкуются
+  (по одному, все сразу, карты на UV1); направленный и точечный свет,
+  дальность, цвет, unlit, эмиссия, экспозиция; порядок прозрачных.
+  Пример `examples/js-scene` — DamagedHelmet со всеми картами и тремя
+  источниками.
