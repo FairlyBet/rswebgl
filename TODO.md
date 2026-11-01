@@ -202,3 +202,14 @@ FBO blit). Done. Deferred polish:
   u8/u16 (`KHR_mesh_quantization`) would cut memory on mobile.
 - Not handled yet: skins, morph targets, animations, cameras, lights — scene
   concerns, for the ECS.
+
+## Scene (`packages/rswebgl-scene`)
+
+- World-space AABBs are recomputed for culling every frame; cache them per
+  `WorldMatrix` change if culling shows up in profiles (thousands of objects).
+- Transparency: a `MeshRenderer` flag → `KEY_LAST` + back-to-front depth in
+  the sort key (needed for the jewelry viewer's gems, with E5 materials).
+- `Visible(false)` isn't inherited; a hidden subtree needs every node hidden.
+- Many copies of one mesh → one instanced draw instead of a draw per entity.
+- The frame block must be declared with all four members (std140 size has to
+  match); consider reflecting the block and binding a range instead.

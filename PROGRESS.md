@@ -185,7 +185,7 @@ handles get adopted in stage 2.
 
 ## ECS and scene (`packages/rswebgl-ecs`, `packages/rswebgl-scene`)
 
-Design: `docs/design/ecs.md`. Host tests, no browser needed.
+Design: `docs/design/ecs.md`. ECS and hierarchy: host tests; `SceneRenderer`: browser tests. Example: `examples/scene`.
 
 | Entity                                   | Status | File                         |
 |------------------------------------------|--------|------------------------------|
@@ -193,5 +193,6 @@ Design: `docs/design/ecs.md`. Host tests, no browser needed.
 | Sparse-set storage, change ticks, removal log | ✅ | `rswebgl-ecs/src/storage.rs` |
 | Transform, Parent, WorldMatrix           | ✅     | `rswebgl-scene/src/transform.rs` |
 | Hierarchy: cached order, dirty subtrees, `set_parent`, `despawn_recursive` | ✅ | `rswebgl-scene/src/hierarchy.rs` |
-| Scene rendering (E3)                     | ⬜     |                              |
+| Camera, Bounds, frustum culling          | ✅     | `rswebgl-scene/src/{camera,culling}.rs` |
+| SceneRenderer: frame UBO, object groups, Pass assembly (E3) | ✅ | `rswebgl-scene/src/render.rs` |
 | glTF into the scene, JS facade (E4)      | ⬜     |                              |

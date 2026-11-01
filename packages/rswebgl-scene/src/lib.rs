@@ -5,6 +5,9 @@
 //! - [`Parent`]: makes the entity's transform relative to another entity's.
 //! - [`WorldMatrix`]: the resulting world matrix, written by
 //!   [`TransformSystem`] — never by hand.
+//! - [`Camera`], [`Bounds`], [`MeshRenderer`], [`Visible`]: what
+//!   [`SceneRenderer`] needs to cull the scene and push its draws into a
+//!   `Pass`.
 //!
 //! ```
 //! use glam::Vec3;
@@ -25,8 +28,17 @@
 //! world.clear_trackers();
 //! ```
 
+mod camera;
+mod culling;
 mod hierarchy;
+mod render;
 mod transform;
 
+pub use camera::{Camera, Projection};
+pub use culling::{Bounds, Frustum};
 pub use hierarchy::{HierarchyError, TransformSystem, children, despawn_recursive, set_parent};
+pub use render::{
+    FRAME_BLOCK, FRAME_SLOT, MATERIAL_SLOT, MODEL_UNIFORM, MeshRenderer, NORMAL_MATRIX_UNIFORM,
+    OBJECT_SLOT, RenderStats, SceneRenderer, Visible,
+};
 pub use transform::{Parent, Transform, WorldMatrix};

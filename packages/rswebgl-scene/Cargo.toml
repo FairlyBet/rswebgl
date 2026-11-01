@@ -2,8 +2,16 @@
 name = "rswebgl-scene"
 version = "0.1.0"
 edition = "2024"
-description = "Scene components and systems for rswebgl on top of rswebgl-ecs: transforms, hierarchy"
+description = "Scene components and systems for rswebgl on top of rswebgl-ecs: transforms, hierarchy, culling, draw-list assembly"
 
 [dependencies]
+rswebgl = { workspace = true }
 rswebgl-ecs = { path = "../rswebgl-ecs" }
 glam = { workspace = true }
+
+# Host tests: `cargo test -p rswebgl-scene`.
+# Browser tests: `wasm-pack test --headless --chrome packages/rswebgl-scene`.
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+wasm-bindgen = { workspace = true }
+web-sys = { workspace = true, features = ["Document", "HtmlCanvasElement", "WebGl2RenderingContext"] }

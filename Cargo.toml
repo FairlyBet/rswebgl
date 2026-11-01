@@ -9,6 +9,7 @@ members = [
     "examples/cubemap",
     "examples/texture",
     "examples/gltf",
+    "examples/scene",
 ]
 resolver = "3"
 
