@@ -641,18 +641,8 @@ impl Context {
     ) {
         self.with_texture(tex, "texture_sub_image_2d", |gl, t, _| {
             unpack.apply(gl);
-            if let Err(e) = gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(
-                t,
-                level,
-                x,
-                y,
-                width,
-                height,
-                format.format,
-                format.data_type,
-                Some(data),
-            ) {
-                console::error(&format!("[rswebgl] texSubImage2D failed: {e:?}"));
+            if let Err(e) = sub_image_2d(gl, t, level, x, y, width, height, format, data) {
+                console::error(&format!("[rswebgl] texSubImage2D failed: {e}"));
             }
             PixelUnpack::reset(gl);
         });
@@ -708,20 +698,41 @@ impl Context {
     ) {
         self.with_texture(tex, "texture_sub_image_3d", |gl, t, _| {
             unpack.apply(gl);
-            if let Err(e) = gl.tex_sub_image_3d_with_opt_u8_array(
-                t,
-                level,
-                x,
-                y,
-                z,
-                width,
-                height,
-                depth,
-                format.format,
-                format.data_type,
-                Some(data),
-            ) {
-                console::error(&format!("[rswebgl] texSubImage3D failed: {e:?}"));
+            let result = if format.data_type == UNSIGNED_BYTE {
+                gl.tex_sub_image_3d_with_opt_u8_array(
+                    t,
+                    level,
+                    x,
+                    y,
+                    z,
+                    width,
+                    height,
+                    depth,
+                    format.format,
+                    format.data_type,
+                    Some(data),
+                )
+                .map_err(|e| format!("{e:?}"))
+            } else {
+                pixel_view(data, format.data_type).and_then(|view| {
+                    gl.tex_sub_image_3d_with_opt_array_buffer_view(
+                        t,
+                        level,
+                        x,
+                        y,
+                        z,
+                        width,
+                        height,
+                        depth,
+                        format.format,
+                        format.data_type,
+                        Some(&view),
+                    )
+                    .map_err(|e| format!("{e:?}"))
+                })
+            };
+            if let Err(e) = result {
+                console::error(&format!("[rswebgl] texSubImage3D failed: {e}"));
             }
             PixelUnpack::reset(gl);
         });
@@ -743,18 +754,9 @@ impl Context {
         data: &[u8],
     ) {
         self.with_texture(tex, "texture_sub_image_cube_face", |gl, _, _| {
-            if let Err(e) = gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(
-                face.as_gl(),
-                level,
-                x,
-                y,
-                width,
-                height,
-                format.format,
-                format.data_type,
-                Some(data),
-            ) {
-                console::error(&format!("[rswebgl] texSubImage2D cube face failed: {e:?}"));
+            let target = face.as_gl();
+            if let Err(e) = sub_image_2d(gl, target, level, x, y, width, height, format, data) {
+                console::error(&format!("[rswebgl] texSubImage2D cube face failed: {e}"));
             }
         });
     }
@@ -1307,4 +1309,86 @@ impl Context {
         *slot.borrow_mut() = Some(cb);
         img.set_src(src);
     }
+}
+
+const UNSIGNED_BYTE: u32 = 0x1401;
+
+// texSubImage2D from raw bytes. WebGL wants the typed array that matches the
+// pixel type (a Uint8Array only for UNSIGNED_BYTE: HALF_FLOAT needs a
+// Uint16Array, FLOAT a Float32Array, …), so other types go through a typed
+// copy of the bytes.
+#[allow(clippy::too_many_arguments)]
+fn sub_image_2d(
+    gl: &WebGl2RenderingContext,
+    target: u32,
+    level: i32,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    format: &TextureFormat,
+    data: &[u8],
+) -> Result<(), String> {
+    if format.data_type == UNSIGNED_BYTE {
+        return gl
+            .tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(
+                target,
+                level,
+                x,
+                y,
+                width,
+                height,
+                format.format,
+                format.data_type,
+                Some(data),
+            )
+            .map_err(|e| format!("{e:?}"));
+    }
+    let view = pixel_view(data, format.data_type)?;
+    gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_array_buffer_view(
+        target,
+        level,
+        x,
+        y,
+        width,
+        height,
+        format.format,
+        format.data_type,
+        Some(&view),
+    )
+    .map_err(|e| format!("{e:?}"))
+}
+
+// The bytes as the typed array a pixel `data_type` calls for (a copy in JS
+// memory; the bytes are little-endian, as wasm and every WebGL platform are).
+fn pixel_view(data: &[u8], data_type: u32) -> Result<js_sys::Object, String> {
+    let element = match data_type {
+        0x1400 | 0x1401 => 1,                                     // (UNSIGNED_)BYTE
+        0x1402 | 0x1403 | 0x140B | 0x8363 | 0x8033 | 0x8034 => 2, // shorts, HALF_FLOAT, 565/4444/5551
+        0x1404 | 0x1405 | 0x1406 | 0x84FA | 0x8368 | 0x8C3B | 0x8C3E => 4, // ints, FLOAT, packed 32-bit
+        other => {
+            return Err(format!(
+                "pixel type {other:#x} can't be uploaded from bytes"
+            ));
+        }
+    };
+    if !data.len().is_multiple_of(element) {
+        return Err(format!(
+            "{} bytes isn't a whole number of {element}-byte texel components",
+            data.len()
+        ));
+    }
+    let buffer = js_sys::Uint8Array::from(data).buffer();
+    let len = (data.len() / element) as u32;
+    Ok(match data_type {
+        0x1400 => js_sys::Int8Array::new(&buffer).into(),
+        0x1401 => js_sys::Uint8Array::new(&buffer).into(),
+        0x1402 => js_sys::Int16Array::new_with_byte_offset_and_length(&buffer, 0, len).into(),
+        0x1404 => js_sys::Int32Array::new_with_byte_offset_and_length(&buffer, 0, len).into(),
+        0x1406 => js_sys::Float32Array::new_with_byte_offset_and_length(&buffer, 0, len).into(),
+        _ if element == 2 => {
+            js_sys::Uint16Array::new_with_byte_offset_and_length(&buffer, 0, len).into()
+        }
+        _ => js_sys::Uint32Array::new_with_byte_offset_and_length(&buffer, 0, len).into(),
+    })
 }

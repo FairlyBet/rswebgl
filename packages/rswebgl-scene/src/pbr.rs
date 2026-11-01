@@ -14,6 +14,7 @@ use rswebgl_gltf::{
 
 const VERT: &str = include_str!("../shaders/pbr.vert");
 const FRAG: &str = include_str!("../shaders/pbr.frag");
+pub(crate) const TONEMAP: &str = include_str!("../shaders/tonemap.glsl");
 
 // Key layout: bits 0..5 the primitive's ATTR_* bits; 5..10 which maps the
 // material has (`MAPS` order); 10..15 which of them read TEXCOORD_1; 15..17
@@ -117,7 +118,10 @@ impl PbrKey {
     /// Vertex and fragment source of this variant.
     pub fn sources(&self) -> (String, String) {
         let head = format!("#version 300 es\n{}", self.defines());
-        (format!("{head}{VERT}"), format!("{head}{FRAG}"))
+        (
+            format!("{head}{VERT}"),
+            format!("{head}precision highp float;\n{TONEMAP}{FRAG}"),
+        )
     }
 }
 

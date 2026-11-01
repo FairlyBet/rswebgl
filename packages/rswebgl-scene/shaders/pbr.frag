@@ -1,8 +1,9 @@
 // glTF 2.0 metallic-roughness — fragment stage: the BRDF of the glTF spec
 // (appendix B: GGX distribution, height-correlated Smith visibility, Schlick
 // Fresnel, Lambert diffuse), punctual lights (KHR_lights_punctual units),
-// a uniform ambient light, emissive, alpha modes, then exposure, the Khronos
-// PBR Neutral tone mapper and sRGB encoding for the canvas.
+// image-based light from the scene's environment (split sum), emissive,
+// alpha modes, then exposure and the display transform (`tonemap.glsl`,
+// prepended by `PbrShaders`).
 //
 // Defines (`PbrShaders` adds the ones that apply):
 //   geometry   HAS_NORMAL HAS_UV0 HAS_TANGENT HAS_COLOR HAS_UV1
@@ -13,6 +14,10 @@
 //   shading    MATERIAL_UNLIT (KHR_materials_unlit)
 
 precision highp float;
+// Samplers default to lowp in fragment shaders, which can clip HDR values on
+// mobile GPUs.
+precision highp sampler2D;
+precision highp samplerCube;
 
 in vec3 v_world;
 in vec2 v_uv0;
@@ -44,9 +49,16 @@ struct Light {
 };
 layout(std140) uniform Lighting {
     Light u_lights[MAX_LIGHTS];
-    vec4 u_ambient;  // rgb ambient radiance
-    vec4 u_lighting; // x light count, y exposure
+    vec4 u_environment; // rgb intensity of the environment light
+    vec4 u_lighting;    // x light count, y exposure, z environment rotation,
+                        // w last mip of the specular cube
 };
+
+// Environment: the scene's cube maps (diffuse stores E/π) and the split-sum
+// BRDF table (R scale, G bias by n·v and roughness).
+uniform samplerCube u_env_diffuse;
+uniform samplerCube u_env_specular;
+uniform sampler2D u_env_brdf;
 
 // Material: the loader's material group (rswebgl-gltf).
 uniform vec4 u_base_color_factor;
@@ -76,27 +88,6 @@ uniform sampler2D u_emissive_tex;
 out vec4 frag_color;
 
 const float PI = 3.14159265359;
-
-vec3 to_srgb(vec3 c) {
-    c = clamp(c, 0.0, 1.0);
-    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
-}
-
-// Khronos PBR Neutral tone mapper.
-vec3 tone_map(vec3 color) {
-    const float start = 0.8 - 0.04;
-    const float desaturation = 0.15;
-    float x = min(color.r, min(color.g, color.b));
-    float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
-    color -= offset;
-    float peak = max(color.r, max(color.g, color.b));
-    if (peak < start) return color;
-    const float d = 1.0 - start;
-    float new_peak = 1.0 - d * d / (peak + d - start);
-    color *= new_peak / peak;
-    float g = 1.0 - 1.0 / (desaturation * (peak - new_peak) + 1.0);
-    return mix(color, vec3(new_peak), g);
-}
 
 vec4 base_color() {
     vec4 c = u_base_color_factor;
@@ -181,17 +172,6 @@ float attenuation(Light light, vec3 to_light) {
     return att;
 }
 
-// Split-sum environment BRDF, analytic fit (Karis, mobile): stands in for a
-// BRDF lookup table until image-based lighting arrives.
-vec3 env_brdf(vec3 f0, float roughness, float n_v) {
-    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
-    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
-    vec4 r = roughness * c0 + c1;
-    float a004 = min(r.x * r.x, exp2(-9.28 * n_v)) * r.x + r.y;
-    vec2 ab = vec2(-1.04, 1.04) * a004 + r.zw;
-    return f0 * ab.x + ab.y;
-}
-
 void main() {
     vec4 base = base_color();
 #ifdef ALPHAMODE_MASK
@@ -248,7 +228,14 @@ void main() {
 #ifdef HAS_OCCLUSION_MAP
     ao = 1.0 + u_occlusion_strength * (texture(u_occlusion_tex, OCCLUSION_UV).r - 1.0);
 #endif
-    color += u_ambient.rgb * (c_diff + env_brdf(f0, roughness, n_v)) * ao;
+    // Image-based light (split sum): irradiance for diffuse, the specular
+    // cube at the mip of this roughness for specular.
+    vec3 r = reflect(-v, n);
+    vec2 brdf = texture(u_env_brdf, vec2(n_v, roughness)).rg;
+    vec3 env_diffuse = texture(u_env_diffuse, env_dir(n, u_lighting.z)).rgb * c_diff;
+    vec3 env_specular = textureLod(u_env_specular, env_dir(r, u_lighting.z),
+                                   roughness * u_lighting.w).rgb * (f0 * brdf.x + brdf.y);
+    color += u_environment.rgb * (env_diffuse + env_specular) * ao;
 
     vec3 emissive = u_emissive_factor * u_emissive_strength;
 #ifdef HAS_EMISSIVE_MAP

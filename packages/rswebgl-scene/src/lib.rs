@@ -28,8 +28,11 @@
 //! world.clear_trackers();
 //! ```
 
+mod brdf_lut;
 mod camera;
 mod culling;
+mod environment;
+mod hdr;
 mod hierarchy;
 mod js;
 mod light;
@@ -40,6 +43,8 @@ mod transform;
 
 pub use camera::{Camera, Projection};
 pub use culling::{Bounds, Frustum};
+pub use environment::Environment;
+pub use hdr::{HdrImage, decode_hdr, encode_hdr};
 pub use hierarchy::{HierarchyError, TransformSystem, children, despawn_recursive, set_parent};
 pub use js::Scene;
 pub use light::{Light, LightKind};

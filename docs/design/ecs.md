@@ -1,6 +1,6 @@
 # ECS и сцена
 
-Статус: E1 сделан (`packages/rswebgl-ecs`), E2–E4 и E5a сделаны (`packages/rswebgl-scene`).
+Статус: E1 сделан (`packages/rswebgl-ecs`), E2–E4, E5a и E5b сделаны (`packages/rswebgl-scene`).
 
 Продолжение §7 `architecture.md`: что там оставлено «для ECS-документа»,
 решается здесь.
@@ -272,3 +272,40 @@ ctx.render(pass);
   дальность, цвет, unlit, эмиссия, экспозиция; порядок прозрачных.
   Пример `examples/js-scene` — DamagedHelmet со всеми картами и тремя
   источниками.
+
+**E5b — сделан.** Освещение окружением (IBL).
+
+- `decode_hdr` — Radiance `.hdr` (RGBE: новый и старый RLE, плоские
+  строки); ошибки — `Err`, не паника. `encode_hdr` — для тестов и утилит.
+- `Environment::from_equirect(ctx, &image, size)` — запекание на GPU в
+  RGBA16F: equirect (с мипами) → исходный куб (с мипами) → specular-куб
+  (6 мипов = шероховатость 0…1, GGX importance sampling с выбором мипа по
+  телесному углу семпла) и diffuse-куб 32² (косинусная свёртка, хранит
+  E/π). Промежуточные текстуры, программы и framebuffer удаляются сразу.
+  Без рендера в half-float (`EXT_color_buffer_half_float`) — `Err`.
+- BRDF LUT (split sum, 32², 256 семплов) считается на CPU при создании
+  `SceneRenderer` — без лишней программы на старте.
+- Окружение по умолчанию — белый куб 1×1: при интенсивности 0.2 это тот же
+  плоский ambient, что был в E5a, но через тот же путь шейдера, что и
+  HDR-окружение. Блок `Lighting`: `u_environment` (интенсивность) вместо
+  `u_ambient`; в `u_lighting` — поворот окружения и последний мип.
+- Фон: полноэкранный треугольник из specular-куба с размытием 0…1, первым
+  в пассе, без записи глубины; тот же тонмаппинг. Тонмаппинг и поворот —
+  общий кусок `shaders/tonemap.glsl`.
+- В шейдерах, читающих HDR, сэмплеры объявлены `highp`: по умолчанию в
+  фрагментном шейдере ES 3.00 они `lowp` и на мобильных GPU обрезают HDR.
+- JS: `setEnvironmentHdr(bytes, size)` (сбрасывает интенсивность в 1),
+  `clearEnvironment`, `hasEnvironment`, `setEnvironmentIntensity` (вместо
+  `setAmbient`), `setEnvironmentRotation`, `setBackground(blur)`,
+  `clearBackground`.
+- **Исправление в рендерере:** `texture_sub_image_*` передавал байты как
+  `Uint8Array` для любого типа — WebGL отвечает INVALID_OPERATION на всё,
+  кроме `UNSIGNED_BYTE`. Теперь `HALF_FLOAT` / `FLOAT` / упакованные и
+  целые типы идут через типизированный вид нужного размера (тест в
+  `float_targets.rs`).
+- Тесты: на хосте — HDR (RLE, ошибки) и LUT (энергия, Френель); в
+  браузере — направления после запекания (через фон), поворот, и
+  однородное HDR-окружение освещает так же, как встроенное постоянное
+  (нормировка irradiance и prefilter; шероховатый металл ловит
+  ненормированный prefilter). Пример `examples/js-scene` — шлем в
+  окружении Venice sunset.

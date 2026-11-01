@@ -215,5 +215,10 @@ FBO blit). Done. Deferred polish:
   zero-copy views over component storage when a viewer needs bulk reads.
 - PBR (E5a): lights are capped at 8 per frame (all lights reach every draw;
   no per-object light lists); spot lights untested by pixels; no shadows.
-  The ambient term is a constant until IBL (E5b). `KHR_lights_punctual`
-  lights in a glTF file aren't spawned yet.
+  `KHR_lights_punctual` lights in a glTF file aren't spawned yet.
+- IBL (E5b): the bake is synchronous (a few dozen draws at load: a stall of
+  a frame or two on mobile); no progressive / async bake. `.hdr` only — no
+  EXR, no KTX2 prebaked cubes. One environment per scene. The specular cube
+  is also the background, so a sharp background is only as sharp as its
+  `size`. A device without half-float render targets gets an error, no
+  fallback (e.g. RGBM in RGBA8).

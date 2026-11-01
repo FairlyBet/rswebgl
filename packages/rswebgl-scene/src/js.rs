@@ -37,6 +37,8 @@ use wasm_bindgen::prelude::*;
 
 use crate::camera::Camera;
 use crate::culling::Bounds;
+use crate::environment::Environment;
+use crate::hdr::decode_hdr;
 use crate::hierarchy::{TransformSystem, despawn_recursive, set_parent};
 use crate::light::Light;
 use crate::model::{Name, find_by_name, spawn_model};
@@ -450,11 +452,54 @@ impl Scene {
         self.world.remove::<Light>(e);
     }
 
-    /// Light from all around (linear RGB radiance), until image-based
-    /// lighting. Default 0.2 gray.
-    #[wasm_bindgen(js_name = setAmbient)]
-    pub fn set_ambient(&mut self, r: f32, g: f32, b: f32) {
-        self.renderer.set_ambient(Vec3::new(r, g, b));
+    /// Scales the environment's light (linear RGB). Without an environment
+    /// (the default white one) it's a flat ambient light: default 0.2.
+    /// `setEnvironmentHdr` resets it to 1.
+    #[wasm_bindgen(js_name = setEnvironmentIntensity)]
+    pub fn set_environment_intensity(&mut self, r: f32, g: f32, b: f32) {
+        self.renderer.set_environment_intensity(Vec3::new(r, g, b));
+    }
+
+    /// Lights the scene with an HDR environment: the bytes of a Radiance
+    /// `.hdr` equirectangular image (fetch it yourself). Baked on the GPU into
+    /// cube maps `size` texels per face (256 is a good default). Replaces the
+    /// previous environment; throws if the file can't be read or the device
+    /// can't render to half-float textures.
+    #[wasm_bindgen(js_name = setEnvironmentHdr)]
+    pub fn set_environment_hdr(&mut self, bytes: &[u8], size: u32) -> Result<(), Error> {
+        let image = decode_hdr(bytes)?;
+        let env = Environment::from_equirect(&self.ctx, &image, size)?;
+        self.renderer.set_environment(&self.ctx, env);
+        Ok(())
+    }
+
+    /// Back to the default: a flat white ambient light at intensity 0.2.
+    #[wasm_bindgen(js_name = clearEnvironment)]
+    pub fn clear_environment(&mut self) {
+        self.renderer.clear_environment(&self.ctx);
+    }
+
+    #[wasm_bindgen(js_name = hasEnvironment)]
+    pub fn has_environment(&self) -> bool {
+        self.renderer.has_environment()
+    }
+
+    /// Turns the environment (light and background) about +Y, in radians.
+    #[wasm_bindgen(js_name = setEnvironmentRotation)]
+    pub fn set_environment_rotation(&mut self, radians: f32) {
+        self.renderer.set_environment_rotation(radians);
+    }
+
+    /// Shows the environment behind the scene, `blur` 0 (sharp) … 1.
+    #[wasm_bindgen(js_name = setBackground)]
+    pub fn set_background(&mut self, blur: f32) {
+        self.renderer.set_background(Some(blur));
+    }
+
+    /// No background: the pass's clear color shows.
+    #[wasm_bindgen(js_name = clearBackground)]
+    pub fn clear_background(&mut self) {
+        self.renderer.set_background(None);
     }
 
     /// Scales radiance before tone mapping. Default 1.

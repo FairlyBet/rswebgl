@@ -8,19 +8,22 @@ use glam::{Mat3, Mat4, Vec3, Vec4};
 use rswebgl::buffer::BufferUsage;
 use rswebgl::console;
 use rswebgl::context::Context;
-use rswebgl::draw::DrawCommand;
+use rswebgl::draw::{DrawCommand, DrawMode};
 use rswebgl::error::Error;
 use rswebgl::ids::{
-    ParamGroupId, ParamLayoutId, ProgramId, StateId, UniformBufferId, VertexArrayId,
+    ParamGroupId, ParamLayoutId, ProgramId, StateId, TextureId, UniformBufferId, VertexArrayId,
 };
 use rswebgl::param::{GROUP_SLOTS, ParamField, ParamLayoutBuilder};
 use rswebgl::pass::{KEY_LAST, Pass};
+use rswebgl::render_state::RenderState;
 use rswebgl::uniform_buffer::{UboLayout, UniformType};
 use rswebgl_ecs::{Entity, Tick, World};
 
 use crate::camera::Camera;
 use crate::culling::{Bounds, Frustum};
+use crate::environment::{Environment, FULLSCREEN_VERT, brdf_lut_texture};
 use crate::light::Light;
+use crate::pbr::TONEMAP;
 use crate::transform::{Parent, WorldMatrix};
 
 /// Name of the per-frame uniform block. Shaders declare it as
@@ -53,16 +56,25 @@ pub const NORMAL_MATRIX_UNIFORM: &str = "u_normal_matrix";
 /// };
 /// layout(std140) uniform Lighting {
 ///     Light u_lights[8];  // MAX_LIGHTS
-///     vec4 u_ambient;     // rgb ambient radiance
-///     vec4 u_lighting;    // x light count, y exposure
+///     vec4 u_environment; // rgb intensity of the environment light
+///     vec4 u_lighting;    // x light count, y exposure, z environment
+///                         // rotation (radians about +Y), w last specular mip
+/// };
+/// uniform samplerCube u_env_diffuse;  // irradiance / π
+/// uniform samplerCube u_env_specular; // prefiltered: mip = roughness × w
+/// uniform sampler2D u_env_brdf;       // split-sum (scale, bias) by (n·v, roughness)
+/// uniform float u_background_blur;    // the background's mip, 0..1 of w
 /// };
 /// ```
 pub const LIGHTING_BLOCK: &str = "Lighting";
 /// Lights the lighting block holds; more are left out (reported once).
 pub const MAX_LIGHTS: usize = 8;
 
-// Ambient radiance until the app sets one: enough to see an unlit scene.
-const DEFAULT_AMBIENT: f32 = 0.2;
+// Intensity of the default (white, constant) environment: a dim ambient light,
+// enough to see a scene with no lights.
+const DEFAULT_ENV_INTENSITY: f32 = 0.2;
+
+const SKYBOX_FRAG: &str = include_str!("../shaders/skybox.frag");
 
 /// Group slots the scene fills: 0 frame, 1 material, 2 object.
 pub const FRAME_SLOT: usize = 0;
@@ -135,8 +147,21 @@ pub struct SceneRenderer {
     lighting_ubo: UniformBufferId,
     // What the lighting block holds, to write it only when it changes.
     lighting: Vec<Vec4>,
-    ambient: Vec3,
+    env_intensity: Vec3,
     exposure: f32,
+    // The white constant environment, used while no other is set.
+    default_env: Environment,
+    env: Option<Environment>,
+    env_rotation: f32,
+    brdf_lut: TextureId,
+    f_env_diffuse: ParamField,
+    f_env_specular: ParamField,
+    f_background_blur: ParamField,
+    // Some(blur): draw the environment behind everything.
+    background: Option<f32>,
+    // Built on first use; None until then (Err once it failed).
+    skybox: Option<Result<ProgramId, ()>>,
+    skybox_state: StateId,
     frame_layout: ParamLayoutId,
     frame_group: ParamGroupId,
     object_layout: ParamLayoutId,
@@ -164,14 +189,18 @@ impl SceneRenderer {
         let lighting_ubo = ctx.create_uniform_buffer(
             &UboLayout::new()
                 .struct_array("u_lights", &light, MAX_LIGHTS as u32)
-                .field("u_ambient", UniformType::Vec4)
+                .field("u_environment", UniformType::Vec4)
                 .field("u_lighting", UniformType::Vec4),
             BufferUsage::DynamicDraw,
         )?;
         let frame_layout = ctx.create_param_layout(
             &ParamLayoutBuilder::new()
                 .block(FRAME_BLOCK)
-                .block(LIGHTING_BLOCK),
+                .block(LIGHTING_BLOCK)
+                .texture("u_env_diffuse")
+                .texture("u_env_specular")
+                .texture("u_env_brdf")
+                .uniform("u_background_blur", UniformType::F32),
         )?;
         let frame_group = ctx.create_param_group(frame_layout)?;
         ctx.param_set_block_by_name(frame_group, FRAME_BLOCK, frame_ubo);
@@ -181,12 +210,26 @@ impl SceneRenderer {
                 .uniform(MODEL_UNIFORM, UniformType::Mat4)
                 .uniform(NORMAL_MATRIX_UNIFORM, UniformType::Mat3),
         )?;
-        Ok(Self {
+        let brdf_lut = brdf_lut_texture(ctx)?;
+        ctx.param_set_texture_by_name(frame_group, "u_env_brdf", brdf_lut);
+        let mut skybox_state = RenderState::new();
+        skybox_state.depth_mask = false;
+        let renderer = Self {
             frame_ubo,
             lighting_ubo,
             lighting: Vec::new(),
-            ambient: Vec3::splat(DEFAULT_AMBIENT),
+            env_intensity: Vec3::splat(DEFAULT_ENV_INTENSITY),
             exposure: 1.0,
+            default_env: Environment::constant(ctx, Vec3::ONE)?,
+            env: None,
+            env_rotation: 0.0,
+            brdf_lut,
+            f_env_diffuse: ctx.param_field(frame_layout, "u_env_diffuse")?,
+            f_env_specular: ctx.param_field(frame_layout, "u_env_specular")?,
+            f_background_blur: ctx.param_field(frame_layout, "u_background_blur")?,
+            background: None,
+            skybox: None,
+            skybox_state: ctx.render_state(&skybox_state),
             frame_layout,
             frame_group,
             object_layout,
@@ -194,7 +237,9 @@ impl SceneRenderer {
             f_normal: ctx.param_field(object_layout, NORMAL_MATRIX_UNIFORM)?,
             objects: HashMap::new(),
             stats: RenderStats::default(),
-        })
+        };
+        renderer.bind_environment(ctx);
+        Ok(renderer)
     }
 
     /// The uniform buffer behind the frame block — e.g. to bind it into other
@@ -217,14 +262,94 @@ impl SceneRenderer {
         self.stats
     }
 
-    /// Light reaching every surface from all around (linear RGB radiance),
-    /// until image-based lighting. Default: a dim gray.
-    pub fn set_ambient(&mut self, rgb: Vec3) {
-        self.ambient = rgb;
+    /// Scales the environment's light (linear RGB). With the default white
+    /// environment this is a flat ambient light; default 0.2.
+    pub fn set_environment_intensity(&mut self, rgb: Vec3) {
+        self.env_intensity = rgb;
     }
 
-    pub fn ambient(&self) -> Vec3 {
-        self.ambient
+    pub fn environment_intensity(&self) -> Vec3 {
+        self.env_intensity
+    }
+
+    /// Lights the scene with `env` (and shows it as the background if that's
+    /// on), taking it over; the previous one is destroyed. Resets the
+    /// intensity to 1.
+    pub fn set_environment(&mut self, ctx: &Context, env: Environment) {
+        if let Some(old) = self.env.replace(env) {
+            old.destroy(ctx);
+        }
+        self.env_intensity = Vec3::ONE;
+        self.bind_environment(ctx);
+    }
+
+    /// Back to the default white environment at intensity 0.2.
+    pub fn clear_environment(&mut self, ctx: &Context) {
+        if let Some(old) = self.env.take() {
+            old.destroy(ctx);
+        }
+        self.env_intensity = Vec3::splat(DEFAULT_ENV_INTENSITY);
+        self.bind_environment(ctx);
+    }
+
+    pub fn has_environment(&self) -> bool {
+        self.env.is_some()
+    }
+
+    /// Turns the environment about +Y (radians).
+    pub fn set_environment_rotation(&mut self, radians: f32) {
+        self.env_rotation = radians;
+    }
+
+    /// Draws the environment behind the scene, `blur` 0 (sharp) … 1 (the
+    /// roughest prefiltered level); None turns it off (the pass's clear
+    /// color shows).
+    pub fn set_background(&mut self, blur: Option<f32>) {
+        self.background = blur.map(|b| b.clamp(0.0, 1.0));
+    }
+
+    fn environment(&self) -> &Environment {
+        self.env.as_ref().unwrap_or(&self.default_env)
+    }
+
+    fn bind_environment(&self, ctx: &Context) {
+        let env = self.environment();
+        ctx.param_set_texture(self.frame_group, self.f_env_diffuse, env.diffuse());
+        ctx.param_set_texture(self.frame_group, self.f_env_specular, env.specular());
+    }
+
+    // The background draw: first in the pass (key 0, pushed before any
+    // mesh), not writing depth.
+    fn push_background(&mut self, ctx: &Context, pass: &mut Pass) {
+        let Some(blur) = self.background else {
+            return;
+        };
+        let program = *self.skybox.get_or_insert_with(|| {
+            let head = "#version 300 es\nprecision highp float;\n";
+            ctx.create_program(
+                &format!("{head}{FULLSCREEN_VERT}"),
+                &format!("{head}{TONEMAP}{SKYBOX_FRAG}"),
+            )
+            .map_err(|e| {
+                console::error(&format!(
+                    "[rswebgl-scene] background shader failed to build: {e}"
+                ))
+            })
+        });
+        let Ok(program) = program else {
+            return;
+        };
+        ctx.param_set_f32(self.frame_group, self.f_background_blur, blur);
+        let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
+        groups[FRAME_SLOT] = self.frame_group;
+        pass.push_groups_with_key(
+            0,
+            program,
+            self.skybox_state,
+            VertexArrayId::NULL,
+            groups,
+            &DrawCommand::arrays(DrawMode::Triangles, 0, 3),
+        );
     }
 
     /// Scales scene radiance before tone mapping. Default 1.
@@ -253,6 +378,7 @@ impl SceneRenderer {
             return self.stats;
         };
         self.write_lighting(world, ctx);
+        self.push_background(ctx, pass);
         let frustum = Frustum::from_view_proj(&view_proj);
 
         let (Some(meshes), Some(worlds)) = (
@@ -351,9 +477,17 @@ impl SceneRenderer {
         ctx.destroy_param_layout(self.object_layout);
         ctx.destroy_uniform_buffer(self.frame_ubo);
         ctx.destroy_uniform_buffer(self.lighting_ubo);
+        ctx.destroy_texture(self.brdf_lut);
+        self.default_env.destroy(ctx);
+        if let Some(env) = self.env {
+            env.destroy(ctx);
+        }
+        if let Some(Ok(p)) = self.skybox {
+            ctx.destroy_program(p);
+        }
     }
 
-    // Lights, ambient and exposure into the lighting block, if anything in it
+    // Lights, environment intensity, exposure and rotation into the lighting block, if anything in it
     // changed since the last frame.
     fn write_lighting(&mut self, world: &World, ctx: &Context) {
         let mut data: Vec<Vec4> = Vec::with_capacity(MAX_LIGHTS * 4 + 2);
@@ -381,8 +515,14 @@ impl SceneRenderer {
                 count += 1;
             }
         }
-        data.push(self.ambient.extend(0.0));
-        data.push(Vec4::new(count as f32, self.exposure, 0.0, 0.0));
+        data.push(self.env_intensity.extend(0.0));
+        let last_mip = (self.environment().specular_mips() - 1) as f32;
+        data.push(Vec4::new(
+            count as f32,
+            self.exposure,
+            self.env_rotation,
+            last_mip,
+        ));
         if data == self.lighting {
             return;
         }
@@ -394,9 +534,9 @@ impl SceneRenderer {
                 ctx.ubo_set_vec4(ubo, &path, v.x, v.y, v.z, v.w);
             }
         }
-        let [ambient, params] = [data[count * 4], data[count * 4 + 1]];
-        ctx.ubo_set_vec4(ubo, "u_ambient", ambient.x, ambient.y, ambient.z, 0.0);
-        ctx.ubo_set_vec4(ubo, "u_lighting", params.x, params.y, 0.0, 0.0);
+        let [env, params] = [data[count * 4], data[count * 4 + 1]];
+        ctx.ubo_set_vec4(ubo, "u_environment", env.x, env.y, env.z, 0.0);
+        ctx.ubo_set_vec4(ubo, "u_lighting", params.x, params.y, params.z, params.w);
         self.lighting = data;
     }
 

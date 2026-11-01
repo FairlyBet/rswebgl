@@ -6,9 +6,12 @@ per frame does transforms, frustum culling and the draw list. The model's
 glTF nodes become entities you can find by name, move and hide.
 
 Default model: Khronos' DamagedHelmet (fetched from GitHub; all five PBR maps),
-shaded by the built-in glTF PBR with three directional lights; another one with
-`?model=<url>`. Keys: **V** hides / shows the model (through its root, so the
-whole subtree), **R** pauses the turntable, **+ / −** change the exposure.
+shaded by the built-in glTF PBR, lit by an HDR environment (three.js' Venice
+sunset, baked into cube maps on load and shown blurred behind it) plus a key
+light. Other assets: `?model=<url>` and `?env=<url.hdr>`.
+Keys: **V** hides / shows the model (through its root, so the
+whole subtree), **R** pauses the turntable, **+ / −** change the exposure, **B**
+toggles the background, **E** turns the environment.
 
 ```bash
 wasm-pack build packages/rswebgl-scene --target web --out-dir ../../examples/js-scene/pkg
