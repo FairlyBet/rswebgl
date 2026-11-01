@@ -35,6 +35,7 @@ pub mod copy;
 pub mod draw;
 pub mod error;
 pub mod extension;
+pub mod float_targets;
 pub mod framebuffer;
 pub mod ids;
 pub mod limits;

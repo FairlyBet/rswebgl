@@ -7,7 +7,6 @@ mod common;
 
 use wasm_bindgen_test::*;
 
-use rswebgl::extension::Extension;
 use rswebgl::framebuffer::ClearMask;
 use rswebgl::ids::{FramebufferId, ParamGroupId, ProgramId, StateId};
 use rswebgl::pass::Pass;
@@ -99,7 +98,10 @@ async fn async_read_is_a_snapshot_at_issue_time() {
 #[wasm_bindgen_test]
 async fn async_read_of_a_float_framebuffer() {
     let f = fixture();
-    if !f.ctx.enable_extension(Extension::ExtColorBufferFloat) {
+    if !f
+        .ctx
+        .can_render_to_renderbuffer(RenderbufferFormat::Rgba32f)
+    {
         return;
     }
     let fb = f.ctx.create_framebuffer(W, H).unwrap();

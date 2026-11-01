@@ -745,6 +745,15 @@ impl Context {
         let Some(f) = framebuffers.get_mut(fb.0) else {
             return stale("framebuffer", op, fb);
         };
+        // A float texture the device can't render to would leave the
+        // framebuffer silently incomplete: say why instead.
+        if let Some(Source::Texture(t)) = att.as_ref().map(ColorAttachment::source)
+            && let Some(p) = textures
+                .get(t.0)
+                .and_then(|o| self.float_target_problem(o.internal.get()))
+        {
+            return console::error(&format!("[rswebgl] {op}: {p}; ignored"));
+        }
         if let Some(a) = &att
             && !retain(a.source(), textures, renderbuffers, op)
         {

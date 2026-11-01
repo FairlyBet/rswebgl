@@ -386,23 +386,12 @@ impl Context {
         if self.is_extension_enabled(ext.clone()) {
             return true;
         }
-
-        let available = self
-            .core
-            .gl
-            .get_extension(ext.name())
-            .ok()
-            .flatten()
-            .is_some();
-
+        let name = ext.name();
+        let available = self.enable_extension_quietly(ext);
         if available {
-            console::log(&format!("[rswebgl] extension enabled: {}", ext.name()));
-            self.core.loss.extensions.borrow_mut().push(ext);
+            console::log(&format!("[rswebgl] extension enabled: {name}"));
         } else {
-            console::warn(&format!(
-                "[rswebgl] extension not available: {}",
-                ext.name()
-            ));
+            console::warn(&format!("[rswebgl] extension not available: {name}"));
         }
 
         available
@@ -415,6 +404,24 @@ impl Context {
 }
 
 impl Context {
+    // `enable_extension` without the console line; true if available.
+    pub(crate) fn enable_extension_quietly(&self, ext: Extension) -> bool {
+        if self.is_extension_enabled(ext.clone()) {
+            return true;
+        }
+        let available = self
+            .core
+            .gl
+            .get_extension(ext.name())
+            .ok()
+            .flatten()
+            .is_some();
+        if available {
+            self.core.loss.extensions.borrow_mut().push(ext);
+        }
+        available
+    }
+
     fn new(gl: WebGl2RenderingContext, default_fb: DefaultFramebuffer) -> Context {
         limits::init(&gl);
         let core = Rc::new(Core {
@@ -431,7 +438,9 @@ impl Context {
             state_stale: Cell::new(false),
         });
         context_loss::install(&core);
-        Context { core }
+        let ctx = Context { core };
+        ctx.enable_float_extensions();
+        ctx
     }
 
     /// Called when the context is lost. Every handle is dead from here on.

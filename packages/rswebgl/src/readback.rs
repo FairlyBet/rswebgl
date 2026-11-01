@@ -34,8 +34,7 @@ pub enum ReadFormat {
     /// RGBA, one byte per channel — normalized (RGBA8, sRGB8_ALPHA8) targets
     /// and the canvas.
     Rgba8,
-    /// RGBA as f32 — float targets (needs `ExtColorBufferFloat` to render to
-    /// them in the first place).
+    /// RGBA as f32 — float targets (see `Context::can_render_to`).
     RgbaF32,
     /// RGBA as i32 — signed integer targets.
     RgbaI32,

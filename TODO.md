@@ -39,19 +39,17 @@ just `getExtension`; the user has to remember what to enable and why. Only
 `COMPLETION_STATUS_KHR` in `is_ready`). These deserve the same first-class
 treatment instead of "enable it yourself":
 
-### Top — near-mandatory, complements the finished FBO work
+### Float render targets — done (`src/float_targets.rs`)
 
-- **`EXT_color_buffer_float` + `EXT_color_buffer_half_float` +
-  `OES_texture_float_linear`.** Without these you *cannot render to* float
-  targets (RGBA16F/RGBA32F). We have float texture formats and a full FBO
-  system, but rendering into them silently yields an incomplete framebuffer.
-  Blocks HDR, bloom, deferred, ping-pong GPGPU, accumulation. half-float covers
-  mobile; `OES_texture_float_linear` adds linear filtering of float textures
-  (else NEAREST only). **Integration:** auto-enable (or validate + clear
-  `console::error` instead of "framebuffer incomplete") when a float format is
-  attached as a color attachment; possibly auto-enable on context creation since
-  desktop support is near-universal. *Do this first — it's a hole in the FBO
-  work, not a new feature.*
+Enabled at context creation, checked when a float target is created or
+attached. Left:
+
+- A 32F texture filtered linearly *through a sampler object* isn't checked
+  (only the texture's own filters, at storage time).
+- Blending into a 32F target without `EXT_float_blend` is a GL error at draw
+  time; not checked against the render state.
+- RGB16F / RGB32F are left to GL's completeness check (not renderable in core,
+  optional with the half-float extension).
 
 ### Useful — maps onto subsystems we already have / have queued
 

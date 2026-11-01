@@ -69,6 +69,9 @@ impl Context {
     ) -> Result<RenderbufferId, Error> {
         self.check_alive()?;
         check_size(width, height, samples)?;
+        if let Some(p) = self.float_target_problem(format.as_gl()) {
+            return Err(err!("{p}"));
+        }
         let gl = self.gl();
         let raw = gl
             .create_renderbuffer()

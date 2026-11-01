@@ -147,6 +147,7 @@
 | Color space (drawingBufferColorSpace)   | ✅     | `src/framebuffer.rs`  |
 | Default FB auto-resize (ResizeObserver) | ✅     | `src/framebuffer.rs`  |
 | Extension registry                      | ✅     | `src/extension.rs`    |
+| Float render targets (auto-enabled extensions, up-front checks) | ✅ | `src/float_targets.rs` |
 | Context loss / restore                  | ✅     | `src/context_loss.rs` |
 | KHR_parallel_compile                    | ✅     | `src/program.rs`      |
 | Resource pools + numeric handles, explicit destroy, deferred destroy while in use | ✅ | `src/context.rs`, `src/ids.rs` |

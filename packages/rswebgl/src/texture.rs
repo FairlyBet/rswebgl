@@ -1,5 +1,5 @@
 use crate::error::Error;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rswebgl_foundation::pool::Destroyed;
@@ -14,6 +14,7 @@ use web_sys::{
 use crate::compressed_format::CompressedFormat;
 use crate::console;
 use crate::context::{Context, stale};
+use crate::float_targets;
 use crate::ids::TextureId;
 use crate::limits;
 use crate::pixel_unpack::PixelUnpack;
@@ -313,6 +314,8 @@ impl TextureFormat {
 pub(crate) struct TextureObj {
     pub(crate) raw: WebGlTexture,
     pub(crate) target: TextureTarget,
+    // Sized internal format once storage is allocated, 0 before.
+    pub(crate) internal: Cell<u32>,
 }
 
 impl TextureObj {
@@ -407,6 +410,33 @@ impl Context {
     }
 }
 
+// After texStorage: remembers the format, and warns about a 32F texture set
+// to filter linearly where that isn't supported (it would sample as black).
+fn storage_allocated(
+    gl: &WebGl2RenderingContext,
+    t: u32,
+    obj: &TextureObj,
+    internal: u32,
+    filter_float: bool,
+) {
+    obj.internal.set(internal);
+    if filter_float || !float_targets::is_float32(internal) {
+        return;
+    }
+    let nearest = |pname| {
+        let f = gl.get_tex_parameter(t, pname).as_f64().unwrap_or(0.0) as u32;
+        f == WebGl2RenderingContext::NEAREST || f == WebGl2RenderingContext::NEAREST_MIPMAP_NEAREST
+    };
+    if !nearest(WebGl2RenderingContext::TEXTURE_MIN_FILTER)
+        || !nearest(WebGl2RenderingContext::TEXTURE_MAG_FILTER)
+    {
+        console::warn(
+            "[rswebgl] a 32-bit float texture filters linearly, but this device lacks \
+             OES_texture_float_linear: it will sample as black. Use Nearest, or a 16F format",
+        );
+    }
+}
+
 // Storage-first model (MDN-recommended for WebGL2): allocate immutable storage
 // once with `texture_storage_*`, then fill levels with `texture_sub_image_*`.
 // `texImage2D` (the mutable, define-each-level-independently path) is
@@ -447,7 +477,11 @@ impl Context {
         gl.bind_texture(t, None);
         self.res()
             .textures
-            .insert(TextureObj { raw, target })
+            .insert(TextureObj {
+                raw,
+                target,
+                internal: Cell::new(0),
+            })
             .map(Into::into)
             .map_err(|e| Error::from(e.to_string()))
     }
@@ -492,9 +526,11 @@ impl Context {
         width: i32,
         height: i32,
     ) {
+        let filter_float = self.can_filter_float32();
         self.with_texture(tex, "texture_storage_2d", |gl, t, obj| {
             if obj.storage_fits(levels, width, height, 1) {
                 gl.tex_storage_2d(t, levels, format.internal as u32, width, height);
+                storage_allocated(gl, t, obj, format.internal as u32, filter_float);
             }
         });
     }
@@ -511,9 +547,11 @@ impl Context {
         height: i32,
         depth: i32,
     ) {
+        let filter_float = self.can_filter_float32();
         self.with_texture(tex, "texture_storage_3d", |gl, t, obj| {
             if obj.storage_fits(levels, width, height, depth) {
                 gl.tex_storage_3d(t, levels, format.internal as u32, width, height, depth);
+                storage_allocated(gl, t, obj, format.internal as u32, filter_float);
             }
         });
     }
@@ -532,6 +570,7 @@ impl Context {
         self.with_texture(tex, "texture_compressed_storage_2d", |gl, t, obj| {
             if obj.storage_fits(levels, width, height, 1) {
                 gl.tex_storage_2d(t, levels, format.as_gl(), width, height);
+                obj.internal.set(format.as_gl());
             }
         });
     }
@@ -550,6 +589,7 @@ impl Context {
         self.with_texture(tex, "texture_compressed_storage_3d", |gl, t, obj| {
             if obj.storage_fits(levels, width, height, depth) {
                 gl.tex_storage_3d(t, levels, format.as_gl(), width, height, depth);
+                obj.internal.set(format.as_gl());
             }
         });
     }
