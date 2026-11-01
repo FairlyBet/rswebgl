@@ -21,7 +21,8 @@ const INSTANCE_X: [f32; 3] = [10.0, 20.0, 30.0];
 // One triangle mesh with two primitives sharing its POSITION and index
 // accessors (two materials). Node 0 and node 1 both use the mesh; node 2 uses
 // it through EXT_mesh_gpu_instancing (3 instances, marked *required*). The two
-// materials' base-color textures are two glTF textures over one image.
+// materials' base-color textures are two glTF textures over one image, with
+// different samplers.
 fn asset_url() -> String {
     let mut bin = Vec::new();
     for v in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
@@ -54,7 +55,8 @@ fn asset_url() -> String {
     {{ "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC3" }}
   ],
   "images": [{{ "uri": "data:image/png;base64,{PNG}" }}],
-  "textures": [{{ "source": 0 }}, {{ "source": 0 }}],
+  "samplers": [{{ "wrapS": 33071 }}],
+  "textures": [{{ "source": 0 }}, {{ "source": 0, "sampler": 0 }}],
   "materials": [
     {{ "pbrMetallicRoughness": {{ "baseColorTexture": {{ "index": 0 }} }} }},
     {{ "pbrMetallicRoughness": {{ "baseColorTexture": {{ "index": 1 }} }} }}
@@ -129,8 +131,10 @@ async fn shared_data_is_uploaded_once() {
     assert_eq!(model.buffer_count(), 2);
     let vaos: std::collections::HashSet<_> = model.items().iter().map(|i| i.vao()).collect();
     assert_eq!(vaos.len(), 2);
-    // Two glTF textures over one image and sampler: one GPU texture.
+    // Two glTF textures over one image, sampled two ways: one GPU texture,
+    // two samplers.
     assert_eq!(model.texture_count(), 1);
+    assert_eq!(model.sampler_count(), 2);
     // Indices stay 16-bit.
     let cmd = model.items()[0].draw_command();
     assert_eq!(cmd.index_type, rswebgl::draw::IndexType::UnsignedShort);

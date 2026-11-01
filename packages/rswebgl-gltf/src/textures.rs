@@ -23,7 +23,9 @@ use crate::fetch::resolve_url;
 
 /// Create one GPU texture for `tex` and kick off its async image load.
 ///
-/// `srgb` picks the internal format (sRGB for color roles, linear for data).
+/// `srgb` picks the internal format (sRGB for color roles, linear for data);
+/// `force_mips` builds mipmaps even if this texture's own sampler doesn't
+/// need them (another texture sharing the image does).
 /// `on_load` is the rswebgl image-load callback (`on_load(width, height)`); pass
 /// an empty function for fire-and-forget, or a real one to join on completion
 /// (used by ORM packing to learn the decoded size).
@@ -33,10 +35,12 @@ pub(crate) fn build_texture(
     buffers: &[Vec<u8>],
     base: &str,
     srgb: bool,
+    force_mips: bool,
     on_load: js_sys::Function,
 ) -> TextureId {
     let sampler = tex.sampler();
-    let (min, generate_mipmaps) = min_filter(sampler.min_filter());
+    let (min, mips) = min_filter(sampler.min_filter());
+    let generate_mipmaps = mips || force_mips;
     let mag = mag_filter(sampler.mag_filter());
 
     // create_texture only fails on a lost context, in which case the whole load

@@ -18,11 +18,14 @@ use crate::draw::Viewport;
 use crate::framebuffer::{ClearMask, DefaultFramebuffer, InvalidateMask, framebuffer_status_str};
 use rswebgl_foundation::pool::Pool;
 
-use crate::ids::{FramebufferId, ProgramId, StateId, TextureId, UniformBufferId, VertexArrayId};
+use crate::ids::{
+    FramebufferId, ProgramId, SamplerId, StateId, TextureId, UniformBufferId, VertexArrayId,
+};
 use crate::param::{GROUP_SLOTS, ParamGroupObj, ParamLayoutObj};
 use crate::pass::Pass;
 use crate::program::ProgramObj;
 use crate::render_state::RenderState;
+use crate::sampler::SamplerObj;
 use crate::texture::TextureObj;
 use crate::uniform_buffer::UniformBufferObj;
 
@@ -46,6 +49,8 @@ pub struct FrameStats {
     pub vertex_arrays: u32,
     /// bindTexture calls.
     pub textures: u32,
+    /// bindSampler calls.
+    pub samplers: u32,
     /// bindBufferBase / bindBufferRange calls for uniform blocks.
     pub blocks: u32,
     /// uniform* calls (values that differed from what the program held).
@@ -137,6 +142,7 @@ fn execute_pass(
         programs,
         vertex_arrays,
         textures,
+        samplers,
         uniform_buffers,
         param_layouts,
         param_groups,
@@ -241,6 +247,7 @@ fn execute_pass(
                 group,
                 layout,
                 textures,
+                samplers,
                 uniform_buffers,
                 &mut st.bindings,
                 &mut st.stats,
@@ -484,6 +491,7 @@ fn apply_group(
     group: &ParamGroupObj,
     layout: &ParamLayoutObj,
     textures: &Pool<TextureObj>,
+    samplers: &Pool<SamplerObj>,
     uniform_buffers: &mut Pool<UniformBufferObj>,
     bindings: &mut GlBindings,
     stats: &mut FrameStats,
@@ -513,6 +521,28 @@ fn apply_group(
                 &format!("texture \"{}\"", layout.textures[i]),
                 tex,
             ),
+        }
+        // The sampler goes with the texture: a NULL one unbinds whatever an
+        // earlier draw left on this unit, so the texture's own parameters apply.
+        let mut sid = group.samplers[i];
+        let raw = if sid.is_null() {
+            None
+        } else {
+            match samplers.get(sid.0) {
+                Some(s) => Some(&s.raw),
+                None => {
+                    stale(
+                        "sampler",
+                        &format!("texture \"{}\"", layout.textures[i]),
+                        sid,
+                    );
+                    sid = SamplerId::NULL;
+                    None
+                }
+            }
+        };
+        if bindings.bind_sampler(gl, unit, sid, raw) {
+            stats.samplers += 1;
         }
     }
 
@@ -555,6 +585,9 @@ fn apply_group(
 struct GlBindings {
     active_unit: Option<u32>,
     units: Vec<TextureId>,
+    // None = unknown. Texture uploads don't touch these, so they survive
+    // `forget_active_unit`.
+    samplers: Vec<Option<SamplerId>>,
     blocks: Vec<Option<BoundBlock>>,
 }
 
@@ -562,6 +595,26 @@ struct GlBindings {
 type BoundBlock = (UniformBufferId, Option<(i32, i32)>);
 
 impl GlBindings {
+    // True if it issued a bind.
+    fn bind_sampler(
+        &mut self,
+        gl: &WebGl2RenderingContext,
+        unit: u32,
+        id: SamplerId,
+        raw: Option<&web_sys::WebGlSampler>,
+    ) -> bool {
+        let idx = unit as usize;
+        if self.samplers.get(idx) == Some(&Some(id)) {
+            return false;
+        }
+        gl.bind_sampler(unit, raw);
+        if idx >= self.samplers.len() {
+            self.samplers.resize(idx + 1, None);
+        }
+        self.samplers[idx] = Some(id);
+        true
+    }
+
     fn forget_active_unit(&mut self) {
         match self.active_unit {
             Some(u) => {

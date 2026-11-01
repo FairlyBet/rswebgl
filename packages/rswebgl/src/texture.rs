@@ -69,7 +69,7 @@ impl CubeMapFace {
 // ---------------------------------------------------------------------------
 
 #[wasm_bindgen]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextureMinFilter {
     Nearest = 9728,              // NEAREST
     Linear = 9729,               // LINEAR
@@ -80,7 +80,7 @@ pub enum TextureMinFilter {
 }
 
 #[wasm_bindgen]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextureMagFilter {
     Nearest = 9728, // NEAREST
     Linear = 9729,  // LINEAR
@@ -91,7 +91,7 @@ pub enum TextureMagFilter {
 // ---------------------------------------------------------------------------
 
 #[wasm_bindgen]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextureWrap {
     Repeat = 10497,         // REPEAT
     ClampToEdge = 33071,    // CLAMP_TO_EDGE
@@ -103,7 +103,7 @@ pub enum TextureWrap {
 // ---------------------------------------------------------------------------
 
 #[wasm_bindgen]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextureCompareMode {
     None = 0,                     // NONE
     CompareRefToTexture = 0x884E, // COMPARE_REF_TO_TEXTURE

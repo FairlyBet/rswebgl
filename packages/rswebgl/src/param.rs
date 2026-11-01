@@ -26,7 +26,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::console;
 use crate::context::{Context, Resources, stale};
-use crate::ids::{ParamGroupId, ParamLayoutId, TextureId, UniformBufferId};
+use crate::ids::{ParamGroupId, ParamLayoutId, SamplerId, TextureId, UniformBufferId};
 use crate::limits;
 use crate::uniform_buffer::UniformType;
 
@@ -199,6 +199,8 @@ pub(crate) struct ParamGroupObj {
     // Plain values, packed per the layout (4-byte words: f32/i32/u32 bits).
     pub(crate) words: Vec<u32>,
     pub(crate) textures: Vec<TextureId>,
+    // Per texture field; NULL = the texture's own sampling parameters.
+    pub(crate) samplers: Vec<SamplerId>,
     // NULL = no buffer set yet.
     pub(crate) blocks: Vec<(UniformBufferId, Option<(i32, i32)>)>,
 }
@@ -353,6 +355,7 @@ impl Context {
             layout,
             words: vec![0; l.words],
             textures: vec![TextureId::NULL; l.textures.len()],
+            samplers: vec![SamplerId::NULL; l.textures.len()],
             blocks: vec![(UniformBufferId::NULL, None); l.blocks.len()],
         };
         res.param_layouts.retain(layout.0);
@@ -454,6 +457,21 @@ impl Context {
         );
     }
 
+    /// Sets the sampler a texture field is read through (NULL: the texture's
+    /// own sampling parameters). Independent of the texture: set either first.
+    #[wasm_bindgen(js_name = paramSetSampler)]
+    pub fn param_set_sampler(&self, group: ParamGroupId, field: ParamField, sampler: SamplerId) {
+        self.with_group_field(
+            group,
+            field,
+            KIND_TEXTURE,
+            "param_set_sampler",
+            |g, _, i| {
+                g.samplers[i] = sampler;
+            },
+        );
+    }
+
     /// Sets the uniform buffer a block field reads (the whole buffer).
     #[wasm_bindgen(js_name = paramSetBlock)]
     pub fn param_set_block(&self, group: ParamGroupId, field: ParamField, ubo: UniformBufferId) {
@@ -506,6 +524,13 @@ impl Context {
     pub fn param_set_texture_by_name(&self, group: ParamGroupId, name: &str, texture: TextureId) {
         if let Some(field) = self.field_of(group, name, "param_set_texture_by_name") {
             self.param_set_texture(group, field, texture);
+        }
+    }
+
+    /// Convenience for setup code: resolves `name` and sets a sampler.
+    pub fn param_set_sampler_by_name(&self, group: ParamGroupId, name: &str, sampler: SamplerId) {
+        if let Some(field) = self.field_of(group, name, "param_set_sampler_by_name") {
+            self.param_set_sampler(group, field, sampler);
         }
     }
 

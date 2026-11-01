@@ -26,8 +26,9 @@ use wasm_bindgen::prelude::*;
 
 use rswebgl::console;
 use rswebgl::context::Context;
-use rswebgl::ids::TextureId;
-use rswebgl::texture::{TextureMagFilter, TextureMinFilter, TextureTarget};
+use rswebgl::ids::{SamplerId, TextureId};
+use rswebgl::sampler::SamplerDesc;
+use rswebgl::texture::TextureTarget;
 use rswebgl::texture_packer::{Channel, PackSpec, TexturePacker};
 
 use crate::textures::{build_texture, mag_filter, min_filter, srgb_texture_set, wrap};
@@ -43,7 +44,7 @@ pub fn build_texture_set(
     doc: &gltf::Document,
     buffers: &[Vec<u8>],
     base: &str,
-) -> (Vec<TextureId>, Vec<i32>) {
+) -> TextureSet {
     let docs: Vec<gltf::Texture> = doc.textures().collect();
     let tex_count = docs.len();
 
@@ -70,8 +71,22 @@ pub fn build_texture_set(
     let mut remap = vec![-1i32; tex_count];
     let mut textures: Vec<TextureId> = Vec::with_capacity(tex_count);
 
+    // 0. Sampling lives in sampler objects, one per distinct glTF sampler, so
+    // textures only differ by image and colour space.
+    let (doc_samplers, samplers) = build_samplers(ctx, &docs);
+
     // 1. Every texture not consumed by an ORM pack: load normally — once per
-    // distinct (image, sampler, colour space); textures that repeat one share it.
+    // (image, colour space); textures that repeat one share it. It gets
+    // mipmaps if any texture over it samples with a mipmap filter.
+    let mut needs_mips: HashMap<TextureKey, bool> = HashMap::new();
+    for (i, t) in docs.iter().enumerate() {
+        if !consumed.contains(&i) {
+            let mips = min_filter(t.sampler().min_filter()).1;
+            *needs_mips
+                .entry(texture_key(t, srgb.contains(&i)))
+                .or_default() |= mips;
+        }
+    }
     let mut seen: HashMap<TextureKey, i32> = HashMap::new();
     for (i, t) in docs.iter().enumerate() {
         if consumed.contains(&i) {
@@ -82,7 +97,15 @@ pub fn build_texture_set(
             remap[i] = j;
             continue;
         }
-        let tex = build_texture(ctx, t, buffers, base, srgb.contains(&i), empty_callback());
+        let tex = build_texture(
+            ctx,
+            t,
+            buffers,
+            base,
+            srgb.contains(&i),
+            needs_mips[&key],
+            empty_callback(),
+        );
         remap[i] = textures.len() as i32;
         seen.insert(key, remap[i]);
         textures.push(tex);
@@ -99,7 +122,12 @@ pub fn build_texture_set(
         }
     }
 
-    (textures, remap)
+    TextureSet {
+        textures,
+        remap,
+        doc_samplers,
+        samplers,
+    }
 }
 
 /// Which roles a texture is used in across all materials.
@@ -237,6 +265,7 @@ fn build_packed_orm(
         buffers,
         base,
         false,
+        false,
         source_callback(&join, &packer),
     );
     let mr_src = build_texture(
@@ -244,6 +273,7 @@ fn build_packed_orm(
         mr_doc,
         buffers,
         base,
+        false,
         false,
         source_callback(&join, &packer),
     );
@@ -302,16 +332,6 @@ fn on_source_loaded(join: &Rc<RefCell<OrmJoin>>, packer: &TexturePacker, w: i32,
         return;
     }
 
-    // Since they're destroyed right after, forcing NEAREST is free and gives an
-    // exact texel copy when the output matches the source size (the common
-    // case; we never minify, since the output is the larger of the two).
-    // Revisit once sampler objects let the blit override filtering without
-    // mutating the texture (PROGRESS: "Sampler object ❌").
-    for t in [occ, mr] {
-        ctx.texture_set_min_filter(t, TextureMinFilter::Nearest);
-        ctx.texture_set_mag_filter(t, TextureMagFilter::Nearest);
-    }
-
     let mut spec = PackSpec::new();
     spec.set_source(Channel::R, occ, Channel::R); // occlusion -> R
     spec.set_source(Channel::G, mr, Channel::G); // roughness  -> G
@@ -329,19 +349,52 @@ fn empty_callback() -> js_sys::Function {
     js_sys::Function::new_no_args("")
 }
 
-// What makes two glTF textures the same GPU texture: the image, every sampler
-// parameter (WebGL2 has no separate sampler objects here), and whether it
-// decodes as sRGB.
-type TextureKey = (usize, u32, u32, u32, u32, bool);
+// What makes two glTF textures the same GPU texture: the image and whether it
+// decodes as sRGB (sampling is in sampler objects).
+type TextureKey = (usize, bool);
 
 fn texture_key(t: &gltf::Texture, srgb: bool) -> TextureKey {
-    let s = t.sampler();
-    (
-        t.source().index(),
-        s.min_filter().map_or(0, |f| f.as_gl_enum()),
-        s.mag_filter().map_or(0, |f| f.as_gl_enum()),
-        s.wrap_s().as_gl_enum(),
-        s.wrap_t().as_gl_enum(),
-        srgb,
-    )
+    (t.source().index(), srgb)
+}
+
+/// The final texture list and how the document maps onto it.
+pub struct TextureSet {
+    pub textures: Vec<TextureId>,
+    /// Document texture index → `textures` index (-1: none).
+    pub remap: Vec<i32>,
+    /// Document texture index → the sampler to read it through.
+    pub doc_samplers: Vec<SamplerId>,
+    /// Every distinct sampler created (to destroy with the model).
+    pub samplers: Vec<SamplerId>,
+}
+
+// One sampler per distinct glTF sampler (min, mag, wrap S/T); returns the
+// sampler of each document texture and the distinct list.
+fn build_samplers(ctx: &Context, docs: &[gltf::Texture]) -> (Vec<SamplerId>, Vec<SamplerId>) {
+    let mut by_desc: Vec<(SamplerDesc, SamplerId)> = Vec::new();
+    let per_doc = docs
+        .iter()
+        .map(|t| {
+            let s = t.sampler();
+            let mut desc = SamplerDesc::new();
+            desc.min_filter = min_filter(s.min_filter()).0;
+            desc.mag_filter = mag_filter(s.mag_filter());
+            desc.wrap_s = wrap(s.wrap_s());
+            desc.wrap_t = wrap(s.wrap_t());
+            if let Some((_, id)) = by_desc.iter().find(|(d, _)| *d == desc) {
+                return *id;
+            }
+            match ctx.create_sampler(&desc) {
+                Ok(id) => {
+                    by_desc.push((desc, id));
+                    id
+                }
+                Err(e) => {
+                    console::error(&format!("[rswebgl-gltf] sampler: {e}"));
+                    SamplerId::NULL
+                }
+            }
+        })
+        .collect();
+    (per_doc, by_desc.into_iter().map(|(_, id)| id).collect())
 }

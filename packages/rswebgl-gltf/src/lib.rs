@@ -7,8 +7,8 @@
 //! (primitive × instance, each with its world matrix) meant to feed whatever
 //! owns the scene. GPU data is shared wherever the document shares it: one
 //! buffer per accessor, one set of vertex arrays per mesh however many nodes
-//! (or `EXT_mesh_gpu_instancing` instances) use it, one texture per distinct
-//! image + sampler.
+//! (or `EXT_mesh_gpu_instancing` instances) use it, one texture per image and
+//! colour space, one sampler object per distinct glTF sampler.
 //!
 //! Loading is async (it fetches external buffers/images); textures fill in
 //! after the call returns.
@@ -35,7 +35,9 @@ pub use material::{AlphaMode, Material};
 use rswebgl::context::Context;
 use rswebgl::draw::DrawCommand;
 use rswebgl::error::Error;
-use rswebgl::ids::{BufferId, ParamGroupId, ParamLayoutId, StateId, TextureId, VertexArrayId};
+use rswebgl::ids::{
+    BufferId, ParamGroupId, ParamLayoutId, SamplerId, StateId, TextureId, VertexArrayId,
+};
 use rswebgl::param::ParamLayoutBuilder;
 use rswebgl::render_state::RenderState;
 use rswebgl::uniform_buffer::UniformType;
@@ -135,6 +137,7 @@ pub struct Model {
     // One per material, plus the default material's last.
     pub(crate) material_groups: Vec<ParamGroupId>,
     pub(crate) textures: Vec<TextureId>,
+    pub(crate) samplers: Vec<SamplerId>,
     pub(crate) vertex_arrays: Vec<VertexArrayId>,
     pub(crate) buffers: Vec<BufferId>,
     pub(crate) mesh_count: usize,
@@ -177,6 +180,11 @@ impl Model {
     pub fn vertex_array_count(&self) -> usize {
         self.vertex_arrays.len()
     }
+    /// Samplers created: one per distinct glTF sampler.
+    #[wasm_bindgen(js_name = samplerCount)]
+    pub fn sampler_count(&self) -> usize {
+        self.samplers.len()
+    }
     /// GPU buffers created: one per distinct accessor.
     #[wasm_bindgen(js_name = bufferCount)]
     pub fn buffer_count(&self) -> usize {
@@ -210,6 +218,9 @@ impl Model {
         }
         for &tex in &self.textures {
             ctx.destroy_texture(tex);
+        }
+        for &s in &self.samplers {
+            ctx.destroy_sampler(s);
         }
         for &g in &self.material_groups {
             ctx.destroy_param_group(g);
@@ -261,14 +272,26 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
     // into one ORM texture where safe; `remap` rewrites material texture indices
     // to match (a packed pair, or two textures with the same image and sampler,
     // collapse into one).
-    let (textures, remap) = pack::build_texture_set(ctx, &document, &buffers, &base);
+    let set = pack::build_texture_set(ctx, &document, &buffers, &base);
     let mut materials: Vec<Material> = document
         .materials()
         .map(|m| material::translate(&m))
         .collect();
+    // Samplers follow the document texture, so pick them before remapping.
+    let sampler_of = |doc_tex: i32| {
+        usize::try_from(doc_tex)
+            .ok()
+            .and_then(|i| set.doc_samplers.get(i).copied())
+            .unwrap_or(SamplerId::NULL)
+    };
+    let base_color_samplers: Vec<SamplerId> = materials
+        .iter()
+        .map(|m| sampler_of(m.base_color_tex))
+        .collect();
     for m in &mut materials {
-        material::remap_textures(m, &remap);
+        material::remap_textures(m, &set.remap);
     }
+    let textures = set.textures;
     let mut items = Vec::new();
     let mut geometry = geometry::GeometryCache::default();
     let (center, radius) = scene::build_draw_list(
@@ -280,7 +303,8 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
         &mut items,
     );
 
-    let (material_layout, material_groups) = build_material_groups(ctx, &materials, &textures)?;
+    let (material_layout, material_groups) =
+        build_material_groups(ctx, &materials, &base_color_samplers, &textures)?;
     for item in &mut items {
         let i = usize::try_from(item.material).unwrap_or(materials.len());
         item.material_group = material_groups[i];
@@ -292,6 +316,7 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
         material_layout,
         material_groups,
         textures,
+        samplers: set.samplers,
         vertex_arrays: geometry.vertex_arrays().collect(),
         buffers: geometry.buffers().collect(),
         mesh_count: geometry.mesh_count(),
@@ -326,6 +351,7 @@ fn js_err(e: JsValue) -> Error {
 fn build_material_groups(
     ctx: &Context,
     materials: &[Material],
+    base_color_samplers: &[SamplerId],
     textures: &[TextureId],
 ) -> Result<(ParamLayoutId, Vec<ParamGroupId>), Error> {
     let layout = ctx.create_param_layout(
@@ -344,7 +370,11 @@ fn build_material_groups(
 
     let default = material::default_material();
     let mut groups = Vec::with_capacity(materials.len() + 1);
-    for m in materials.iter().chain(std::iter::once(&default)) {
+    for (i, m) in materials
+        .iter()
+        .chain(std::iter::once(&default))
+        .enumerate()
+    {
         let g = ctx.create_param_group(layout)?;
         ctx.param_set_floats(g, f_color, &m.base_color_factor);
         ctx.param_set_f32(g, f_cutoff, m.alpha_cutoff);
@@ -355,6 +385,11 @@ fn build_material_groups(
         ctx.param_set_bool(g, f_has_tex, tex.is_some());
         if let Some(tex) = tex {
             ctx.param_set_texture(g, f_tex, tex);
+            let sampler = base_color_samplers
+                .get(i)
+                .copied()
+                .unwrap_or(SamplerId::NULL);
+            ctx.param_set_sampler(g, f_tex, sampler);
         }
         groups.push(g);
     }

@@ -45,3 +45,8 @@ typed_handle!(
     /// An interned `RenderState`: equal states share one id.
     pub struct StateId
 );
+typed_handle!(
+    /// A sampler object: filtering, wrapping, LOD and compare state applied to
+    /// whatever texture is sampled through it.
+    pub struct SamplerId
+);

@@ -21,7 +21,7 @@
 | Framebuffer                 | ✅     | `src/framebuffer.rs`  |
 | Renderbuffer                | ✅     | `src/renderbuffer.rs` |
 | Renderbuffer multisample    | ✅     | `src/renderbuffer.rs` |
-| Sampler object              | ❌     | —                     |
+| Sampler object              | ✅     | `src/sampler.rs`      |
 | Transform Feedback          | ❌     | —                     |
 | Query                       | ❌     | —                     |
 | Sync                        | ❌     | —                     |

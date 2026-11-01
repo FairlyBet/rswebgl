@@ -28,10 +28,11 @@ use wasm_bindgen::prelude::*;
 use crate::console;
 use crate::context::Context;
 use crate::draw::{DrawCommand, DrawMode, Viewport};
-use crate::ids::{FramebufferId, ParamGroupId, ParamLayoutId, ProgramId, TextureId};
+use crate::ids::{FramebufferId, ParamGroupId, ParamLayoutId, ProgramId, SamplerId, TextureId};
 use crate::param::{ParamField, ParamLayoutBuilder};
 use crate::pass::{Batch, Pass};
 use crate::render_state::RenderState;
+use crate::sampler::SamplerDesc;
 use crate::texture::{
     TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget, mip_levels,
 };
@@ -184,6 +185,10 @@ pub struct TexturePacker {
     fbo: FramebufferId,
     // 1×1 complete texture bound to unused sampler slots so the draw is valid.
     dummy: TextureId,
+    // LINEAR + CLAMP on every source slot, whatever the sources' own
+    // parameters: an exact texel copy when sizes match (samples land on texel
+    // centres), a smooth resample when they don't, and no mipmaps needed.
+    sampler: SamplerId,
     layout: ParamLayoutId,
     params: ParamGroupId,
     f_src: [ParamField; 4],
@@ -224,11 +229,16 @@ impl TexturePacker {
         )?;
         let params = ctx.create_param_group(layout)?;
         let field = |name: &str| ctx.param_field(layout, name);
+        let sampler = ctx.create_sampler(&SamplerDesc::linear_clamp())?;
+        for name in ["u_src0", "u_src1", "u_src2", "u_src3"] {
+            ctx.param_set_sampler(params, field(name)?, sampler);
+        }
         Ok(Self {
             ctx: ctx.clone(),
             program,
             fbo,
             dummy,
+            sampler,
             layout,
             params,
             f_src: [
@@ -244,16 +254,17 @@ impl TexturePacker {
         })
     }
 
-    /// Frees the packer's program, framebuffer and dummy texture (also done on
+    /// Frees the packer's program, framebuffer, dummy texture and sampler (also done on
     /// drop / `free()`). Textures it produced are the caller's and stay. Safe to
     /// call twice, and after a context loss.
     pub fn destroy(&self) {
-        let (program, fbo, dummy, params, layout) = {
+        let (program, fbo, dummy, sampler, params, layout) = {
             let res = self.ctx.res();
             (
                 res.programs.contains(self.program.0),
                 res.framebuffers.contains(self.fbo.0),
                 res.textures.contains(self.dummy.0),
+                res.samplers.contains(self.sampler.0),
                 res.param_groups.contains(self.params.0),
                 res.param_layouts.contains(self.layout.0),
             )
@@ -272,6 +283,9 @@ impl TexturePacker {
         }
         if dummy {
             self.ctx.destroy_texture(self.dummy);
+        }
+        if sampler {
+            self.ctx.destroy_sampler(self.sampler);
         }
     }
 
