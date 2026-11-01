@@ -1,0 +1,163 @@
+// Reading pixels back: synchronous and fenced (non-stalling), canvas and
+// framebuffers, byte and float formats, and the error paths.
+// Run with: wasm-pack test --headless --chrome packages/rswebgl
+#![cfg(target_arch = "wasm32")]
+
+mod common;
+
+use wasm_bindgen_test::*;
+
+use rswebgl::extension::Extension;
+use rswebgl::framebuffer::ClearMask;
+use rswebgl::ids::{FramebufferId, ParamGroupId, ProgramId, StateId};
+use rswebgl::pass::Pass;
+use rswebgl::readback::ReadFormat;
+use rswebgl::render_state::RenderState;
+use rswebgl::renderbuffer::RenderbufferFormat;
+
+use common::*;
+
+wasm_bindgen_test_configure!(run_in_browser);
+
+const NULL: ParamGroupId = ParamGroupId::NULL;
+const CANVAS: FramebufferId = FramebufferId::NULL;
+
+fn solid_program(f: &Fixture, rgba: &str) -> ProgramId {
+    let frag = format!(
+        "#version 300 es\nprecision highp float;\nout vec4 frag_color;\n\
+         void main() {{ frag_color = vec4({rgba}); }}\n"
+    );
+    f.ctx.create_program(VERT, &frag).unwrap()
+}
+
+fn state(f: &Fixture) -> StateId {
+    f.ctx.render_state(&RenderState::new())
+}
+
+// Draws the middle quad with `program` into `target`, cleared first.
+fn draw_middle(f: &Fixture, target: FramebufferId, program: ProgramId) {
+    let mut pass = Pass::new(target);
+    pass.set_clear(&ClearMask::color());
+    pass.push(
+        program,
+        state(f),
+        f.quad,
+        NULL,
+        NULL,
+        NULL,
+        quad(f, 1),
+        &quad_cmd(),
+    );
+    f.ctx.render(&pass);
+}
+
+// The center pixel of the middle quad, as read_quads samples it.
+const MID: (i32, i32) = (W / 6 + W / 3, H / 2);
+
+#[wasm_bindgen_test]
+fn sync_read_of_the_canvas() {
+    let f = fixture();
+    draw_middle(&f, CANVAS, solid_program(&f, "1.0, 0.0, 0.0, 1.0"));
+    let px = f
+        .ctx
+        .read_pixels(CANVAS, 0, MID.0, MID.1, 1, 1, ReadFormat::Rgba8)
+        .unwrap();
+    assert_eq!(px, RED);
+    // A row: 3 pixels across the left edge of the middle quad's column.
+    let row = f
+        .ctx
+        .read_pixels(CANVAS, 0, 0, MID.1, W, 1, ReadFormat::Rgba8)
+        .unwrap();
+    assert_eq!(row.len(), W as usize * 4);
+    assert_eq!(&row[MID.0 as usize * 4..][..4], &RED);
+    assert_eq!(&row[..4], &BLACK);
+}
+
+// The async read sees the canvas as it was when issued, even though the next
+// frame repaints it before the result arrives.
+#[wasm_bindgen_test]
+async fn async_read_is_a_snapshot_at_issue_time() {
+    let f = fixture();
+    let red = solid_program(&f, "1.0, 0.0, 0.0, 1.0");
+    let green = solid_program(&f, "0.0, 1.0, 0.0, 1.0");
+    draw_middle(&f, CANVAS, red);
+
+    let read = f
+        .ctx
+        .read_pixels_async(CANVAS, 0, MID.0, MID.1, 1, 1, ReadFormat::Rgba8);
+    let promise = f
+        .ctx
+        .read_pixels_promise(CANVAS, 0, MID.0, MID.1, 1, 1, ReadFormat::Rgba8);
+    // The next frame is drawn before either result is awaited.
+    draw_middle(&f, CANVAS, green);
+    assert_eq!(read.await.unwrap(), RED);
+    let bytes = wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+    assert_eq!(js_sys::Uint8Array::new(&bytes).to_vec(), RED);
+    assert_eq!(read_quads(&f.gl)[1], GREEN);
+}
+
+#[wasm_bindgen_test]
+async fn async_read_of_a_float_framebuffer() {
+    let f = fixture();
+    if !f.ctx.enable_extension(Extension::ExtColorBufferFloat) {
+        return;
+    }
+    let fb = f.ctx.create_framebuffer(W, H).unwrap();
+    let rb = f
+        .ctx
+        .create_renderbuffer(RenderbufferFormat::Rgba32f, W, H)
+        .unwrap();
+    f.ctx.framebuffer_attach_color_renderbuffer(fb, 0, rb);
+    // Values a byte format couldn't hold.
+    draw_middle(&f, fb, solid_program(&f, "0.25, -2.0, 1000.5, 1.0"));
+
+    let bytes = f
+        .ctx
+        .read_pixels_async(fb, 0, MID.0, MID.1, 1, 1, ReadFormat::RgbaF32)
+        .await
+        .unwrap();
+    let px: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .collect();
+    assert_eq!(px, [0.25, -2.0, 1000.5, 1.0]);
+}
+
+#[wasm_bindgen_test]
+async fn bad_reads_are_errors() {
+    let f = fixture();
+    let out_of_bounds = f
+        .ctx
+        .read_pixels(CANVAS, 0, W - 1, 0, 2, 1, ReadFormat::Rgba8);
+    assert!(out_of_bounds.unwrap_err().contains("outside"));
+
+    let fb = f.ctx.create_framebuffer(4, 4).unwrap();
+    let no_attachment = f.ctx.read_pixels(fb, 0, 0, 0, 1, 1, ReadFormat::Rgba8);
+    assert!(no_attachment.unwrap_err().contains("no color attachment"));
+
+    // JS gets a rejected promise carrying an Error.
+    let promise = f
+        .ctx
+        .read_pixels_promise(CANVAS, 1, 0, 0, 1, 1, ReadFormat::Rgba8);
+    let e = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .unwrap_err();
+    assert!(wasm_bindgen::JsCast::is_instance_of::<js_sys::Error>(&e));
+    assert_eq!(f.gl.get_error(), web_sys::WebGl2RenderingContext::NO_ERROR);
+}
+
+// A read still in flight when the context goes fails instead of hanging.
+#[wasm_bindgen_test]
+async fn context_loss_fails_a_pending_read() {
+    let f = fixture();
+    draw_middle(&f, CANVAS, solid_program(&f, "1.0, 0.0, 0.0, 1.0"));
+    let promise = f
+        .ctx
+        .read_pixels_promise(CANVAS, 0, MID.0, MID.1, 1, 1, ReadFormat::Rgba8);
+    assert!(f.ctx.simulate_context_loss());
+    let e = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .unwrap_err();
+    let msg = js_sys::Error::from(e).message();
+    assert!(String::from(msg).contains("lost"));
+}

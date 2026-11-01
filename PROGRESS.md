@@ -3,6 +3,7 @@
 - ✅ done
 - 🔶 partial
 - ❌ not implemented
+- ➖ not needed
 
 ---
 
@@ -24,7 +25,7 @@
 | Sampler object              | ✅     | `src/sampler.rs`      |
 | Transform Feedback          | ❌     | —                     |
 | Query                       | ❌     | —                     |
-| Sync                        | ❌     | —                     |
+| Sync                        | 🔶     | `src/readback.rs` (fences for async reads; not exposed) |
 
 ## Rendering
 
@@ -85,8 +86,8 @@
 
 | Entity                      | Status | File                  |
 |-----------------------------|--------|-----------------------|
-| readPixels                  | ❌     | —                     |
-| readBuffer                  | ❌     | —                     |
+| readPixels (sync + async via PBO + fence) | ✅ | `src/readback.rs` |
+| readBuffer                  | ✅     | `src/readback.rs` (per read) |
 | blitFramebuffer             | ❌     | —                     |
 | invalidateFramebuffer       | ✅     | `src/renderer.rs`     |
 | invalidateSubFramebuffer    | ❌     | —                     |
@@ -97,7 +98,7 @@
 | Entity                      | Status | File |
 |-----------------------------|--------|------|
 | copyBufferSubData           | ❌     | —    |
-| getBufferSubData            | ❌     | —    |
+| getBufferSubData            | 🔶     | `src/readback.rs` (async reads; no general buffer readback) |
 
 ## Texture Operations
 
@@ -116,7 +117,7 @@
 | GPU channel packing (ORM)   | ✅     | `src/texture_packer.rs`    |
 | copyTexImage2D              | ❌     | deferred (read-fb / pass)  |
 | copyTexSubImage2D / 3D      | ❌     | deferred (read-fb / pass)  |
-| Pixel pack params           | ❌     | — (with readPixels)        |
+| Pixel pack params           | ➖     | not needed: reads use 4-byte components |
 
 ## Clear
 

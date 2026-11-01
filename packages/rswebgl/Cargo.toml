@@ -7,6 +7,7 @@ edition = "2024"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+wasm-bindgen-futures = "0.4"
 rswebgl-foundation = { path = "../rswebgl-foundation" }
 smallvec = { workspace = true }
 wasm-bindgen = { workspace = true }
@@ -34,6 +35,7 @@ web-sys = { workspace = true, features = [
     "WebGlRenderbuffer",
     "WebGlShader",
     "WebGlSampler",
+    "WebGlSync",
     "WebGlTexture",
     "WebGlUniformLocation",
     "WebGlVertexArrayObject",
@@ -43,5 +45,4 @@ web-sys = { workspace = true, features = [
 # Browser tests: `wasm-pack test --headless --chrome packages/rswebgl`.
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
-wasm-bindgen-futures = "0.4"
 web-sys = { workspace = true, features = ["Document"] }

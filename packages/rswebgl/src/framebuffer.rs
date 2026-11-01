@@ -516,9 +516,10 @@ pub(crate) struct FramebufferObj {
 
 // Attach/detach are eager: they bind this FBO and issue the GL call immediately,
 // leaving it bound. In WebGL *any* object mutates global state, so there is no
-// point pretending otherwise — instead the renderer re-binds its target at the
-// start of every pass and trusts nothing carried over. The helpers below assume
-// the FBO is already bound; the public methods bind first.
+// point pretending otherwise — instead each public method that binds tells the
+// renderer's state cache (`forget_target`), so the next pass re-binds its
+// target. The helpers below assume the FBO is already bound; the public
+// methods bind first.
 
 fn apply_color(
     gl: &WebGl2RenderingContext,
@@ -629,6 +630,15 @@ fn detach_depth_points(gl: &WebGl2RenderingContext) {
 }
 
 impl FramebufferObj {
+    // Size of the attachments (what reads are bounded by).
+    pub(crate) fn size(&self) -> (i32, i32) {
+        (self.width, self.height)
+    }
+
+    pub(crate) fn has_color(&self, index: u32) -> bool {
+        self.color.get(index as usize).is_some_and(Option::is_some)
+    }
+
     // Clears this FBO's attachments per the mask, using each attachment's typed
     // clear value. The FBO must already be bound (the renderer ensures this).
     pub(crate) fn clear(&self, gl: &WebGl2RenderingContext, mask: ClearMask) {

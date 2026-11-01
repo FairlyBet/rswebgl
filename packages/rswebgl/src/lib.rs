@@ -41,6 +41,7 @@ pub mod param;
 pub mod pass;
 pub mod pixel_unpack;
 pub mod program;
+pub mod readback;
 pub mod render_state;
 pub mod renderbuffer;
 pub mod renderer;
