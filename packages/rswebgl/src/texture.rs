@@ -1,3 +1,4 @@
+use crate::error::Error;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -117,6 +118,7 @@ pub enum TextureCompareMode {
 pub struct TextureFormat {
     pub internal: i32,
     pub format: u32,
+    #[wasm_bindgen(js_name = dataType)]
     pub data_type: u32,
 }
 
@@ -137,6 +139,7 @@ impl TextureFormat {
     pub fn srgb8() -> TextureFormat {
         TextureFormat::SRGB8
     }
+    #[wasm_bindgen(js_name = srgb8Alpha8)]
     pub fn srgb8_alpha8() -> TextureFormat {
         TextureFormat::SRGB8_ALPHA8
     }
@@ -164,6 +167,7 @@ impl TextureFormat {
     pub fn rgba32f() -> TextureFormat {
         TextureFormat::RGBA32F
     }
+    #[wasm_bindgen(js_name = r11fG11fB10f)]
     pub fn r11f_g11f_b10f() -> TextureFormat {
         TextureFormat::R11F_G11F_B10F
     }
@@ -176,9 +180,11 @@ impl TextureFormat {
     pub fn depth32f() -> TextureFormat {
         TextureFormat::DEPTH32F
     }
+    #[wasm_bindgen(js_name = depth24Stencil8)]
     pub fn depth24_stencil8() -> TextureFormat {
         TextureFormat::DEPTH24_STENCIL8
     }
+    #[wasm_bindgen(js_name = depth32fStencil8)]
     pub fn depth32f_stencil8() -> TextureFormat {
         TextureFormat::DEPTH32F_STENCIL8
     }
@@ -408,12 +414,13 @@ impl Context {
 // drivers over-allocate.
 #[wasm_bindgen]
 impl Context {
+    #[wasm_bindgen(js_name = createTexture)]
     pub fn create_texture(
         &self,
         target: TextureTarget,
         min_filter: TextureMinFilter,
         mag_filter: TextureMagFilter,
-    ) -> Result<TextureId, String> {
+    ) -> Result<TextureId, Error> {
         self.check_alive()?;
         let gl = self.gl();
         let raw = gl.create_texture().ok_or("createTexture failed")?;
@@ -442,12 +449,13 @@ impl Context {
             .textures
             .insert(TextureObj { raw, target })
             .map(Into::into)
-            .map_err(|e| e.to_string())
+            .map_err(|e| Error::from(e.to_string()))
     }
 
     /// Deletes the texture. If a framebuffer still has it attached, its handle
     /// is invalid right away and the GL texture goes when the framebuffer lets
     /// go of it.
+    #[wasm_bindgen(js_name = destroyTexture)]
     pub fn destroy_texture(&self, tex: TextureId) {
         let destroyed = self.res().textures.destroy(tex.0);
         match destroyed {
@@ -458,6 +466,7 @@ impl Context {
     }
 
     /// The texture's target, or None for a stale handle.
+    #[wasm_bindgen(js_name = textureTarget)]
     pub fn texture_target(&self, tex: TextureId) -> Option<TextureTarget> {
         self.res().textures.get(tex.0).map(|t| t.target.clone())
     }
@@ -467,6 +476,7 @@ impl Context {
     /// Allocate immutable storage (`texStorage2D`). For TEXTURE_2D and
     /// TEXTURE_CUBE_MAP (the latter allocates all six faces). `levels` is the
     /// mip count (≥1). Can only be called once per texture.
+    #[wasm_bindgen(js_name = textureStorage2D)]
     pub fn texture_storage_2d(
         &self,
         tex: TextureId,
@@ -484,6 +494,7 @@ impl Context {
 
     /// Allocate immutable storage (`texStorage3D`). For TEXTURE_3D and
     /// TEXTURE_2D_ARRAY (where `depth` is the layer count).
+    #[wasm_bindgen(js_name = textureStorage3D)]
     pub fn texture_storage_3d(
         &self,
         tex: TextureId,
@@ -502,6 +513,7 @@ impl Context {
 
     /// Allocate immutable storage with a compressed sized internal format.
     /// Requires the matching extension enabled (see `CompressedFormat`).
+    #[wasm_bindgen(js_name = textureCompressedStorage2D)]
     pub fn texture_compressed_storage_2d(
         &self,
         tex: TextureId,
@@ -518,6 +530,7 @@ impl Context {
     }
 
     /// Compressed immutable storage for TEXTURE_3D / TEXTURE_2D_ARRAY.
+    #[wasm_bindgen(js_name = textureCompressedStorage3D)]
     pub fn texture_compressed_storage_3d(
         &self,
         tex: TextureId,
@@ -538,6 +551,7 @@ impl Context {
 
     /// Fill a region of an allocated 2D level from raw bytes. Default unpack.
     #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = textureSubImage2D)]
     pub fn texture_sub_image_2d(
         &self,
         tex: TextureId,
@@ -565,6 +579,7 @@ impl Context {
     /// `texture_sub_image_2d` with explicit pixel-unpack settings (flip_y,
     /// alignment…).
     #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = textureSubImage2DWith)]
     pub fn texture_sub_image_2d_with(
         &self,
         tex: TextureId,
@@ -598,6 +613,7 @@ impl Context {
 
     /// Fill a region of an allocated 3D / 2D-array level from raw bytes.
     #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = textureSubImage3D)]
     pub fn texture_sub_image_3d(
         &self,
         tex: TextureId,
@@ -628,6 +644,7 @@ impl Context {
 
     /// `texture_sub_image_3d` with explicit pixel-unpack settings.
     #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = textureSubImage3DWith)]
     pub fn texture_sub_image_3d_with(
         &self,
         tex: TextureId,
@@ -665,6 +682,7 @@ impl Context {
 
     /// Fill a region of one cube-map face from raw bytes.
     #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = textureSubImageCubeFace)]
     pub fn texture_sub_image_cube_face(
         &self,
         tex: TextureId,
@@ -698,6 +716,7 @@ impl Context {
 
     /// Fill a region of an allocated 2D level with compressed block data.
     #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = textureCompressedSubImage2D)]
     pub fn texture_compressed_sub_image_2d(
         &self,
         tex: TextureId,
@@ -728,6 +747,7 @@ impl Context {
 
     /// Fill a region of an allocated 3D / 2D-array level with compressed data.
     #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = textureCompressedSubImage3D)]
     pub fn texture_compressed_sub_image_3d(
         &self,
         tex: TextureId,
@@ -763,6 +783,7 @@ impl Context {
 
     /// Fill a 2D level from an `HtmlImageElement` (must be loaded & CORS-clean).
     #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = textureSubImage2DFromImage)]
     pub fn texture_sub_image_2d_from_image(
         &self,
         tex: TextureId,
@@ -792,6 +813,7 @@ impl Context {
 
     /// Fill a 2D level from an `ImageBitmap`.
     #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = textureSubImage2DFromBitmap)]
     pub fn texture_sub_image_2d_from_bitmap(
         &self,
         tex: TextureId,
@@ -821,6 +843,7 @@ impl Context {
 
     /// Fill a 2D level from the current frame of an `HtmlVideoElement`.
     #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = textureSubImage2DFromVideo)]
     pub fn texture_sub_image_2d_from_video(
         &self,
         tex: TextureId,
@@ -850,6 +873,7 @@ impl Context {
 
     /// Fill a 2D level from an `HtmlCanvasElement`.
     #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = textureSubImage2DFromCanvas)]
     pub fn texture_sub_image_2d_from_canvas(
         &self,
         tex: TextureId,
@@ -879,6 +903,7 @@ impl Context {
 
     /// Fill a 2D level from `ImageData`.
     #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = textureSubImage2DFromImageData)]
     pub fn texture_sub_image_2d_from_image_data(
         &self,
         tex: TextureId,
@@ -921,6 +946,7 @@ impl Context {
     /// The texture must be freshly created (storage is immutable / one-shot).
     /// The image is requested with `crossOrigin = "anonymous"` so the result is
     /// CORS-clean and usable as a texture.
+    #[wasm_bindgen(js_name = textureLoadImage)]
     pub fn texture_load_image(
         &self,
         tex: TextureId,
@@ -959,6 +985,7 @@ impl Context {
     /// `texture_load_image`. Useful for images embedded in a container (e.g. a
     /// glTF `bufferView`) where no URL exists.
     #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = textureLoadBytes)]
     pub fn texture_load_bytes(
         &self,
         tex: TextureId,
@@ -1016,6 +1043,7 @@ impl Context {
     // --- LOD / sampler parameters -------------------------------------------
 
     /// `TEXTURE_BASE_LEVEL` — lowest mip level used when sampling.
+    #[wasm_bindgen(js_name = textureSetBaseLevel)]
     pub fn texture_set_base_level(&self, tex: TextureId, level: i32) {
         self.set_param_i(
             tex,
@@ -1026,6 +1054,7 @@ impl Context {
     }
 
     /// `TEXTURE_MAX_LEVEL` — highest mip level used when sampling.
+    #[wasm_bindgen(js_name = textureSetMaxLevel)]
     pub fn texture_set_max_level(&self, tex: TextureId, level: i32) {
         self.set_param_i(
             tex,
@@ -1036,6 +1065,7 @@ impl Context {
     }
 
     /// `TEXTURE_MIN_LOD` — clamp the minimum level-of-detail.
+    #[wasm_bindgen(js_name = textureSetMinLod)]
     pub fn texture_set_min_lod(&self, tex: TextureId, lod: f32) {
         self.set_param_f(
             tex,
@@ -1046,6 +1076,7 @@ impl Context {
     }
 
     /// `TEXTURE_MAX_LOD` — clamp the maximum level-of-detail.
+    #[wasm_bindgen(js_name = textureSetMaxLod)]
     pub fn texture_set_max_lod(&self, tex: TextureId, lod: f32) {
         self.set_param_f(
             tex,
@@ -1056,6 +1087,7 @@ impl Context {
     }
 
     /// `TEXTURE_COMPARE_MODE` — enable depth comparison (shadow sampling).
+    #[wasm_bindgen(js_name = textureSetCompareMode)]
     pub fn texture_set_compare_mode(&self, tex: TextureId, mode: TextureCompareMode) {
         self.set_param_i(
             tex,
@@ -1066,6 +1098,7 @@ impl Context {
     }
 
     /// `TEXTURE_COMPARE_FUNC` — comparison used when compare mode is enabled.
+    #[wasm_bindgen(js_name = textureSetCompareFunc)]
     pub fn texture_set_compare_func(&self, tex: TextureId, func: DepthFunc) {
         self.set_param_i(
             tex,
@@ -1077,6 +1110,7 @@ impl Context {
 
     /// `TEXTURE_MAX_ANISOTROPY_EXT` — anisotropic filtering level (≥1.0).
     /// Requires `ExtTextureFilterAnisotropic` to be enabled.
+    #[wasm_bindgen(js_name = textureSetMaxAnisotropy)]
     pub fn texture_set_max_anisotropy(&self, tex: TextureId, value: f32) {
         const TEXTURE_MAX_ANISOTROPY_EXT: u32 = 0x84FE;
         self.set_param_f(
@@ -1087,6 +1121,7 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = textureSetMinFilter)]
     pub fn texture_set_min_filter(&self, tex: TextureId, filter: TextureMinFilter) {
         self.set_param_i(
             tex,
@@ -1096,6 +1131,7 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = textureSetMagFilter)]
     pub fn texture_set_mag_filter(&self, tex: TextureId, filter: TextureMagFilter) {
         self.set_param_i(
             tex,
@@ -1105,6 +1141,7 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = textureSetWrapS)]
     pub fn texture_set_wrap_s(&self, tex: TextureId, wrap: TextureWrap) {
         self.set_param_i(
             tex,
@@ -1114,6 +1151,7 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = textureSetWrapT)]
     pub fn texture_set_wrap_t(&self, tex: TextureId, wrap: TextureWrap) {
         self.set_param_i(
             tex,
@@ -1123,6 +1161,7 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = textureSetWrapR)]
     pub fn texture_set_wrap_r(&self, tex: TextureId, wrap: TextureWrap) {
         self.set_param_i(
             tex,
@@ -1132,6 +1171,7 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = textureGenerateMipmaps)]
     pub fn texture_generate_mipmaps(&self, tex: TextureId) {
         self.with_texture(tex, "texture_generate_mipmaps", |gl, t, _| {
             gl.generate_mipmap(t)

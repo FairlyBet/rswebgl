@@ -86,7 +86,7 @@ fn draw_override_does_not_leak_into_next_draw() {
     let mut groups = [ParamGroupId::NULL; 4];
     groups[1] = blue;
     groups[QUAD_SLOT as usize] = quad(&f, 1);
-    batch.draw_with_groups(f.quad, groups, quad_cmd());
+    batch.draw_with_groups(f.quad, groups, &quad_cmd());
     draw_quad(&mut batch, &f, 2);
     render(&f, vec![batch]);
 
@@ -136,7 +136,7 @@ fn batch_and_draw_samplers_get_distinct_units() {
         let mut groups = [ParamGroupId::NULL; 4];
         groups[1] = g;
         groups[QUAD_SLOT as usize] = quad(&f, col);
-        batch.draw_with_groups(f.quad, groups, quad_cmd());
+        batch.draw_with_groups(f.quad, groups, &quad_cmd());
     }
     render(&f, vec![batch]);
 
@@ -161,7 +161,7 @@ fn unchanged_values_are_not_reuploaded() {
     let mut groups = [ParamGroupId::NULL; 4];
     groups[0] = also_red;
     groups[QUAD_SLOT as usize] = quad(&f, 2);
-    batch.draw_with_groups(f.quad, groups, quad_cmd());
+    batch.draw_with_groups(f.quad, groups, &quad_cmd());
 
     // Count uniform4fv calls on this context (u_color and u_rect are vec4s).
     let counter = js_sys::Function::new_with_args(

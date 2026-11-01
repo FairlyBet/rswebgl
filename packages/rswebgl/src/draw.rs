@@ -56,6 +56,7 @@ pub struct Viewport {
 
 #[wasm_bindgen]
 impl Viewport {
+    #[wasm_bindgen(constructor)]
     pub fn new(x: i32, y: i32, width: i32, height: i32) -> Self {
         Self {
             x,
@@ -80,10 +81,14 @@ pub struct DrawCommand {
     pub mode: DrawMode,
     pub count: i32,
     pub first: i32,
+    #[wasm_bindgen(js_name = indexType)]
     pub index_type: IndexType,
     pub offset: i32,
+    #[wasm_bindgen(js_name = instanceCount)]
     pub instance_count: i32,
+    #[wasm_bindgen(js_name = rangeStart)]
     pub range_start: u32,
+    #[wasm_bindgen(js_name = rangeEnd)]
     pub range_end: u32,
     kind: u8,
 }
@@ -118,6 +123,7 @@ impl DrawCommand {
         }
     }
 
+    #[wasm_bindgen(js_name = rangeElements)]
     pub fn range_elements(
         mode: DrawMode,
         start: u32,

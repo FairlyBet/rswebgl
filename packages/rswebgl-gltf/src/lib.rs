@@ -54,23 +54,28 @@ impl DrawItem {
     pub fn vao(&self) -> VertexArrayId {
         self.vao
     }
+    #[wasm_bindgen(js_name = drawCommand)]
     pub fn draw_command(&self) -> DrawCommand {
         self.draw
     }
+    #[wasm_bindgen(js_name = renderState)]
     pub fn render_state(&self) -> RenderState {
         self.state.clone()
     }
     /// Index into `Model::material(i)`, or `-1` for the default material.
+    #[wasm_bindgen(js_name = materialIndex)]
     pub fn material_index(&self) -> i32 {
         self.material
     }
     /// World (model) matrix, 16 floats column-major.
+    #[wasm_bindgen(js_name = modelMatrix)]
     pub fn model_matrix(&self) -> Vec<f32> {
         self.model.to_vec()
     }
 
     /// The parameter group holding this item's material (see `Model` for the
     /// uniform names). Put it in a batch slot, typically 1.
+    #[wasm_bindgen(js_name = materialGroup)]
     pub fn material_group(&self) -> ParamGroupId {
         self.material_group
     }
@@ -105,18 +110,22 @@ pub struct Model {
 
 #[wasm_bindgen]
 impl Model {
+    #[wasm_bindgen(js_name = drawItemCount)]
     pub fn draw_item_count(&self) -> usize {
         self.items.len()
     }
+    #[wasm_bindgen(js_name = drawItem)]
     pub fn draw_item(&self, i: usize) -> Option<DrawItem> {
         self.items.get(i).cloned()
     }
+    #[wasm_bindgen(js_name = materialCount)]
     pub fn material_count(&self) -> usize {
         self.materials.len()
     }
     pub fn material(&self, i: usize) -> Option<Material> {
         self.materials.get(i).cloned()
     }
+    #[wasm_bindgen(js_name = textureCount)]
     pub fn texture_count(&self) -> usize {
         self.textures.len()
     }
@@ -134,6 +143,7 @@ impl Model {
     }
 
     /// The layout of the material groups.
+    #[wasm_bindgen(js_name = materialLayout)]
     pub fn material_layout(&self) -> ParamLayoutId {
         self.material_layout
     }

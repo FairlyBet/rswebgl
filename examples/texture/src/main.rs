@@ -115,11 +115,11 @@ fn main() {
     let draw_cmd = DrawCommand::elements(DrawMode::Triangles, 6, IndexType::UnsignedShort, 0);
 
     let mut pass = Pass::to_default();
-    pass.set_clear(ClearMask::color());
+    pass.set_clear(&ClearMask::color());
     let mut batch = Batch::new(program, render_state);
     batch.set_group(0, params);
-    batch.draw(vao, draw_cmd);
-    pass.add(batch);
+    batch.draw(vao, &draw_cmd);
+    pass.add(&batch);
 
     // Re-render each frame so the quad tracks the auto-resized buffer.
     let f: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));

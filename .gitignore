@@ -23,3 +23,6 @@ target
 
 # Added by Trunk
 dist
+
+# Generated JS bindings for the plain-JS examples
+examples/*/pkg

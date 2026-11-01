@@ -19,6 +19,7 @@
 //! Fields are addressed by a [`ParamField`] index resolved from the name once
 //! (`param_field`); writes go by index, no strings per frame.
 
+use crate::error::{Error, err};
 use rswebgl_foundation::layout::{FieldType, Scalar};
 use rswebgl_foundation::pool::Destroyed;
 use wasm_bindgen::prelude::*;
@@ -84,6 +85,7 @@ impl ParamLayoutBuilder {
     }
 
     /// A uniform array of `count` elements (`uniform vec4 name[count]`).
+    #[wasm_bindgen(js_name = uniformArray)]
     pub fn uniform_array(mut self, name: &str, ty: UniformType, count: u32) -> Self {
         self.fields
             .push((name.into(), FieldDef::Plain(ty.into(), count.max(1))));
@@ -125,7 +127,7 @@ pub(crate) struct ParamLayoutObj {
 }
 
 impl ParamLayoutObj {
-    fn new(builder: &ParamLayoutBuilder) -> Result<Self, String> {
+    fn new(builder: &ParamLayoutBuilder) -> Result<Self, Error> {
         let mut plain = Vec::new();
         let mut textures = Vec::new();
         let mut blocks: Vec<Box<str>> = Vec::new();
@@ -158,7 +160,7 @@ impl ParamLayoutObj {
         }
         index.sort_by(|a, b| a.0.cmp(&b.0));
         if let Some(w) = index.windows(2).find(|w| w[0].0 == w[1].0) {
-            return Err(format!("param layout: field \"{}\" declared twice", w[0].0));
+            return Err(err!("param layout: field \"{}\" declared twice", w[0].0));
         }
         Ok(Self {
             plain,
@@ -295,20 +297,22 @@ impl Context {
 
 #[wasm_bindgen]
 impl Context {
+    #[wasm_bindgen(js_name = createParamLayout)]
     pub fn create_param_layout(
         &self,
         builder: &ParamLayoutBuilder,
-    ) -> Result<ParamLayoutId, String> {
+    ) -> Result<ParamLayoutId, Error> {
         let obj = ParamLayoutObj::new(builder)?;
         let mut res = self.res();
         match res.param_layouts.insert(obj) {
             Ok(h) => Ok(h.into()),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(e.to_string().into()),
         }
     }
 
     /// Destroys the layout. Groups still using it keep it alive until they're
     /// destroyed; no new groups can be created from it.
+    #[wasm_bindgen(js_name = destroyParamLayout)]
     pub fn destroy_param_layout(&self, layout: ParamLayoutId) {
         let destroyed = self.res().param_layouts.destroy(layout.0);
         if let Destroyed::Invalid = destroyed {
@@ -318,19 +322,18 @@ impl Context {
 
     /// The field named `name` in `layout`, for the `param_set_*` calls. Resolve
     /// once and keep the number.
-    pub fn param_field(&self, layout: ParamLayoutId, name: &str) -> Result<ParamField, String> {
+    #[wasm_bindgen(js_name = paramField)]
+    pub fn param_field(&self, layout: ParamLayoutId, name: &str) -> Result<ParamField, Error> {
         let res = self.res();
         let Some(l) = res.param_layouts.get(layout.0) else {
-            return Err(format!(
-                "param layout {:?} is destroyed or invalid",
-                layout.0
-            ));
+            return Err(err!("param layout {:?} is destroyed or invalid", layout.0));
         };
         l.field(name)
-            .ok_or_else(|| format!("param layout has no field \"{name}\""))
+            .ok_or_else(|| err!("param layout has no field \"{name}\""))
     }
 
     /// The name of a field (for diagnostics).
+    #[wasm_bindgen(js_name = paramFieldName)]
     pub fn param_field_name(&self, layout: ParamLayoutId, field: ParamField) -> String {
         self.res()
             .param_layouts
@@ -340,13 +343,11 @@ impl Context {
     }
 
     /// A group of values for `layout`, all zero / unset to start with.
-    pub fn create_param_group(&self, layout: ParamLayoutId) -> Result<ParamGroupId, String> {
+    #[wasm_bindgen(js_name = createParamGroup)]
+    pub fn create_param_group(&self, layout: ParamLayoutId) -> Result<ParamGroupId, Error> {
         let res = &mut *self.res();
         let Some(l) = res.param_layouts.get(layout.0) else {
-            return Err(format!(
-                "param layout {:?} is destroyed or invalid",
-                layout.0
-            ));
+            return Err(err!("param layout {:?} is destroyed or invalid", layout.0));
         };
         let obj = ParamGroupObj {
             layout,
@@ -359,11 +360,12 @@ impl Context {
             Ok(h) => Ok(h.into()),
             Err(e) => {
                 release_layout(res, layout);
-                Err(e.to_string())
+                Err(e.to_string().into())
             }
         }
     }
 
+    #[wasm_bindgen(js_name = destroyParamGroup)]
     pub fn destroy_param_group(&self, group: ParamGroupId) {
         let res = &mut *self.res();
         match res.param_groups.destroy(group.0) {
@@ -375,6 +377,7 @@ impl Context {
 
     /// Writes a float field (float scalars, vectors, matrices — column-major —
     /// and their arrays). Fewer values than the field holds write a prefix.
+    #[wasm_bindgen(js_name = paramSetFloats)]
     pub fn param_set_floats(&self, group: ParamGroupId, field: ParamField, values: &[f32]) {
         self.param_set_words(
             group,
@@ -386,6 +389,7 @@ impl Context {
     }
 
     /// Writes an int (or bool) field.
+    #[wasm_bindgen(js_name = paramSetInts)]
     pub fn param_set_ints(&self, group: ParamGroupId, field: ParamField, values: &[i32]) {
         self.param_set_words(
             group,
@@ -397,6 +401,7 @@ impl Context {
     }
 
     /// Writes an unsigned int (or bool) field.
+    #[wasm_bindgen(js_name = paramSetUints)]
     pub fn param_set_uints(&self, group: ParamGroupId, field: ParamField, values: &[u32]) {
         self.param_set_words(
             group,
@@ -407,10 +412,12 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = paramSetF32)]
     pub fn param_set_f32(&self, group: ParamGroupId, field: ParamField, x: f32) {
         self.param_set_floats(group, field, &[x]);
     }
 
+    #[wasm_bindgen(js_name = paramSetVec4)]
     pub fn param_set_vec4(
         &self,
         group: ParamGroupId,
@@ -423,15 +430,18 @@ impl Context {
         self.param_set_floats(group, field, &[x, y, z, w]);
     }
 
+    #[wasm_bindgen(js_name = paramSetI32)]
     pub fn param_set_i32(&self, group: ParamGroupId, field: ParamField, x: i32) {
         self.param_set_ints(group, field, &[x]);
     }
 
+    #[wasm_bindgen(js_name = paramSetBool)]
     pub fn param_set_bool(&self, group: ParamGroupId, field: ParamField, x: bool) {
         self.param_set_ints(group, field, &[x as i32]);
     }
 
     /// Sets the texture a sampler field reads (NULL unsets it).
+    #[wasm_bindgen(js_name = paramSetTexture)]
     pub fn param_set_texture(&self, group: ParamGroupId, field: ParamField, texture: TextureId) {
         self.with_group_field(
             group,
@@ -445,6 +455,7 @@ impl Context {
     }
 
     /// Sets the uniform buffer a block field reads (the whole buffer).
+    #[wasm_bindgen(js_name = paramSetBlock)]
     pub fn param_set_block(&self, group: ParamGroupId, field: ParamField, ubo: UniformBufferId) {
         self.with_group_field(group, field, KIND_BLOCK, "param_set_block", |g, _, i| {
             g.blocks[i] = (ubo, None);
@@ -454,6 +465,7 @@ impl Context {
     /// Sets a sub-range of a uniform buffer for a block field
     /// (`bindBufferRange`). `offset` must be a multiple of
     /// `UNIFORM_BUFFER_OFFSET_ALIGNMENT`.
+    #[wasm_bindgen(js_name = paramSetBlockRange)]
     pub fn param_set_block_range(
         &self,
         group: ParamGroupId,

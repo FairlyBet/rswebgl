@@ -9,6 +9,7 @@
 // code that binds outside the renderer resets the part it touched; code that
 // changes GL state behind the library's back calls `Context::invalidate_state`.
 
+use crate::error::{Error, err};
 use wasm_bindgen::prelude::*;
 use web_sys::WebGl2RenderingContext;
 
@@ -41,6 +42,7 @@ pub struct FrameStats {
     /// Render-state changes (each may be several GL calls).
     pub states: u32,
     /// bindVertexArray calls.
+    #[wasm_bindgen(js_name = vertexArrays)]
     pub vertex_arrays: u32,
     /// bindTexture calls.
     pub textures: u32,
@@ -57,19 +59,14 @@ impl Context {
         self.render_passes(std::slice::from_ref(pass));
     }
 
-    /// Executes several passes in order. The JS array of passes is consumed.
-    /// (Rust callers can use `render_passes(&[Pass])` to keep them.)
-    pub fn render_all(&self, passes: Vec<Pass>) {
-        self.render_passes(&passes);
-    }
-
     /// Checks framebuffer completeness. Binds `fb` to read its status.
-    pub fn check_framebuffer(&self, fb: FramebufferId) -> Result<(), String> {
+    #[wasm_bindgen(js_name = checkFramebuffer)]
+    pub fn check_framebuffer(&self, fb: FramebufferId) -> Result<(), Error> {
         self.check_alive()?;
         let gl = self.gl();
         let res = self.res();
         let Some(f) = res.framebuffers.get(fb.0) else {
-            return Err(format!("framebuffer {:?} is destroyed or invalid", fb.0));
+            return Err(err!("framebuffer {:?} is destroyed or invalid", fb.0));
         };
         self.gl_state().forget_target();
         gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&f.raw));
@@ -77,10 +74,11 @@ impl Context {
         if status == WebGl2RenderingContext::FRAMEBUFFER_COMPLETE {
             Ok(())
         } else {
-            Err(framebuffer_status_str(status).to_string())
+            Err(framebuffer_status_str(status).into())
         }
     }
 
+    #[wasm_bindgen(js_name = isFramebufferComplete)]
     pub fn is_framebuffer_complete(&self, fb: FramebufferId) -> bool {
         self.check_framebuffer(fb).is_ok()
     }
@@ -88,15 +86,18 @@ impl Context {
     /// Forgets what the library believes is bound, so the next render binds
     /// everything afresh. Call after changing GL state directly (your own GL
     /// calls on the same context, or another library sharing it).
+    #[wasm_bindgen(js_name = invalidateState)]
     pub fn invalidate_state(&self) {
         self.core.invalidate_state();
     }
 
     /// Counters since the last `reset_frame_stats`.
+    #[wasm_bindgen(js_name = frameStats)]
     pub fn frame_stats(&self) -> FrameStats {
         self.gl_state().stats
     }
 
+    #[wasm_bindgen(js_name = resetFrameStats)]
     pub fn reset_frame_stats(&self) {
         self.gl_state().stats = FrameStats::default();
     }

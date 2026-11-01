@@ -167,8 +167,8 @@ fn main() {
         let mut pass = Pass::new(fbo);
         let mut batch = Batch::new(bake_program, render_state);
         batch.set_group(0, bake_params);
-        batch.draw_vertexless(tri);
-        pass.add(batch);
+        batch.draw_vertexless(&tri);
+        pass.add(&batch);
         ctx.render(&pass);
     }
     // The bake is done: only the cubemap is needed from here on. Destroying the
@@ -216,8 +216,8 @@ fn main() {
         let mut pass = Pass::to_default();
         let mut batch = Batch::new(sky_program, render_state);
         batch.set_group(0, sky);
-        batch.draw_vertexless(tri);
-        pass.add(batch);
+        batch.draw_vertexless(&tri);
+        pass.add(&batch);
         ctx.render(&pass);
 
         let _ = win.request_animation_frame(f.borrow().as_ref().unwrap().as_ref().unchecked_ref());

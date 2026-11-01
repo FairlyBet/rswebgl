@@ -1,3 +1,4 @@
+use crate::error::Error;
 use rswebgl_foundation::pool::Destroyed;
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlVertexArrayObject};
@@ -68,18 +69,23 @@ impl VertexAttr {
     pub fn float(size: u8) -> Self {
         Self::new(size, AttrType::Float, false, false)
     }
+    #[wasm_bindgen(js_name = halfFloat)]
     pub fn half_float(size: u8) -> Self {
         Self::new(size, AttrType::HalfFloat, false, false)
     }
+    #[wasm_bindgen(js_name = normalizedByte)]
     pub fn normalized_byte(size: u8) -> Self {
         Self::new(size, AttrType::Byte, true, false)
     }
+    #[wasm_bindgen(js_name = normalizedUbyte)]
     pub fn normalized_ubyte(size: u8) -> Self {
         Self::new(size, AttrType::UnsignedByte, true, false)
     }
+    #[wasm_bindgen(js_name = normalizedShort)]
     pub fn normalized_short(size: u8) -> Self {
         Self::new(size, AttrType::Short, true, false)
     }
+    #[wasm_bindgen(js_name = normalizedUshort)]
     pub fn normalized_ushort(size: u8) -> Self {
         Self::new(size, AttrType::UnsignedShort, true, false)
     }
@@ -145,7 +151,7 @@ impl Context {
     pub(crate) fn insert_vertex_array(
         &self,
         raw: WebGlVertexArrayObject,
-    ) -> Result<VertexArrayId, String> {
+    ) -> Result<VertexArrayId, Error> {
         let obj = VertexArrayObj {
             raw,
             attribs: Vec::new(),
@@ -156,13 +162,14 @@ impl Context {
             .vertex_arrays
             .insert(obj)
             .map(Into::into)
-            .map_err(|e| e.to_string())
+            .map_err(|e| Error::from(e.to_string()))
     }
 }
 
 #[wasm_bindgen]
 impl Context {
-    pub fn create_vertex_array(&self) -> Result<VertexArrayId, String> {
+    #[wasm_bindgen(js_name = createVertexArray)]
+    pub fn create_vertex_array(&self) -> Result<VertexArrayId, Error> {
         self.check_alive()?;
         let raw = self
             .gl()
@@ -173,6 +180,7 @@ impl Context {
 
     /// Reads attribute `index` from `buffer` (a vertex buffer). The vertex array
     /// keeps using the buffer until the attribute is replaced or removed.
+    #[wasm_bindgen(js_name = vertexArrayAttr)]
     pub fn vertex_array_attr(
         &self,
         vao: VertexArrayId,
@@ -233,6 +241,7 @@ impl Context {
         }
     }
 
+    #[wasm_bindgen(js_name = vertexArrayRemoveAttr)]
     pub fn vertex_array_remove_attr(&self, vao: VertexArrayId, index: u32) {
         if !attr_index_in_range(index) {
             return;
@@ -252,6 +261,7 @@ impl Context {
     }
 
     /// Uses `buffer` (created with `create_index_buffer`) for indexed draws.
+    #[wasm_bindgen(js_name = vertexArraySetIndexBuffer)]
     pub fn vertex_array_set_index_buffer(&self, vao: VertexArrayId, buffer: BufferId) {
         let gl = self.gl();
         let res = &mut *self.res();
@@ -280,6 +290,7 @@ impl Context {
         }
     }
 
+    #[wasm_bindgen(js_name = vertexArrayRemoveIndexBuffer)]
     pub fn vertex_array_remove_index_buffer(&self, vao: VertexArrayId) {
         let gl = self.gl();
         let res = &mut *self.res();
@@ -297,6 +308,7 @@ impl Context {
 
     /// Deletes the vertex array, stops using its buffers, and destroys the
     /// buffers it owns (the ones `VaoBuilder` created for it).
+    #[wasm_bindgen(js_name = destroyVertexArray)]
     pub fn destroy_vertex_array(&self, vao: VertexArrayId) {
         let gl = self.gl();
         let res = &mut *self.res();

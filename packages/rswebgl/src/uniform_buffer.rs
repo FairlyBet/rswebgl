@@ -1,3 +1,4 @@
+use crate::error::{Error, err};
 use rswebgl_foundation::dirty::DirtyBits;
 use rswebgl_foundation::layout::{FieldType, Layout, LayoutBuilder, LayoutRule, Word};
 use rswebgl_foundation::pool::Destroyed;
@@ -126,6 +127,7 @@ impl UboLayout {
 
     /// A nested struct, laid out per `layout`. Address members with a dotted
     /// path, e.g. `set_vec3("light.pos", …)`.
+    #[wasm_bindgen(js_name = structField)]
     pub fn struct_field(self, name: &str, layout: &UboLayout) -> Self {
         Self {
             builder: self.builder.struct_field(name, &layout.builder),
@@ -134,6 +136,7 @@ impl UboLayout {
 
     /// An array of `count` structs, each laid out per `layout`. Address members
     /// with a path like `set_vec4("lights[2].color", …)`.
+    #[wasm_bindgen(js_name = structArray)]
     pub fn struct_array(self, name: &str, layout: &UboLayout, count: u32) -> Self {
         Self {
             builder: self.builder.struct_array(name, &layout.builder, count),
@@ -143,9 +146,9 @@ impl UboLayout {
 
 // A block can't exceed MAX_UNIFORM_BLOCK_SIZE or the GL bind would fail later;
 // catch it at creation with a clear message instead.
-fn validate_block_size(size: u32, max: u32) -> Result<(), String> {
+fn validate_block_size(size: u32, max: u32) -> Result<(), Error> {
     if size > max {
-        Err(format!(
+        Err(err!(
             "UBO block is {size} bytes, over MAX_UNIFORM_BLOCK_SIZE ({max})"
         ))
     } else {
@@ -247,11 +250,12 @@ impl Context {
 impl Context {
     /// Allocate a uniform block backed by a GL buffer, laid out per std140 from
     /// `layout`. Fields are addressed by path (e.g. `"lights[2].color"`).
+    #[wasm_bindgen(js_name = createUniformBuffer)]
     pub fn create_uniform_buffer(
         &self,
         layout: &UboLayout,
         usage: BufferUsage,
-    ) -> Result<UniformBufferId, String> {
+    ) -> Result<UniformBufferId, Error> {
         self.check_alive()?;
         let layout = layout.builder.build(LayoutRule::Std140);
         let size = layout.size();
@@ -266,10 +270,11 @@ impl Context {
         let mut res = self.res();
         match res.uniform_buffers.insert(obj) {
             Ok(h) => Ok(h.into()),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(e.to_string().into()),
         }
     }
 
+    #[wasm_bindgen(js_name = destroyUniformBuffer)]
     pub fn destroy_uniform_buffer(&self, ubo: UniformBufferId) {
         let destroyed = self.res().uniform_buffers.destroy(ubo.0);
         match destroyed {
@@ -282,6 +287,7 @@ impl Context {
     /// Flush pending writes to the GL buffer. Normally unnecessary: the renderer
     /// does this for blocks bound in a pass. Use it to make the GPU copy current
     /// outside of rendering.
+    #[wasm_bindgen(js_name = uboUpload)]
     pub fn ubo_upload(&self, ubo: UniformBufferId) {
         let gl = self.gl();
         match self.res().uniform_buffers.get_mut(ubo.0) {
@@ -291,6 +297,7 @@ impl Context {
     }
 
     /// Total std140 size of the block in bytes (0 for a stale handle).
+    #[wasm_bindgen(js_name = uboByteSize)]
     pub fn ubo_byte_size(&self, ubo: UniformBufferId) -> u32 {
         self.res()
             .uniform_buffers
@@ -300,6 +307,7 @@ impl Context {
 
     /// A copy of the CPU-side staging bytes (std140-packed). Reflects writes
     /// immediately, regardless of whether they've been uploaded.
+    #[wasm_bindgen(js_name = uboData)]
     pub fn ubo_data(&self, ubo: UniformBufferId) -> Vec<u8> {
         self.res()
             .uniform_buffers
@@ -309,15 +317,19 @@ impl Context {
 
     // --- scalar / vector setters --------------------------------------------
 
+    #[wasm_bindgen(js_name = uboSetF32)]
     pub fn ubo_set_f32(&self, ubo: UniformBufferId, path: &str, x: f32) {
         self.ubo_put(ubo, "ubo_set_f32", path, Some(FieldType::F32), &[x]);
     }
+    #[wasm_bindgen(js_name = uboSetVec2)]
     pub fn ubo_set_vec2(&self, ubo: UniformBufferId, path: &str, x: f32, y: f32) {
         self.ubo_put(ubo, "ubo_set_vec2", path, Some(FieldType::Vec2), &[x, y]);
     }
+    #[wasm_bindgen(js_name = uboSetVec3)]
     pub fn ubo_set_vec3(&self, ubo: UniformBufferId, path: &str, x: f32, y: f32, z: f32) {
         self.ubo_put(ubo, "ubo_set_vec3", path, Some(FieldType::Vec3), &[x, y, z]);
     }
+    #[wasm_bindgen(js_name = uboSetVec4)]
     pub fn ubo_set_vec4(&self, ubo: UniformBufferId, path: &str, x: f32, y: f32, z: f32, w: f32) {
         self.ubo_put(
             ubo,
@@ -328,12 +340,15 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = uboSetI32)]
     pub fn ubo_set_i32(&self, ubo: UniformBufferId, path: &str, x: i32) {
         self.ubo_put(ubo, "ubo_set_i32", path, Some(FieldType::I32), &[x]);
     }
+    #[wasm_bindgen(js_name = uboSetIvec2)]
     pub fn ubo_set_ivec2(&self, ubo: UniformBufferId, path: &str, x: i32, y: i32) {
         self.ubo_put(ubo, "ubo_set_ivec2", path, Some(FieldType::IVec2), &[x, y]);
     }
+    #[wasm_bindgen(js_name = uboSetIvec3)]
     pub fn ubo_set_ivec3(&self, ubo: UniformBufferId, path: &str, x: i32, y: i32, z: i32) {
         self.ubo_put(
             ubo,
@@ -343,6 +358,7 @@ impl Context {
             &[x, y, z],
         );
     }
+    #[wasm_bindgen(js_name = uboSetIvec4)]
     pub fn ubo_set_ivec4(&self, ubo: UniformBufferId, path: &str, x: i32, y: i32, z: i32, w: i32) {
         self.ubo_put(
             ubo,
@@ -353,12 +369,15 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = uboSetU32)]
     pub fn ubo_set_u32(&self, ubo: UniformBufferId, path: &str, x: u32) {
         self.ubo_put(ubo, "ubo_set_u32", path, Some(FieldType::U32), &[x]);
     }
+    #[wasm_bindgen(js_name = uboSetUvec2)]
     pub fn ubo_set_uvec2(&self, ubo: UniformBufferId, path: &str, x: u32, y: u32) {
         self.ubo_put(ubo, "ubo_set_uvec2", path, Some(FieldType::UVec2), &[x, y]);
     }
+    #[wasm_bindgen(js_name = uboSetUvec3)]
     pub fn ubo_set_uvec3(&self, ubo: UniformBufferId, path: &str, x: u32, y: u32, z: u32) {
         self.ubo_put(
             ubo,
@@ -368,6 +387,7 @@ impl Context {
             &[x, y, z],
         );
     }
+    #[wasm_bindgen(js_name = uboSetUvec4)]
     pub fn ubo_set_uvec4(&self, ubo: UniformBufferId, path: &str, x: u32, y: u32, z: u32, w: u32) {
         self.ubo_put(
             ubo,
@@ -378,6 +398,7 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = uboSetBool)]
     pub fn ubo_set_bool(&self, ubo: UniformBufferId, path: &str, value: bool) {
         self.ubo_put(
             ubo,
@@ -391,6 +412,7 @@ impl Context {
     /// Set a matrix field of any shape. `data` is column-major with exactly
     /// `columns * rows` floats for the field's declared type (e.g. 9 for `Mat3`,
     /// 16 for `Mat4`). std140 column padding is applied on write.
+    #[wasm_bindgen(js_name = uboSetMat)]
     pub fn ubo_set_mat(&self, ubo: UniformBufferId, path: &str, data: &[f32]) {
         self.ubo_put(ubo, "ubo_set_mat", path, None, data);
     }

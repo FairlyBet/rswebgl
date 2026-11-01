@@ -175,3 +175,17 @@ FBO blit). Done. Deferred polish:
   copy op rather than loose `Texture` methods.
 - Pixel *pack* params + `readPixels` not yet implemented (only *unpack* is, via
   `PixelUnpack`).
+
+## JS API
+
+- Handles are bare `number`s in the `.d.ts`; branded types
+  (`type TextureId = number & { __brand: "TextureId" }`) would catch mixing
+  them up, via a `typescript_custom_section` or a post-processing step.
+- Parameter names in the `.d.ts` stay snake_case (`index_type`); cosmetic.
+- Builders consume themselves (`VaoBuilder.build`, `ParamLayoutBuilder`
+  chaining): in JS the object is freed by the call. Documented, but a
+  `&mut self` builder would be less surprising from JS.
+- No npm package / bundler setup yet; `examples/js-cube` builds with
+  `wasm-pack --target web`.
+- Description objects via serde (`ctx.renderState({ depthTest: true })`) as
+  planned in the design doc — not needed yet.

@@ -50,7 +50,7 @@ fn default_state(f: &Fixture) -> StateId {
 
 fn canvas_pass() -> Pass {
     let mut pass = Pass::to_default();
-    pass.set_clear(ClearMask::color());
+    pass.set_clear(&ClearMask::color());
     pass
 }
 
@@ -63,7 +63,7 @@ fn push_quad(f: &Fixture, pass: &mut Pass, program: ProgramId, state: StateId, c
         NULL,
         NULL,
         quad(f, col),
-        quad_cmd(),
+        &quad_cmd(),
     );
 }
 
@@ -123,7 +123,8 @@ fn key_last_draws_after_default_keys() {
     let mut pass = canvas_pass();
     let q = quad(&f, 1);
     let key = KEY_LAST | default_key(red, state, NULL, f.quad);
-    pass.push_with_key(key, red, state, f.quad, NULL, NULL, NULL, q, quad_cmd());
+    let (hi, lo) = ((key >> 32) as u32, key as u32);
+    pass.push_with_key(hi, lo, red, state, f.quad, NULL, NULL, NULL, q, &quad_cmd());
     push_quad(&f, &mut pass, green, state, 1);
 
     f.ctx.render(&pass);
@@ -231,7 +232,7 @@ fn texture_upload_between_frames_rebinds_unit() {
         NULL,
         NULL,
         quad(&f, 1),
-        quad_cmd(),
+        &quad_cmd(),
     );
     f.ctx.render(&pass);
     assert_eq!(read_quads(&f.gl)[1], RED);

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <title>rswebgl: cubes from plain JS</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #111;
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    #stats {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      font: 12px/1.4 ui-monospace, monospace;
+      color: #ccc;
+      white-space: pre;
+    }
+  </style>
+</head>
+
+<body>
+  <canvas id="c"></canvas>
+  <div id="stats"></div>
+  <script type="module" src="./main.js"></script>
+</body>
+
+</html>

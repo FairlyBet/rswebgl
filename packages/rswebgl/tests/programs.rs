@@ -69,3 +69,13 @@ fn renderer_skips_program_that_failed_to_link() {
     assert!(!f.ctx.program_is_valid(broken));
     assert!(f.ctx.program_is_valid(good));
 }
+
+// Errors cross into JS as `Error` objects (message + stack), not bare strings.
+#[wasm_bindgen_test]
+fn errors_reach_js_as_error_objects() {
+    let f = fixture();
+    let err = f.ctx.create_program("not glsl", "not glsl").unwrap_err();
+    assert!(!err.is_empty());
+    let js: wasm_bindgen::JsValue = err.into();
+    assert!(wasm_bindgen::JsCast::is_instance_of::<js_sys::Error>(&js));
+}

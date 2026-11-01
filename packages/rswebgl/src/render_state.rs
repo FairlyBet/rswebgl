@@ -161,49 +161,82 @@ impl StencilOp {
 #[wasm_bindgen]
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderState {
+    #[wasm_bindgen(js_name = depthTest)]
     pub depth_test: bool,
+    #[wasm_bindgen(js_name = depthFunc)]
     pub depth_func: DepthFunc,
+    #[wasm_bindgen(js_name = depthMask)]
     pub depth_mask: bool,
 
     pub blend: bool,
+    #[wasm_bindgen(js_name = blendSrcRgb)]
     pub blend_src_rgb: BlendFactor,
+    #[wasm_bindgen(js_name = blendDstRgb)]
     pub blend_dst_rgb: BlendFactor,
+    #[wasm_bindgen(js_name = blendSrcAlpha)]
     pub blend_src_alpha: BlendFactor,
+    #[wasm_bindgen(js_name = blendDstAlpha)]
     pub blend_dst_alpha: BlendFactor,
+    #[wasm_bindgen(js_name = blendEqRgb)]
     pub blend_eq_rgb: BlendEquation,
+    #[wasm_bindgen(js_name = blendEqAlpha)]
     pub blend_eq_alpha: BlendEquation,
 
+    #[wasm_bindgen(js_name = cullFace)]
     pub cull_face: bool,
+    #[wasm_bindgen(js_name = cullMode)]
     pub cull_mode: CullFace,
+    #[wasm_bindgen(js_name = frontFace)]
     pub front_face: FrontFace,
 
+    #[wasm_bindgen(js_name = stencilTest)]
     pub stencil_test: bool,
+    #[wasm_bindgen(js_name = stencilFunc)]
     pub stencil_func: StencilFunc,
+    #[wasm_bindgen(js_name = stencilRef)]
     pub stencil_ref: i32,
+    #[wasm_bindgen(js_name = stencilMask)]
     pub stencil_mask: u32,
+    #[wasm_bindgen(js_name = stencilFail)]
     pub stencil_fail: StencilOp,
+    #[wasm_bindgen(js_name = stencilDepthFail)]
     pub stencil_depth_fail: StencilOp,
+    #[wasm_bindgen(js_name = stencilPass)]
     pub stencil_pass: StencilOp,
+    #[wasm_bindgen(js_name = stencilWriteMask)]
     pub stencil_write_mask: u32,
 
+    #[wasm_bindgen(js_name = scissorTest)]
     pub scissor_test: bool,
+    #[wasm_bindgen(js_name = scissorX)]
     pub scissor_x: i32,
+    #[wasm_bindgen(js_name = scissorY)]
     pub scissor_y: i32,
+    #[wasm_bindgen(js_name = scissorWidth)]
     pub scissor_width: i32,
+    #[wasm_bindgen(js_name = scissorHeight)]
     pub scissor_height: i32,
 
+    #[wasm_bindgen(js_name = colorMaskR)]
     pub color_mask_r: bool,
+    #[wasm_bindgen(js_name = colorMaskG)]
     pub color_mask_g: bool,
+    #[wasm_bindgen(js_name = colorMaskB)]
     pub color_mask_b: bool,
+    #[wasm_bindgen(js_name = colorMaskA)]
     pub color_mask_a: bool,
 
+    #[wasm_bindgen(js_name = polygonOffsetFill)]
     pub polygon_offset_fill: bool,
+    #[wasm_bindgen(js_name = polygonOffsetFactor)]
     pub polygon_offset_factor: f32,
+    #[wasm_bindgen(js_name = polygonOffsetUnits)]
     pub polygon_offset_units: f32,
 }
 
 #[wasm_bindgen]
 impl RenderState {
+    #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -456,6 +489,7 @@ impl Context {
     /// The id of `state`, interned: equal states get the same id, so draws
     /// compare render states as numbers and the full diff runs only on an
     /// actual change. States are small and never freed (an app has a handful).
+    #[wasm_bindgen(js_name = renderState)]
     pub fn render_state(&self, state: &RenderState) -> StateId {
         let mut res = self.res();
         if let Some((h, _)) = res.render_states.iter().find(|(_, s)| *s == state) {

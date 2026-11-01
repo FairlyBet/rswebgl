@@ -22,6 +22,7 @@
 //! let orm = packer.pack(&spec, 1024, 1024, false, true)?;
 //! ```
 
+use crate::error::{Error, err};
 use wasm_bindgen::prelude::*;
 
 use crate::console;
@@ -83,6 +84,7 @@ impl PackSpec {
     /// Fill output channel `out` from channel `channel` of `tex`. Up to four
     /// distinct source textures may be referenced across all channels; a fifth is
     /// rejected with a logged error (the channel is left at its previous setting).
+    #[wasm_bindgen(js_name = setSource)]
     pub fn set_source(&mut self, out: Channel, tex: TextureId, channel: Channel) {
         let slot = match self.sources.iter().position(|t| *t == tex) {
             Some(i) => i,
@@ -106,6 +108,7 @@ impl PackSpec {
 
     /// Fill output channel `out` with a constant value (overrides any source set
     /// on that channel).
+    #[wasm_bindgen(js_name = setConstant)]
     pub fn set_constant(&mut self, out: Channel, value: f32) {
         let o = out as usize;
         self.mode[o] = 0;
@@ -113,6 +116,7 @@ impl PackSpec {
     }
 
     /// Number of distinct source textures referenced so far.
+    #[wasm_bindgen(js_name = sourceCount)]
     pub fn source_count(&self) -> usize {
         self.sources.len()
     }
@@ -192,7 +196,8 @@ pub struct TexturePacker {
 #[wasm_bindgen]
 impl TexturePacker {
     /// Compile the packer's program and allocate its scratch resources.
-    pub fn new(ctx: &Context) -> Result<TexturePacker, String> {
+    #[wasm_bindgen(constructor)]
+    pub fn new(ctx: &Context) -> Result<TexturePacker, Error> {
         let program = ctx.create_program(PACK_VERT, PACK_FRAG)?;
         // Size is irrelevant: the target is (re)attached per pack and the pass
         // viewport is set explicitly, so completeness follows the attachment.
@@ -280,7 +285,7 @@ impl TexturePacker {
         height: i32,
         srgb: bool,
         generate_mipmaps: bool,
-    ) -> Result<TextureId, String> {
+    ) -> Result<TextureId, Error> {
         let (min, mag) = if generate_mipmaps {
             (
                 TextureMinFilter::LinearMipmapLinear,
@@ -303,6 +308,7 @@ impl TexturePacker {
     /// storage). Useful when the output handle must exist before its size is known
     /// — e.g. an async loader that hands out the texture immediately and fills it
     /// once the sources decode.
+    #[wasm_bindgen(js_name = packInto)]
     pub fn pack_into(
         &self,
         output: TextureId,
@@ -311,9 +317,9 @@ impl TexturePacker {
         height: i32,
         srgb: bool,
         generate_mipmaps: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), Error> {
         if width <= 0 || height <= 0 {
-            return Err(format!("TexturePacker: invalid size {width}x{height}"));
+            return Err(err!("TexturePacker: invalid size {width}x{height}"));
         }
 
         let levels = if generate_mipmaps {
@@ -348,7 +354,7 @@ impl Drop for TexturePacker {
 }
 
 impl TexturePacker {
-    fn run_pass(&self, spec: &PackSpec, width: i32, height: i32) -> Result<(), String> {
+    fn run_pass(&self, spec: &PackSpec, width: i32, height: i32) -> Result<(), Error> {
         self.ctx.check_framebuffer(self.fbo)?;
 
         let ctx = &self.ctx;
@@ -366,11 +372,11 @@ impl TexturePacker {
         let state = ctx.render_state(&RenderState::new());
         let mut batch = Batch::new(self.program, state);
         batch.set_group(0, self.params);
-        batch.draw_vertexless(DrawCommand::arrays(DrawMode::Triangles, 0, 3));
+        batch.draw_vertexless(&DrawCommand::arrays(DrawMode::Triangles, 0, 3));
 
         let mut pass = Pass::new(self.fbo);
-        pass.set_viewport(Viewport::new(0, 0, width, height));
-        pass.add(batch);
+        pass.set_viewport(&Viewport::new(0, 0, width, height));
+        pass.add(&batch);
         self.ctx.render(&pass);
         Ok(())
     }

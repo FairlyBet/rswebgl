@@ -126,7 +126,7 @@ fn run(ctx: Context, model: Model) {
         .expect("object layout");
 
     let mut pass = Pass::to_default();
-    pass.set_clear(ClearMask::color_depth());
+    pass.set_clear(&ClearMask::color_depth());
     let mut items: Vec<Item> = Vec::new();
 
     for i in 0..model.draw_item_count() {
@@ -149,7 +149,7 @@ fn run(ctx: Context, model: Model) {
             key |= KEY_LAST;
         }
         let groups = [ParamGroupId::NULL, material, object, ParamGroupId::NULL];
-        pass.push_groups_with_key(key, program, state, di.vao(), groups, di.draw_command());
+        pass.push_groups_with_key(key, program, state, di.vao(), groups, &di.draw_command());
 
         items.push(Item {
             ubo,

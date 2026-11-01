@@ -1,3 +1,4 @@
+use crate::error::Error;
 use rswebgl_foundation::pool::Destroyed;
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlBuffer};
@@ -106,7 +107,7 @@ pub(crate) fn create_raw(
     kind: BufferKind,
     usage: BufferUsage,
     init: Init<'_>,
-) -> Result<BufferObj, String> {
+) -> Result<BufferObj, Error> {
     let raw = gl.create_buffer().ok_or("createBuffer failed")?;
     let t = bind_for_upload(gl, kind, &raw);
     let size = match init {
@@ -138,13 +139,13 @@ pub(crate) fn write_raw(
 }
 
 impl Context {
-    pub(crate) fn insert_buffer(&self, obj: BufferObj) -> Result<BufferId, String> {
+    pub(crate) fn insert_buffer(&self, obj: BufferObj) -> Result<BufferId, Error> {
         let mut res = self.res();
         match res.buffers.insert(obj) {
             Ok(h) => Ok(h.into()),
             Err(e) => {
                 drop(res);
-                Err(e.to_string())
+                Err(e.to_string().into())
             }
         }
     }
@@ -153,14 +154,16 @@ impl Context {
 #[wasm_bindgen]
 impl Context {
     /// A vertex / uniform / generic buffer filled with `data`.
-    pub fn create_buffer(&self, usage: BufferUsage, data: &[u8]) -> Result<BufferId, String> {
+    #[wasm_bindgen(js_name = createBuffer)]
+    pub fn create_buffer(&self, usage: BufferUsage, data: &[u8]) -> Result<BufferId, Error> {
         self.check_alive()?;
         let obj = create_raw(self.gl(), BufferKind::Generic, usage, Init::Data(data))?;
         self.insert_buffer(obj)
     }
 
     /// A vertex / uniform / generic buffer of `size` zeroed bytes.
-    pub fn create_empty_buffer(&self, usage: BufferUsage, size: u32) -> Result<BufferId, String> {
+    #[wasm_bindgen(js_name = createEmptyBuffer)]
+    pub fn create_empty_buffer(&self, usage: BufferUsage, size: u32) -> Result<BufferId, Error> {
         self.check_alive()?;
         let obj = create_raw(self.gl(), BufferKind::Generic, usage, Init::Size(size))?;
         self.insert_buffer(obj)
@@ -169,7 +172,8 @@ impl Context {
     /// An index buffer filled with `data` (raw bytes of u8/u16/u32 indices).
     /// WebGL never lets an index buffer be bound as anything else, so it's a
     /// separate kind.
-    pub fn create_index_buffer(&self, usage: BufferUsage, data: &[u8]) -> Result<BufferId, String> {
+    #[wasm_bindgen(js_name = createIndexBuffer)]
+    pub fn create_index_buffer(&self, usage: BufferUsage, data: &[u8]) -> Result<BufferId, Error> {
         self.check_alive()?;
         // The upload unbinds any VAO (see `bind_for_upload`).
         self.gl_state().forget_vao();
@@ -178,6 +182,7 @@ impl Context {
     }
 
     /// Overwrite a region of the buffer's data store (`bufferSubData`).
+    #[wasm_bindgen(js_name = bufferWrite)]
     pub fn buffer_write(&self, buffer: BufferId, offset: i32, data: &[u8]) {
         let res = self.res();
         let Some(b) = res.buffers.get(buffer.0) else {
@@ -190,12 +195,14 @@ impl Context {
     }
 
     /// Size in bytes; 0 for a stale handle.
+    #[wasm_bindgen(js_name = bufferSize)]
     pub fn buffer_size(&self, buffer: BufferId) -> u32 {
         self.res().buffers.get(buffer.0).map_or(0, |b| b.size)
     }
 
     /// Deletes the buffer. If vertex arrays still use it, its handle is invalid
     /// right away and the GL buffer goes when the last of them is destroyed.
+    #[wasm_bindgen(js_name = destroyBuffer)]
     pub fn destroy_buffer(&self, buffer: BufferId) {
         let destroyed = self.res().buffers.destroy(buffer.0);
         match destroyed {

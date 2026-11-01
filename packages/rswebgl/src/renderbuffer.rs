@@ -1,3 +1,4 @@
+use crate::error::{Error, err};
 use rswebgl_foundation::pool::Destroyed;
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlRenderbuffer};
@@ -65,7 +66,7 @@ impl Context {
         samples: i32,
         width: i32,
         height: i32,
-    ) -> Result<RenderbufferId, String> {
+    ) -> Result<RenderbufferId, Error> {
         self.check_alive()?;
         check_size(width, height, samples)?;
         let gl = self.gl();
@@ -100,7 +101,7 @@ impl Context {
                 format,
             })
             .map(Into::into)
-            .map_err(|e| e.to_string())
+            .map_err(|e| Error::from(e.to_string()))
     }
 
     fn renderbuffer_obj<T>(
@@ -114,40 +115,46 @@ impl Context {
 
 #[wasm_bindgen]
 impl Context {
+    #[wasm_bindgen(js_name = createRenderbuffer)]
     pub fn create_renderbuffer(
         &self,
         format: RenderbufferFormat,
         width: i32,
         height: i32,
-    ) -> Result<RenderbufferId, String> {
+    ) -> Result<RenderbufferId, Error> {
         self.new_renderbuffer(format, 0, width, height)
     }
 
+    #[wasm_bindgen(js_name = createRenderbufferMultisample)]
     pub fn create_renderbuffer_multisample(
         &self,
         format: RenderbufferFormat,
         samples: i32,
         width: i32,
         height: i32,
-    ) -> Result<RenderbufferId, String> {
+    ) -> Result<RenderbufferId, Error> {
         self.new_renderbuffer(format, samples.max(1), width, height)
     }
 
     /// 0 for a stale handle.
+    #[wasm_bindgen(js_name = renderbufferWidth)]
     pub fn renderbuffer_width(&self, rb: RenderbufferId) -> i32 {
         self.renderbuffer_obj(rb, |r| r.width).unwrap_or(0)
     }
 
     /// 0 for a stale handle.
+    #[wasm_bindgen(js_name = renderbufferHeight)]
     pub fn renderbuffer_height(&self, rb: RenderbufferId) -> i32 {
         self.renderbuffer_obj(rb, |r| r.height).unwrap_or(0)
     }
 
     /// 0 for a non-multisampled renderbuffer (or a stale handle).
+    #[wasm_bindgen(js_name = renderbufferSamples)]
     pub fn renderbuffer_samples(&self, rb: RenderbufferId) -> i32 {
         self.renderbuffer_obj(rb, |r| r.samples).unwrap_or(0)
     }
 
+    #[wasm_bindgen(js_name = renderbufferFormat)]
     pub fn renderbuffer_format(&self, rb: RenderbufferId) -> Option<RenderbufferFormat> {
         self.renderbuffer_obj(rb, |r| r.format)
     }
@@ -155,6 +162,7 @@ impl Context {
     /// Deletes the renderbuffer. If a framebuffer still has it attached, its
     /// handle is invalid right away and the GL object goes when the
     /// framebuffer lets go of it.
+    #[wasm_bindgen(js_name = destroyRenderbuffer)]
     pub fn destroy_renderbuffer(&self, rb: RenderbufferId) {
         let destroyed = self.res().renderbuffers.destroy(rb.0);
         match destroyed {
@@ -165,17 +173,17 @@ impl Context {
     }
 }
 
-fn check_size(width: i32, height: i32, samples: i32) -> Result<(), String> {
+fn check_size(width: i32, height: i32, samples: i32) -> Result<(), Error> {
     let max = limits::max_renderbuffer_size();
     if width < 1 || height < 1 || width as u32 > max || height as u32 > max {
-        return Err(format!(
+        return Err(err!(
             "renderbuffer size {width}x{height} is out of range (1..={max}, \
              MAX_RENDERBUFFER_SIZE)"
         ));
     }
     let max_samples = limits::max_samples();
     if samples < 0 || samples as u32 > max_samples {
-        return Err(format!(
+        return Err(err!(
             "renderbuffer samples {samples} is out of range (0..={max_samples}, MAX_SAMPLES)"
         ));
     }

@@ -1,3 +1,4 @@
+use crate::error::{Error, err};
 use std::collections::BTreeSet;
 
 use wasm_bindgen::prelude::*;
@@ -244,6 +245,7 @@ impl VaoBuilder {
         }
     }
 
+    #[wasm_bindgen(js_name = addF32)]
     pub fn add_f32(&mut self, index: u32, kind: AttrKind, data: &[f32]) {
         self.attrs.push(AttrEntry {
             index,
@@ -253,6 +255,7 @@ impl VaoBuilder {
         });
     }
 
+    #[wasm_bindgen(js_name = addF16)]
     pub fn add_f16(&mut self, index: u32, kind: AttrKind, data: &[u16]) {
         self.attrs.push(AttrEntry {
             index,
@@ -262,6 +265,7 @@ impl VaoBuilder {
         });
     }
 
+    #[wasm_bindgen(js_name = addI8)]
     pub fn add_i8(&mut self, index: u32, kind: AttrKind, data: &[i8]) {
         self.attrs.push(AttrEntry {
             index,
@@ -271,6 +275,7 @@ impl VaoBuilder {
         });
     }
 
+    #[wasm_bindgen(js_name = addU8)]
     pub fn add_u8(&mut self, index: u32, kind: AttrKind, data: &[u8]) {
         self.attrs.push(AttrEntry {
             index,
@@ -280,6 +285,7 @@ impl VaoBuilder {
         });
     }
 
+    #[wasm_bindgen(js_name = addI16)]
     pub fn add_i16(&mut self, index: u32, kind: AttrKind, data: &[i16]) {
         self.attrs.push(AttrEntry {
             index,
@@ -289,6 +295,7 @@ impl VaoBuilder {
         });
     }
 
+    #[wasm_bindgen(js_name = addU16)]
     pub fn add_u16(&mut self, index: u32, kind: AttrKind, data: &[u16]) {
         self.attrs.push(AttrEntry {
             index,
@@ -298,6 +305,7 @@ impl VaoBuilder {
         });
     }
 
+    #[wasm_bindgen(js_name = addI32)]
     pub fn add_i32(&mut self, index: u32, kind: AttrKind, data: &[i32]) {
         self.attrs.push(AttrEntry {
             index,
@@ -307,6 +315,7 @@ impl VaoBuilder {
         });
     }
 
+    #[wasm_bindgen(js_name = addU32)]
     pub fn add_u32(&mut self, index: u32, kind: AttrKind, data: &[u32]) {
         self.attrs.push(AttrEntry {
             index,
@@ -316,6 +325,7 @@ impl VaoBuilder {
         });
     }
 
+    #[wasm_bindgen(js_name = addIndicesU8)]
     pub fn add_indices_u8(&mut self, data: &[u8]) {
         self.indices = Some(IndexEntry {
             gl_type: WebGl2RenderingContext::UNSIGNED_BYTE,
@@ -323,6 +333,7 @@ impl VaoBuilder {
         });
     }
 
+    #[wasm_bindgen(js_name = addIndicesU16)]
     pub fn add_indices_u16(&mut self, data: &[u16]) {
         self.indices = Some(IndexEntry {
             gl_type: WebGl2RenderingContext::UNSIGNED_SHORT,
@@ -330,6 +341,7 @@ impl VaoBuilder {
         });
     }
 
+    #[wasm_bindgen(js_name = addIndicesU32)]
     pub fn add_indices_u32(&mut self, data: &[u32]) {
         self.indices = Some(IndexEntry {
             gl_type: WebGl2RenderingContext::UNSIGNED_INT,
@@ -337,7 +349,9 @@ impl VaoBuilder {
         });
     }
 
-    pub fn build(self) -> Result<VertexArrayId, String> {
+    /// Creates the vertex array. Consumes the builder: in JS the object is
+    /// freed by this call and must not be used again.
+    pub fn build(self) -> Result<VertexArrayId, Error> {
         let ctx = self.ctx.clone();
         let vao = ctx.create_vertex_array()?;
         if let Err(e) = self.build_into(vao) {
@@ -348,15 +362,19 @@ impl VaoBuilder {
     }
 
     /// Configures an existing vertex array. The buffers created here are owned
-    /// by it and destroyed with it.
-    pub fn build_into(self, vao: VertexArrayId) -> Result<(), String> {
+    /// by it and destroyed with it. Consumes the builder, like `build`.
+    #[wasm_bindgen(js_name = buildInto)]
+    pub fn build_into(self, vao: VertexArrayId) -> Result<(), Error> {
         // 1. Source type matches declared kind
         for e in &self.attrs {
             let expected = e.kind.desc().gl_type;
             if expected != e.source_gl_type {
-                return Err(format!(
+                return Err(err!(
                     "VaoBuilder: attr index {} has kind {:?} (expects GL type 0x{:X}) but was added via a typed method for GL type 0x{:X}",
-                    e.index, e.kind, expected, e.source_gl_type
+                    e.index,
+                    e.kind,
+                    expected,
+                    e.source_gl_type
                 ));
             }
         }
@@ -366,7 +384,7 @@ impl VaoBuilder {
         for e in &self.attrs {
             let bpv = e.kind.bytes_per_vertex();
             if !e.data.len().is_multiple_of(bpv as usize) {
-                return Err(format!(
+                return Err(err!(
                     "VaoBuilder: attr index {} ({:?}) data length {} is not a multiple of bytes-per-vertex {}",
                     e.index,
                     e.kind,
@@ -378,9 +396,11 @@ impl VaoBuilder {
             match vertex_count {
                 None => vertex_count = Some(n),
                 Some(prev) if prev != n => {
-                    return Err(format!(
+                    return Err(err!(
                         "VaoBuilder: attr index {} has {} vertices, expected {} (from earlier attr)",
-                        e.index, n, prev
+                        e.index,
+                        n,
+                        prev
                     ));
                 }
                 _ => {}
@@ -396,16 +416,21 @@ impl VaoBuilder {
             for s in 0..d.slots {
                 let slot = e.index + s;
                 if slot >= max_slots {
-                    return Err(format!(
+                    return Err(err!(
                         "VaoBuilder: {:?} at index {} needs attribute slot {}, beyond \
                          MAX_VERTEX_ATTRIBS = {}",
-                        e.kind, e.index, slot, max_slots
+                        e.kind,
+                        e.index,
+                        slot,
+                        max_slots
                     ));
                 }
                 if !used.insert(slot) {
-                    return Err(format!(
+                    return Err(err!(
                         "VaoBuilder: attribute slot {} used by multiple entries (collision from {:?} at index {})",
-                        slot, e.kind, e.index
+                        slot,
+                        e.kind,
+                        e.index
                     ));
                 }
             }

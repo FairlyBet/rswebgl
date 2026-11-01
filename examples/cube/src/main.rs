@@ -110,11 +110,11 @@ fn build_scene(ctx: &Context) -> Result<Scene, String> {
     // One pass to the canvas, clearing first, with a single batch (program +
     // state) holding one draw.
     let mut pass = Pass::to_default();
-    pass.set_clear(ClearMask::color_depth());
+    pass.set_clear(&ClearMask::color_depth());
     let mut batch = Batch::new(program, render_state);
     batch.set_group(0, params);
-    batch.draw(vao, draw_cmd);
-    pass.add(batch);
+    batch.draw(vao, &draw_cmd);
+    pass.add(&batch);
 
     Ok(Scene { pass, ubo })
 }

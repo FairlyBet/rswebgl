@@ -101,15 +101,15 @@ pub fn draw_quad(batch: &mut Batch, f: &Fixture, col: i32) {
         rswebgl::draw::IndexType::UnsignedShort,
         0,
     );
-    batch.draw_with_group(f.quad, QUAD_SLOT, quad(f, col), cmd);
+    batch.draw_with_group(f.quad, QUAD_SLOT, quad(f, col), &cmd);
 }
 
 // One pass to the canvas, cleared to black first.
 pub fn render(f: &Fixture, batches: Vec<Batch>) {
     let mut pass = Pass::to_default();
-    pass.set_clear(ClearMask::color());
+    pass.set_clear(&ClearMask::color());
     for b in batches {
-        pass.add(b);
+        pass.add(&b);
     }
     f.ctx.render(&pass);
 }

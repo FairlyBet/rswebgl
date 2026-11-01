@@ -1,3 +1,4 @@
+use crate::error::Error;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -63,6 +64,7 @@ impl ClearMask {
             stencil: true,
         }
     }
+    #[wasm_bindgen(js_name = colorDepth)]
     pub fn color_depth() -> Self {
         Self {
             color: true,
@@ -70,6 +72,7 @@ impl ClearMask {
             stencil: false,
         }
     }
+    #[wasm_bindgen(js_name = colorDepthStencil)]
     pub fn color_depth_stencil() -> Self {
         Self::all()
     }
@@ -145,6 +148,7 @@ impl InvalidateMask {
             stencil: true,
         }
     }
+    #[wasm_bindgen(js_name = depthStencil)]
     pub fn depth_stencil() -> Self {
         Self {
             color: false,
@@ -152,6 +156,7 @@ impl InvalidateMask {
             stencil: true,
         }
     }
+    #[wasm_bindgen(js_name = colorDepthStencil)]
     pub fn color_depth_stencil() -> Self {
         Self::all()
     }
@@ -257,18 +262,22 @@ impl DefaultFramebuffer {
         self.inner.borrow().viewport.height
     }
 
+    #[wasm_bindgen(js_name = setViewport)]
     pub fn set_viewport(&self, v: Viewport) {
         self.inner.borrow_mut().viewport = v;
     }
 
+    #[wasm_bindgen(js_name = setClearColor)]
     pub fn set_clear_color(&self, r: f32, g: f32, b: f32, a: f32) {
         self.inner.borrow_mut().clear_color = [r, g, b, a];
     }
 
+    #[wasm_bindgen(js_name = setClearDepth)]
     pub fn set_clear_depth(&self, d: f32) {
         self.inner.borrow_mut().clear_depth = d;
     }
 
+    #[wasm_bindgen(js_name = setClearStencil)]
     pub fn set_clear_stencil(&self, s: i32) {
         self.inner.borrow_mut().clear_stencil = s;
     }
@@ -277,7 +286,8 @@ impl DefaultFramebuffer {
     /// size × devicePixelRatio, updating the viewport. Fires once immediately for
     /// the current size. No-op if already enabled; errors if there is no canvas
     /// (context created from a raw gl). Opt-in — call `disable_auto_resize` to stop.
-    pub fn enable_auto_resize(&self) -> Result<(), String> {
+    #[wasm_bindgen(js_name = enableAutoResize)]
+    pub fn enable_auto_resize(&self) -> Result<(), Error> {
         let mut s = self.inner.borrow_mut();
         if s.observer.is_some() {
             return Ok(());
@@ -304,6 +314,7 @@ impl DefaultFramebuffer {
         Ok(())
     }
 
+    #[wasm_bindgen(js_name = disableAutoResize)]
     pub fn disable_auto_resize(&self) {
         let mut s = self.inner.borrow_mut();
         if let Some(observer) = s.observer.take() {
@@ -312,6 +323,7 @@ impl DefaultFramebuffer {
         s.resize_closure = None;
     }
 
+    #[wasm_bindgen(js_name = isAutoResizeEnabled)]
     pub fn is_auto_resize_enabled(&self) -> bool {
         self.inner.borrow().observer.is_some()
     }
@@ -319,6 +331,7 @@ impl DefaultFramebuffer {
     /// Color space of the drawing buffer (`drawingBufferColorSpace`). `Srgb`
     /// (default) or `DisplayP3` for wide-gamut output. Invalid values are ignored
     /// by the browser, leaving it unchanged.
+    #[wasm_bindgen(js_name = setDrawingBufferColorSpace)]
     pub fn set_drawing_buffer_color_space(&self, space: ColorSpace) {
         let s = self.inner.borrow();
         let _ = js_sys::Reflect::set(
@@ -328,6 +341,7 @@ impl DefaultFramebuffer {
         );
     }
 
+    #[wasm_bindgen(js_name = drawingBufferColorSpace)]
     pub fn drawing_buffer_color_space(&self) -> ColorSpace {
         let s = self.inner.borrow();
         let v = js_sys::Reflect::get(s.gl.as_ref(), &JsValue::from_str("drawingBufferColorSpace"))
@@ -804,7 +818,8 @@ impl Context {
 
 #[wasm_bindgen]
 impl Context {
-    pub fn create_framebuffer(&self, width: i32, height: i32) -> Result<FramebufferId, String> {
+    #[wasm_bindgen(js_name = createFramebuffer)]
+    pub fn create_framebuffer(&self, width: i32, height: i32) -> Result<FramebufferId, Error> {
         self.check_alive()?;
         let raw = self
             .gl()
@@ -824,11 +839,12 @@ impl Context {
                 clear_stencil: 0,
             })
             .map(Into::into)
-            .map_err(|e| e.to_string())
+            .map_err(|e| Error::from(e.to_string()))
     }
 
     /// Deletes the framebuffer and stops using its attachments (textures and
     /// renderbuffers destroyed while attached are deleted now).
+    #[wasm_bindgen(js_name = destroyFramebuffer)]
     pub fn destroy_framebuffer(&self, fb: FramebufferId) {
         let gl = self.gl();
         let res = &mut *self.res();
@@ -850,12 +866,14 @@ impl Context {
     }
 
     /// 0 for a stale handle.
+    #[wasm_bindgen(js_name = framebufferWidth)]
     pub fn framebuffer_width(&self, fb: FramebufferId) -> i32 {
         self.with_framebuffer(fb, "framebuffer_width", |f| f.width)
             .unwrap_or(0)
     }
 
     /// 0 for a stale handle.
+    #[wasm_bindgen(js_name = framebufferHeight)]
     pub fn framebuffer_height(&self, fb: FramebufferId) -> i32 {
         self.with_framebuffer(fb, "framebuffer_height", |f| f.height)
             .unwrap_or(0)
@@ -863,12 +881,14 @@ impl Context {
 
     /// Viewport applied when this FBO is the render target (defaults to its full
     /// size). Set it to render into a sub-region.
-    pub fn framebuffer_set_viewport(&self, fb: FramebufferId, v: Viewport) {
-        self.with_framebuffer(fb, "framebuffer_set_viewport", |f| f.viewport = v);
+    #[wasm_bindgen(js_name = framebufferSetViewport)]
+    pub fn framebuffer_set_viewport(&self, fb: FramebufferId, v: &Viewport) {
+        self.with_framebuffer(fb, "framebuffer_set_viewport", |f| f.viewport = *v);
     }
 
     // --- color attachments (applied to GL immediately; FBO left bound) ---
 
+    #[wasm_bindgen(js_name = framebufferAttachColorTexture2D)]
     pub fn framebuffer_attach_color_texture_2d(
         &self,
         fb: FramebufferId,
@@ -884,6 +904,7 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = framebufferAttachColorCubeFace)]
     pub fn framebuffer_attach_color_cube_face(
         &self,
         fb: FramebufferId,
@@ -900,6 +921,7 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = framebufferAttachColorLayer)]
     pub fn framebuffer_attach_color_layer(
         &self,
         fb: FramebufferId,
@@ -916,6 +938,7 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = framebufferAttachColorRenderbuffer)]
     pub fn framebuffer_attach_color_renderbuffer(
         &self,
         fb: FramebufferId,
@@ -930,12 +953,14 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = framebufferDetachColor)]
     pub fn framebuffer_detach_color(&self, fb: FramebufferId, index: u32) {
         self.set_color_slot(fb, index, None, "framebuffer_detach_color");
     }
 
     // --- depth / stencil attachments ---
 
+    #[wasm_bindgen(js_name = framebufferAttachDepthTexture)]
     pub fn framebuffer_attach_depth_texture(&self, fb: FramebufferId, tex: TextureId, level: i32) {
         self.set_depth_slot(
             fb,
@@ -948,6 +973,7 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = framebufferAttachDepthStencilTexture)]
     pub fn framebuffer_attach_depth_stencil_texture(
         &self,
         fb: FramebufferId,
@@ -965,6 +991,7 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = framebufferAttachDepthRenderbuffer)]
     pub fn framebuffer_attach_depth_renderbuffer(&self, fb: FramebufferId, rb: RenderbufferId) {
         self.set_depth_slot(
             fb,
@@ -973,6 +1000,7 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = framebufferAttachDepthStencilRenderbuffer)]
     pub fn framebuffer_attach_depth_stencil_renderbuffer(
         &self,
         fb: FramebufferId,
@@ -985,12 +1013,14 @@ impl Context {
         );
     }
 
+    #[wasm_bindgen(js_name = framebufferDetachDepth)]
     pub fn framebuffer_detach_depth(&self, fb: FramebufferId) {
         self.set_depth_slot(fb, None, "framebuffer_detach_depth");
     }
 
     // --- getters (NULL if the slot is empty or holds the other kind) ---
 
+    #[wasm_bindgen(js_name = framebufferColorTexture)]
     pub fn framebuffer_color_texture(&self, fb: FramebufferId, index: u32) -> TextureId {
         self.with_framebuffer(fb, "framebuffer_color_texture", |f| {
             match f
@@ -1007,6 +1037,7 @@ impl Context {
         .unwrap_or(TextureId::NULL)
     }
 
+    #[wasm_bindgen(js_name = framebufferColorRenderbuffer)]
     pub fn framebuffer_color_renderbuffer(&self, fb: FramebufferId, index: u32) -> RenderbufferId {
         self.with_framebuffer(fb, "framebuffer_color_renderbuffer", |f| {
             match f
@@ -1023,6 +1054,7 @@ impl Context {
         .unwrap_or(RenderbufferId::NULL)
     }
 
+    #[wasm_bindgen(js_name = framebufferDepthTexture)]
     pub fn framebuffer_depth_texture(&self, fb: FramebufferId) -> TextureId {
         self.with_framebuffer(fb, "framebuffer_depth_texture", |f| {
             match f.depth.map(|d| d.source()) {
@@ -1033,6 +1065,7 @@ impl Context {
         .unwrap_or(TextureId::NULL)
     }
 
+    #[wasm_bindgen(js_name = framebufferDepthRenderbuffer)]
     pub fn framebuffer_depth_renderbuffer(&self, fb: FramebufferId) -> RenderbufferId {
         self.with_framebuffer(fb, "framebuffer_depth_renderbuffer", |f| {
             match f.depth.map(|d| d.source()) {
@@ -1046,6 +1079,7 @@ impl Context {
     // --- clear values (applied per-attachment by the pass's clear) ---
 
     /// Float/normalized color clear for attachment `index` (the common case).
+    #[wasm_bindgen(js_name = framebufferSetColorClearF32)]
     pub fn framebuffer_set_color_clear_f32(
         &self,
         fb: FramebufferId,
@@ -1061,6 +1095,7 @@ impl Context {
     }
 
     /// Signed-integer color clear, for attachments with an integer internal format.
+    #[wasm_bindgen(js_name = framebufferSetColorClearI32)]
     pub fn framebuffer_set_color_clear_i32(
         &self,
         fb: FramebufferId,
@@ -1076,6 +1111,7 @@ impl Context {
     }
 
     /// Unsigned-integer color clear, for attachments with an unsigned integer format.
+    #[wasm_bindgen(js_name = framebufferSetColorClearU32)]
     pub fn framebuffer_set_color_clear_u32(
         &self,
         fb: FramebufferId,
@@ -1091,14 +1127,17 @@ impl Context {
     }
 
     /// Shorthand for `framebuffer_set_color_clear_f32(fb, 0, ..)`.
+    #[wasm_bindgen(js_name = framebufferSetClearColor)]
     pub fn framebuffer_set_clear_color(&self, fb: FramebufferId, r: f32, g: f32, b: f32, a: f32) {
         self.framebuffer_set_color_clear_f32(fb, 0, r, g, b, a);
     }
 
+    #[wasm_bindgen(js_name = framebufferSetClearDepth)]
     pub fn framebuffer_set_clear_depth(&self, fb: FramebufferId, d: f32) {
         self.with_framebuffer(fb, "framebuffer_set_clear_depth", |f| f.clear_depth = d);
     }
 
+    #[wasm_bindgen(js_name = framebufferSetClearStencil)]
     pub fn framebuffer_set_clear_stencil(&self, fb: FramebufferId, s: i32) {
         self.with_framebuffer(fb, "framebuffer_set_clear_stencil", |f| f.clear_stencil = s);
     }

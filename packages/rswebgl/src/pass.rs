@@ -56,7 +56,7 @@ pub const KEY_LAST: u64 = 1 << 63;
 /// then render state, then the slot-1 group (by convention the material), then
 /// the vertex array. Equal keys keep their insertion order. Bit 63 is left
 /// clear (see `KEY_LAST`).
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = defaultKey)]
 pub fn default_key(
     program: ProgramId,
     state: StateId,
@@ -108,6 +108,7 @@ impl Batch {
     }
 
     /// The group every draw sees in `slot` unless it sets its own.
+    #[wasm_bindgen(js_name = setGroup)]
     pub fn set_group(&mut self, slot: u32, group: ParamGroupId) {
         if let Some(s) = slot_index(slot) {
             self.groups[s] = group;
@@ -115,18 +116,19 @@ impl Batch {
     }
 
     /// Adds a draw that binds `vao` and uses the batch's groups.
-    pub fn draw(&mut self, vao: VertexArrayId, command: DrawCommand) {
+    pub fn draw(&mut self, vao: VertexArrayId, command: &DrawCommand) {
         self.draw_with_groups(vao, [ParamGroupId::NULL; GROUP_SLOTS], command);
     }
 
     /// Adds a draw that uses `group` in `slot` (typically the object's own
     /// parameters) and the batch's groups elsewhere.
+    #[wasm_bindgen(js_name = drawWithGroup)]
     pub fn draw_with_group(
         &mut self,
         vao: VertexArrayId,
         slot: u32,
         group: ParamGroupId,
-        command: DrawCommand,
+        command: &DrawCommand,
     ) {
         let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
         if let Some(s) = slot_index(slot) {
@@ -137,10 +139,12 @@ impl Batch {
 
     /// Adds a draw with no VAO — for vertex-pulling shaders that source vertices
     /// from `gl_VertexID` (or bound buffers) rather than vertex attributes.
-    pub fn draw_vertexless(&mut self, command: DrawCommand) {
+    #[wasm_bindgen(js_name = drawVertexless)]
+    pub fn draw_vertexless(&mut self, command: &DrawCommand) {
         self.draw(VertexArrayId::NULL, command);
     }
 
+    #[wasm_bindgen(js_name = drawCount)]
     pub fn draw_count(&self) -> usize {
         self.draws.len()
     }
@@ -152,12 +156,12 @@ impl Batch {
         &mut self,
         vao: VertexArrayId,
         groups: [ParamGroupId; GROUP_SLOTS],
-        command: DrawCommand,
+        command: &DrawCommand,
     ) {
         self.draws.push(BatchDraw {
             vao,
             groups,
-            command,
+            command: *command,
         });
     }
 }
@@ -199,7 +203,7 @@ impl Pass {
         state: StateId,
         vao: VertexArrayId,
         groups: [ParamGroupId; GROUP_SLOTS],
-        command: DrawCommand,
+        command: &DrawCommand,
     ) {
         let key = default_key(program, state, groups[1], vao);
         self.push_groups_with_key(key, program, state, vao, groups, command);
@@ -213,7 +217,7 @@ impl Pass {
         state: StateId,
         vao: VertexArrayId,
         groups: [ParamGroupId; GROUP_SLOTS],
-        command: DrawCommand,
+        command: &DrawCommand,
     ) {
         let seq = self.items.len() as u32;
         self.items.push(DrawItem {
@@ -223,7 +227,7 @@ impl Pass {
             state,
             vao,
             groups,
-            command,
+            command: *command,
         });
     }
 }
@@ -237,38 +241,43 @@ impl Pass {
     }
 
     /// A pass that renders into the default (canvas) framebuffer.
+    #[wasm_bindgen(js_name = toDefault)]
     pub fn to_default() -> Self {
         Self::with_target(FramebufferId::NULL)
     }
 
     /// Restricts rendering to a sub-region; defaults to the target's full size.
-    pub fn set_viewport(&mut self, viewport: Viewport) {
-        self.viewport = Some(viewport);
+    #[wasm_bindgen(js_name = setViewport)]
+    pub fn set_viewport(&mut self, viewport: &Viewport) {
+        self.viewport = Some(*viewport);
     }
 
     /// Buffers to clear before drawing (the load op), using the target's clear
     /// values. Defaults to clearing nothing.
-    pub fn set_clear(&mut self, mask: ClearMask) {
-        self.clear = mask;
+    #[wasm_bindgen(js_name = setClear)]
+    pub fn set_clear(&mut self, mask: &ClearMask) {
+        self.clear = *mask;
     }
 
     /// Attachments to discard after drawing (the store op) via
     /// invalidateFramebuffer — lets tiled GPUs skip writing back data you won't
     /// read again (depth, MSAA color). Defaults to discarding nothing.
-    pub fn set_invalidate(&mut self, mask: InvalidateMask) {
-        self.invalidate = mask;
+    #[wasm_bindgen(js_name = setInvalidate)]
+    pub fn set_invalidate(&mut self, mask: &InvalidateMask) {
+        self.invalidate = *mask;
     }
 
-    /// Appends a batch's draws (the batch is consumed).
-    pub fn add(&mut self, batch: Batch) {
-        for d in batch.draws {
+    /// Appends a batch's draws. The batch is left as is, so it can be added
+    /// again (to this pass next frame, or to another).
+    pub fn add(&mut self, batch: &Batch) {
+        for d in &batch.draws {
             let mut groups = batch.groups;
             for (slot, g) in d.groups.iter().enumerate() {
                 if !g.is_null() {
                     groups[slot] = *g;
                 }
             }
-            self.push_groups(batch.program, batch.state, d.vao, groups, d.command);
+            self.push_groups(batch.program, batch.state, d.vao, groups, &d.command);
         }
     }
 
@@ -285,17 +294,21 @@ impl Pass {
         g1: ParamGroupId,
         g2: ParamGroupId,
         g3: ParamGroupId,
-        command: DrawCommand,
+        command: &DrawCommand,
     ) {
         self.push_groups(program, state, vao, [g0, g1, g2, g3], command);
     }
 
-    /// `push` with an explicit sort key — e.g. back-to-front depth for
-    /// transparent draws.
+    /// `push` with an explicit sort key, given as its high and low 32 bits
+    /// (JS numbers, no BigInt per draw): `key = key_hi << 32 | key_lo`. E.g. a
+    /// layer in `key_hi` (`0x8000_0000` = `KEY_LAST`) and quantized depth in
+    /// `key_lo` for back-to-front transparent draws.
     #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = pushWithKey)]
     pub fn push_with_key(
         &mut self,
-        key: u64,
+        key_hi: u32,
+        key_lo: u32,
         program: ProgramId,
         state: StateId,
         vao: VertexArrayId,
@@ -303,8 +316,9 @@ impl Pass {
         g1: ParamGroupId,
         g2: ParamGroupId,
         g3: ParamGroupId,
-        command: DrawCommand,
+        command: &DrawCommand,
     ) {
+        let key = (key_hi as u64) << 32 | key_lo as u64;
         self.push_groups_with_key(key, program, state, vao, [g0, g1, g2, g3], command);
     }
 
@@ -316,10 +330,12 @@ impl Pass {
     }
 
     /// Empties the draw list, keeping its memory for reuse.
+    #[wasm_bindgen(js_name = clearDraws)]
     pub fn clear_draws(&mut self) {
         self.items.clear();
     }
 
+    #[wasm_bindgen(js_name = drawCount)]
     pub fn draw_count(&self) -> usize {
         self.items.len()
     }

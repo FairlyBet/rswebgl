@@ -1,3 +1,4 @@
+use crate::error::Error;
 use std::cell::{Cell, RefCell, RefMut};
 use std::rc::Rc;
 
@@ -79,9 +80,13 @@ pub struct ContextOptions {
     pub depth: bool,
     pub stencil: bool,
     pub antialias: bool,
+    #[wasm_bindgen(js_name = premultipliedAlpha)]
     pub premultiplied_alpha: bool,
+    #[wasm_bindgen(js_name = preserveDrawingBuffer)]
     pub preserve_drawing_buffer: bool,
+    #[wasm_bindgen(js_name = powerPreference)]
     pub power_preference: PowerPreference,
+    #[wasm_bindgen(js_name = failIfMajorPerformanceCaveat)]
     pub fail_if_major_performance_caveat: bool,
     pub desynchronized: bool,
 }
@@ -265,15 +270,17 @@ pub struct Context {
 
 #[wasm_bindgen]
 impl Context {
+    #[wasm_bindgen(js_name = fromGl)]
     pub fn from_gl(gl: WebGl2RenderingContext) -> Context {
         let default_fb = DefaultFramebuffer::new(gl.clone(), Viewport::new(0, 0, 0, 0), None);
         Context::new(gl, default_fb)
     }
 
+    #[wasm_bindgen(js_name = fromCanvas)]
     pub fn from_canvas(
         canvas: &HtmlCanvasElement,
         options: &ContextOptions,
-    ) -> Result<Context, String> {
+    ) -> Result<Context, Error> {
         let gl = canvas
             .get_context_with_context_options("webgl2", &options.to_js())
             .map_err(|_| "get_context failed")?
@@ -287,11 +294,13 @@ impl Context {
 
     /// Whether the context is currently lost. While it is, `render` does
     /// nothing and `create_*` return an error.
+    #[wasm_bindgen(js_name = isLost)]
     pub fn is_lost(&self) -> bool {
         self.core.gl.is_context_lost()
     }
 
     /// JS: called when the context is lost. Every handle is dead from here on.
+    #[wasm_bindgen(js_name = setOnLost)]
     pub fn set_on_lost(&self, f: js_sys::Function) {
         self.on_lost(move |_| {
             let _ = f.call0(&JsValue::NULL);
@@ -300,6 +309,7 @@ impl Context {
 
     /// JS: called once the context is back (extensions already re-enabled).
     /// Recreate every resource here; handles from before the loss are stale.
+    #[wasm_bindgen(js_name = setOnRestored)]
     pub fn set_on_restored(&self, f: js_sys::Function) {
         self.on_restored(move |_| {
             let _ = f.call0(&JsValue::NULL);
@@ -308,6 +318,7 @@ impl Context {
 
     /// Debug aid: forces a context loss via `WEBGL_lose_context`, to exercise
     /// the restore path. Returns false if the extension isn't available.
+    #[wasm_bindgen(js_name = simulateContextLoss)]
     pub fn simulate_context_loss(&self) -> bool {
         let Some(ext) = self
             .core
@@ -327,6 +338,7 @@ impl Context {
     /// Debug aid: restores a context lost via `simulate_context_loss`. The
     /// restore (and `on_restored`) happens asynchronously. Returns false if no
     /// simulated loss is pending.
+    #[wasm_bindgen(js_name = simulateContextRestore)]
     pub fn simulate_context_restore(&self) -> bool {
         let ext = self.core.loss.lose_ext.borrow_mut().take();
         match ext {
@@ -342,6 +354,7 @@ impl Context {
     /// against the shader on first bind (a one-time introspection check per block;
     /// the per-frame upload path is never affected). On by default — turn off to
     /// skip the check in release builds.
+    #[wasm_bindgen(js_name = setValidateUniformBlocks)]
     pub fn set_validate_uniform_blocks(&self, on: bool) {
         let mut v = self.core.validate.get();
         v.blocks = on;
@@ -352,17 +365,20 @@ impl Context {
     /// uniforms that a draw gets from neither its batch nor itself — such a
     /// uniform silently keeps whatever an earlier draw left. Costs a lookup per
     /// active uniform per draw; on by default — turn off in release builds.
+    #[wasm_bindgen(js_name = setValidateUniforms)]
     pub fn set_validate_uniforms(&self, on: bool) {
         let mut v = self.core.validate.get();
         v.uniforms = on;
         self.core.validate.set(v);
     }
 
+    #[wasm_bindgen(js_name = defaultFramebuffer)]
     pub fn default_framebuffer(&self) -> DefaultFramebuffer {
         self.core.default_fb.handle()
     }
 
     /// Enables an extension; it's re-enabled automatically after a context restore.
+    #[wasm_bindgen(js_name = enableExtension)]
     pub fn enable_extension(&self, ext: Extension) -> bool {
         if self.is_extension_enabled(ext.clone()) {
             return true;
@@ -389,6 +405,7 @@ impl Context {
         available
     }
 
+    #[wasm_bindgen(js_name = isExtensionEnabled)]
     pub fn is_extension_enabled(&self, ext: Extension) -> bool {
         self.core.loss.extensions.borrow().iter().any(|e| e == &ext)
     }
@@ -427,7 +444,7 @@ impl Context {
         *self.core.loss.on_restored.borrow_mut() = Some(Box::new(f));
     }
 
-    pub(crate) fn check_alive(&self) -> Result<(), String> {
+    pub(crate) fn check_alive(&self) -> Result<(), Error> {
         if self.core.gl.is_context_lost() {
             Err("WebGL context is lost".into())
         } else {

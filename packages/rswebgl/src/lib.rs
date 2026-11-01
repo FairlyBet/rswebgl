@@ -10,7 +10,8 @@
 //!
 //! One rule, by what the caller can do about it:
 //!
-//! - **`Result<_, String>`** when nothing usable can be produced: creating an
+//! - **`Result<_, error::Error>`** (a JS `Error` on the JS side) when nothing
+//!   usable can be produced: creating an
 //!   object (`Context::create_*`, `VaoBuilder::build`, shader compile/link,
 //!   out-of-limit renderbuffers), framebuffer completeness, a lost context.
 //! - **`console.error` + no-op** when an operation on an existing object is
@@ -31,6 +32,7 @@ pub mod console;
 pub mod context;
 pub(crate) mod context_loss;
 pub mod draw;
+pub mod error;
 pub mod extension;
 pub mod framebuffer;
 pub mod ids;

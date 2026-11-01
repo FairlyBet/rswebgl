@@ -34,10 +34,15 @@ macro_rules! compressed_formats {
         impl CompressedFormat {
             /// Wrap a raw GL compressed internal-format enum (escape hatch for
             /// formats not covered by the named constants).
+            #[wasm_bindgen(js_name = fromInternal)]
             pub fn from_internal(internal: u32) -> CompressedFormat {
                 CompressedFormat { internal }
             }
-            $(pub fn $f() -> CompressedFormat { CompressedFormat::$cst })*
+            // JS gets the GL constant names: `CompressedFormat.RGBA_ASTC_4X4()`.
+            $(
+                #[wasm_bindgen(js_name = $cst)]
+                pub fn $f() -> CompressedFormat { CompressedFormat::$cst }
+            )*
         }
     };
 }

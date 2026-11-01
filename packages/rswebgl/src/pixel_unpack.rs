@@ -20,23 +20,31 @@ const NONE: i32 = 0;
 pub struct PixelUnpack {
     /// Flip the source vertically — the usual fix for images that load upside
     /// down (WebGL's texture origin is bottom-left). `UNPACK_FLIP_Y_WEBGL`.
+    #[wasm_bindgen(js_name = flipY)]
     pub flip_y: bool,
     /// Premultiply RGB by alpha during upload. `UNPACK_PREMULTIPLY_ALPHA_WEBGL`.
+    #[wasm_bindgen(js_name = premultiplyAlpha)]
     pub premultiply_alpha: bool,
     /// Apply the browser's default color-space conversion to DOM sources (vs
     /// none). `UNPACK_COLORSPACE_CONVERSION_WEBGL`.
+    #[wasm_bindgen(js_name = colorspaceConversion)]
     pub colorspace_conversion: bool,
     /// Row byte alignment: 1, 2, 4 (default), or 8. `UNPACK_ALIGNMENT`.
     pub alignment: i32,
     /// Full source row length in pixels, 0 = tightly packed. `UNPACK_ROW_LENGTH`.
+    #[wasm_bindgen(js_name = rowLength)]
     pub row_length: i32,
     /// Pixels skipped at the start of each row. `UNPACK_SKIP_PIXELS`.
+    #[wasm_bindgen(js_name = skipPixels)]
     pub skip_pixels: i32,
     /// Rows skipped before the first. `UNPACK_SKIP_ROWS`.
+    #[wasm_bindgen(js_name = skipRows)]
     pub skip_rows: i32,
     /// Full source image height in rows (3D), 0 = tightly packed. `UNPACK_IMAGE_HEIGHT`.
+    #[wasm_bindgen(js_name = imageHeight)]
     pub image_height: i32,
     /// Images skipped before the first (3D). `UNPACK_SKIP_IMAGES`.
+    #[wasm_bindgen(js_name = skipImages)]
     pub skip_images: i32,
 }
 

@@ -1,3 +1,4 @@
+use crate::error::Error;
 use rswebgl_foundation::layout::{FieldType, Scalar};
 use rswebgl_foundation::pool::Destroyed;
 use wasm_bindgen::prelude::*;
@@ -296,7 +297,7 @@ impl ProgramObj {
         frag_src: &str,
         parallel: bool,
         validate: Validation,
-    ) -> Result<ProgramObj, String> {
+    ) -> Result<ProgramObj, Error> {
         let vert = create_shader(gl, Gl::VERTEX_SHADER, vert_src)?;
         let frag = create_shader(gl, Gl::FRAGMENT_SHADER, frag_src)?;
 
@@ -348,7 +349,7 @@ impl ProgramObj {
     // Reads the link status once the link has completed, reflects the program
     // if it linked, frees the shader objects, and returns the compile/link logs
     // on failure.
-    fn finalize(&mut self, gl: &Gl) -> Result<(), String> {
+    fn finalize(&mut self, gl: &Gl) -> Result<(), Error> {
         self.ready = true;
         self.valid = gl
             .get_program_parameter(&self.raw, Gl::LINK_STATUS)
@@ -380,7 +381,7 @@ impl ProgramObj {
 
         gl.delete_shader(self.vert.take().as_ref());
         gl.delete_shader(self.frag.take().as_ref());
-        result
+        result.map_err(Error::from)
     }
 
     // Call right after the program is made current: writes each sampler's unit
@@ -564,7 +565,8 @@ impl Context {
     /// Compiles and links a program. Without `KHR_parallel_shader_compile` a
     /// compile or link error comes back here, with the shader logs; with it,
     /// creation doesn't block and errors are reported when the link completes.
-    pub fn create_program(&self, vert_src: &str, frag_src: &str) -> Result<ProgramId, String> {
+    #[wasm_bindgen(js_name = createProgram)]
+    pub fn create_program(&self, vert_src: &str, frag_src: &str) -> Result<ProgramId, Error> {
         self.check_alive()?;
         let parallel = self.is_extension_enabled(Extension::KhrParallelShaderCompile);
         let obj = ProgramObj::new(
@@ -577,10 +579,11 @@ impl Context {
         let mut res = self.res();
         match res.programs.insert(obj) {
             Ok(h) => Ok(h.into()),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(e.to_string().into()),
         }
     }
 
+    #[wasm_bindgen(js_name = destroyProgram)]
     pub fn destroy_program(&self, program: ProgramId) {
         let destroyed = self.res().programs.destroy(program.0);
         match destroyed {
@@ -595,6 +598,7 @@ impl Context {
     /// (the renderer would otherwise wait on the link at first draw), and a failed
     /// link is logged to the console once, when it completes. False for a stale
     /// handle.
+    #[wasm_bindgen(js_name = programIsReady)]
     pub fn program_is_ready(&self, program: ProgramId) -> bool {
         let gl = self.gl();
         let mut res = self.res();
@@ -620,6 +624,7 @@ impl Context {
 
     /// Whether the program linked successfully (false while still linking, or
     /// for a stale handle).
+    #[wasm_bindgen(js_name = programIsValid)]
     pub fn program_is_valid(&self, program: ProgramId) -> bool {
         self.res().programs.get(program.0).is_some_and(|p| p.valid)
     }
@@ -627,6 +632,7 @@ impl Context {
     /// Names of the program's active uniforms outside uniform blocks (samplers
     /// included; arrays as their base name, without `[0]`), sorted. Waits for
     /// the link if needed.
+    #[wasm_bindgen(js_name = programActiveUniformNames)]
     pub fn program_active_uniform_names(&self, program: ProgramId) -> Vec<String> {
         let gl = self.gl();
         let mut res = self.res();
@@ -639,7 +645,7 @@ impl Context {
     }
 }
 
-fn create_shader(gl: &Gl, shader_type: u32, src: &str) -> Result<WebGlShader, String> {
+fn create_shader(gl: &Gl, shader_type: u32, src: &str) -> Result<WebGlShader, Error> {
     let shader = gl.create_shader(shader_type).ok_or("createShader failed")?;
     gl.shader_source(&shader, src);
     gl.compile_shader(&shader);

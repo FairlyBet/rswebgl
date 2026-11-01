@@ -38,7 +38,7 @@ pub struct Material {
 
 #[wasm_bindgen]
 impl Material {
-    #[wasm_bindgen(getter)]
+    #[wasm_bindgen(getter, js_name = baseColorFactor)]
     pub fn base_color_factor(&self) -> Vec<f32> {
         self.base_color_factor.to_vec()
     }
@@ -50,45 +50,45 @@ impl Material {
     pub fn roughness(&self) -> f32 {
         self.roughness
     }
-    #[wasm_bindgen(getter)]
+    #[wasm_bindgen(getter, js_name = emissiveFactor)]
     pub fn emissive_factor(&self) -> Vec<f32> {
         self.emissive.to_vec()
     }
-    #[wasm_bindgen(getter)]
+    #[wasm_bindgen(getter, js_name = alphaMode)]
     pub fn alpha_mode(&self) -> AlphaMode {
         self.alpha_mode
     }
-    #[wasm_bindgen(getter)]
+    #[wasm_bindgen(getter, js_name = alphaCutoff)]
     pub fn alpha_cutoff(&self) -> f32 {
         self.alpha_cutoff
     }
-    #[wasm_bindgen(getter)]
+    #[wasm_bindgen(getter, js_name = doubleSided)]
     pub fn double_sided(&self) -> bool {
         self.double_sided
     }
     /// Index into `Model::texture(i)`, or `-1` if absent.
-    #[wasm_bindgen(getter)]
+    #[wasm_bindgen(getter, js_name = baseColorTexture)]
     pub fn base_color_texture(&self) -> i32 {
         self.base_color_tex
     }
     /// TEXCOORD set index used by the base-color texture (`TEXCOORD_n`).
-    #[wasm_bindgen(getter)]
+    #[wasm_bindgen(getter, js_name = baseColorUv)]
     pub fn base_color_uv(&self) -> u32 {
         self.base_color_uv
     }
-    #[wasm_bindgen(getter)]
+    #[wasm_bindgen(getter, js_name = metallicRoughnessTexture)]
     pub fn metallic_roughness_texture(&self) -> i32 {
         self.metallic_roughness_tex
     }
-    #[wasm_bindgen(getter)]
+    #[wasm_bindgen(getter, js_name = normalTexture)]
     pub fn normal_texture(&self) -> i32 {
         self.normal_tex
     }
-    #[wasm_bindgen(getter)]
+    #[wasm_bindgen(getter, js_name = occlusionTexture)]
     pub fn occlusion_texture(&self) -> i32 {
         self.occlusion_tex
     }
-    #[wasm_bindgen(getter)]
+    #[wasm_bindgen(getter, js_name = emissiveTexture)]
     pub fn emissive_texture(&self) -> i32 {
         self.emissive_tex
     }

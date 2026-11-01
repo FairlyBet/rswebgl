@@ -34,6 +34,7 @@
 | GL state cache kept across frames (+ `invalidate_state`) | ✅ | `src/renderer.rs` |
 | Interned render states (`StateId`) | ✅ | `src/render_state.rs` |
 | Frame stats (draws, binds, uploads) | ✅ | `src/renderer.rs` |
+| JS API: camelCase, by-reference args, `Error` objects | ✅ | `examples/js-cube` |
 | Render-state diff               | ✅     | `src/render_state.rs`               |
 | Uniform diff (shadow compare)   | ✅     | `src/program.rs`, `src/renderer.rs` |
 
