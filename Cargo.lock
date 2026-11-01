@@ -267,6 +267,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rswebgl-ecs"
+version = "0.1.0"
+dependencies = [
+ "rswebgl-foundation",
+]
+
+[[package]]
 name = "rswebgl-foundation"
 version = "0.1.0"
 dependencies = [

@@ -3,6 +3,7 @@ members = [
     "packages/rswebgl",
     "packages/rswebgl-gltf",
     "packages/rswebgl-foundation",
+    "packages/rswebgl-ecs",
     "examples/cube",
     "examples/cubemap",
     "examples/texture",

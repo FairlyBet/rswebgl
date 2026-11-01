@@ -1,0 +1,8 @@
+[package]
+name = "rswebgl-ecs"
+version = "0.1.0"
+edition = "2024"
+description = "A small ECS for rswebgl scenes: generational entities, sparse-set component storage, change ticks"
+
+[dependencies]
+rswebgl-foundation = { path = "../rswebgl-foundation" }
