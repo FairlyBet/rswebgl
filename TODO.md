@@ -140,12 +140,6 @@ texture) into VAOs/textures/draw-list with spec-correct render state. Deferred:
 
 General GPU channel packer (up to 4 single-channel sources → RGBA via a fullscreen
 FBO blit). Done. Deferred polish:
-
-- The blit samples sources with whatever filter they currently carry. The glTF
-  ORM path works around this by forcing its (throwaway) sources to NEAREST first,
-  but the *general* packer can't mutate a caller's textures — a 1×1 sampler object
-  would let it override filtering per-blit instead (no sampler objects yet — see
-  PROGRESS "Sampler object ❌"). Minor quality point only.
 - `pack`/`pack_into` always output `RGBA8`/`SRGB8_ALPHA8`; no `RG8`/`R8` outputs
   (would shave memory when fewer than 3 channels are used). Revisit with the
   RGB/single-channel format question already noted for the glTF loader.
