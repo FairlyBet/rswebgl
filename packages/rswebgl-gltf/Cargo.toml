@@ -21,6 +21,7 @@ gltf = { version = "1.4", default-features = false, features = [
     "utils",
     "names",
     "extras",
+    "extensions",
 ] }
 
 [dependencies.web-sys]
@@ -31,3 +32,7 @@ features = [
     "Url",
     "Window",
 ]
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+web-sys = { workspace = true, features = ["Document", "HtmlCanvasElement"] }

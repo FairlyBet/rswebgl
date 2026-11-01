@@ -189,3 +189,14 @@ FBO blit). Done. Deferred polish:
   `wasm-pack --target web`.
 - Description objects via serde (`ctx.renderState({ depthTest: true })`) as
   planned in the design doc — not needed yet.
+
+## glTF
+
+- `EXT_mesh_gpu_instancing` instances come out as separate draw items; one
+  `drawElementsInstanced` with a per-instance matrix attribute needs renderer
+  support (with the ECS work). Quantized instance attributes (normalized
+  rotation) aren't read — such nodes are drawn once, with a warning.
+- Vertex attributes are dequantized to f32 on upload; keeping normalized
+  u8/u16 (`KHR_mesh_quantization`) would cut memory on mobile.
+- Not handled yet: skins, morph targets, animations, cameras, lights — scene
+  concerns, for the ECS.

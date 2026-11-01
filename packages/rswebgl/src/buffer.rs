@@ -199,6 +199,12 @@ impl Context {
     pub fn buffer_size(&self, buffer: BufferId) -> u32 {
         self.res().buffers.get(buffer.0).map_or(0, |b| b.size)
     }
+    /// Whether `buffer` names a live buffer (false once destroyed, or after a
+    /// context loss).
+    #[wasm_bindgen(js_name = bufferIsValid)]
+    pub fn buffer_is_valid(&self, buffer: BufferId) -> bool {
+        self.res().buffers.get(buffer.0).is_some()
+    }
 
     /// Deletes the buffer. If vertex arrays still use it, its handle is invalid
     /// right away and the GL buffer goes when the last of them is destroyed.

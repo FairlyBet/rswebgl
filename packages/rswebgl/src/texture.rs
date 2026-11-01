@@ -452,6 +452,13 @@ impl Context {
             .map_err(|e| Error::from(e.to_string()))
     }
 
+    /// Whether `tex` names a live texture (false once destroyed, or after a
+    /// context loss).
+    #[wasm_bindgen(js_name = textureIsValid)]
+    pub fn texture_is_valid(&self, tex: TextureId) -> bool {
+        self.res().textures.get(tex.0).is_some()
+    }
+
     /// Deletes the texture. If a framebuffer still has it attached, its handle
     /// is invalid right away and the GL texture goes when the framebuffer lets
     /// go of it.
@@ -1219,7 +1226,11 @@ impl Context {
 
             // onload vs onerror without inspecting the event: a decoded image
             // reports a non-zero natural size, a failed one does not.
-            let (w, h) = if img_cb.complete() && img_cb.natural_width() > 0 {
+            let (w, h) = if !ctx.texture_is_valid(tex) {
+                // Destroyed (or lost) while the image loaded: nothing to fill,
+                // and nothing to report — dropping an asset mid-load is normal.
+                (0, 0)
+            } else if img_cb.complete() && img_cb.natural_width() > 0 {
                 let w = img_cb.natural_width() as i32;
                 let h = img_cb.natural_height() as i32;
                 let levels = if generate_mipmaps {

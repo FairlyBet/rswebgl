@@ -18,7 +18,7 @@ use rswebgl_gltf::Model;
 
 // A small, self-contained Khronos sample (GLB: geometry + textures embedded).
 // Served with permissive CORS, so it loads cross-origin without a local copy.
-// Drop your own `model.glb` next to index.html and change this to "./model.glb".
+// Another model: `?model=<url>` (e.g. `?model=./model.glb` next to index.html).
 const MODEL_URL: &str = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/main/2.0/Avocado/glTF-Binary/Avocado.glb";
 
 // Geometry uses the translator's fixed attribute locations (0=pos, 1=normal,
@@ -90,8 +90,20 @@ fn main() {
     // the render loop set up afterwards keeps GL alive via cloned handles, so
     // the Context can drop once the loop is wired.
     wasm_bindgen_futures::spawn_local(async move {
-        match rswebgl_gltf::load_model(&ctx, MODEL_URL).await {
-            Ok(model) => run(ctx, model),
+        let url = model_url();
+        match rswebgl_gltf::load_model(&ctx, &url).await {
+            Ok(model) => {
+                console::log(&format!(
+                    "[example-gltf] {url}: {} draw items, {} meshes, {} vertex arrays, \
+                     {} buffers, {} textures",
+                    model.draw_item_count(),
+                    model.mesh_count(),
+                    model.vertex_array_count(),
+                    model.buffer_count(),
+                    model.texture_count()
+                ));
+                run(ctx, model)
+            }
             Err(e) => console::error(&format!("[example-gltf] load failed: {e}")),
         }
     });
@@ -141,11 +153,10 @@ fn run(ctx: Context, model: Model) {
 
         // Opaque draws sort by program / state / material / mesh; blended ones
         // go after all of them.
-        let rs = di.render_state();
-        let state = ctx.render_state(&rs);
+        let state = di.state();
         let material = di.material_group();
         let mut key = default_key(program, state, material, di.vao());
-        if rs.blend {
+        if di.render_state().blend {
             key |= KEY_LAST;
         }
         let groups = [ParamGroupId::NULL, material, object, ParamGroupId::NULL];
@@ -199,4 +210,13 @@ fn run(ctx: Context, model: Model) {
     let _ = web_sys::window()
         .expect("no window")
         .request_animation_frame(g.borrow().as_ref().unwrap().as_ref().unchecked_ref());
+}
+
+// `?model=<url>` if given, else the default sample.
+fn model_url() -> String {
+    web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .and_then(|s| web_sys::UrlSearchParams::new_with_str(&s).ok())
+        .and_then(|p| p.get("model"))
+        .unwrap_or_else(|| MODEL_URL.to_string())
 }

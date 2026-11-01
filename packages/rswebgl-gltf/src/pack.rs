@@ -18,7 +18,7 @@
 //! fills in when the join completes, like every other async texture.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use wasm_bindgen::JsCast;
@@ -70,13 +70,21 @@ pub fn build_texture_set(
     let mut remap = vec![-1i32; tex_count];
     let mut textures: Vec<TextureId> = Vec::with_capacity(tex_count);
 
-    // 1. Every texture not consumed by an ORM pack: load normally.
+    // 1. Every texture not consumed by an ORM pack: load normally — once per
+    // distinct (image, sampler, colour space); textures that repeat one share it.
+    let mut seen: HashMap<TextureKey, i32> = HashMap::new();
     for (i, t) in docs.iter().enumerate() {
         if consumed.contains(&i) {
             continue;
         }
+        let key = texture_key(t, srgb.contains(&i));
+        if let Some(&j) = seen.get(&key) {
+            remap[i] = j;
+            continue;
+        }
         let tex = build_texture(ctx, t, buffers, base, srgb.contains(&i), empty_callback());
         remap[i] = textures.len() as i32;
+        seen.insert(key, remap[i]);
         textures.push(tex);
     }
 
@@ -283,6 +291,11 @@ fn on_source_loaded(join: &Rc<RefCell<OrmJoin>>, packer: &TexturePacker, w: i32,
         ctx.destroy_texture(mr);
     };
 
+    // The model was destroyed while the sources loaded: nothing to fill.
+    if !ctx.texture_is_valid(output) {
+        free_sources();
+        return;
+    }
     if w <= 0 || h <= 0 {
         console::error("[rswebgl-gltf] ORM sources failed to load; packed texture left empty");
         free_sources();
@@ -314,4 +327,21 @@ fn on_source_loaded(join: &Rc<RefCell<OrmJoin>>, packer: &TexturePacker, w: i32,
 /// A nullary image-load callback for fire-and-forget textures.
 fn empty_callback() -> js_sys::Function {
     js_sys::Function::new_no_args("")
+}
+
+// What makes two glTF textures the same GPU texture: the image, every sampler
+// parameter (WebGL2 has no separate sampler objects here), and whether it
+// decodes as sRGB.
+type TextureKey = (usize, u32, u32, u32, u32, bool);
+
+fn texture_key(t: &gltf::Texture, srgb: bool) -> TextureKey {
+    let s = t.sampler();
+    (
+        t.source().index(),
+        s.min_filter().map_or(0, |f| f.as_gl_enum()),
+        s.mag_filter().map_or(0, |f| f.as_gl_enum()),
+        s.wrap_s().as_gl_enum(),
+        s.wrap_t().as_gl_enum(),
+        srgb,
+    )
 }

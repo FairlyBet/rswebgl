@@ -177,6 +177,12 @@ impl Context {
             .ok_or("createVertexArray failed")?;
         self.insert_vertex_array(raw)
     }
+    /// Whether `vao` names a live vertex array (false once destroyed, or after
+    /// a context loss).
+    #[wasm_bindgen(js_name = vertexArrayIsValid)]
+    pub fn vertex_array_is_valid(&self, vao: VertexArrayId) -> bool {
+        self.res().vertex_arrays.get(vao.0).is_some()
+    }
 
     /// Reads attribute `index` from `buffer` (a vertex buffer). The vertex array
     /// keeps using the buffer until the attribute is replaced or removed.
