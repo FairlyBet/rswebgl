@@ -200,4 +200,5 @@ Design: `docs/design/ecs.md`. ECS and hierarchy: host tests; `SceneRenderer`: br
 | JS facade `Scene` (cdylib bundle; example `examples/js-scene`) | ✅ | `rswebgl-scene/src/js.rs` |
 | PBR shader variants, full glTF materials, lights, transparency (E5a) | ✅ | `rswebgl-scene/src/{pbr,light}.rs`, `shaders/` |
 | IBL: HDR decode, GPU bake, BRDF LUT, background (E5b) | ✅ | `rswebgl-scene/src/{environment,hdr,brdf_lut}.rs` |
-| Jewelry material extensions (E5c), viewer (E5d) | ⬜ |  |
+| Material extensions: ior, specular, transmission, volume, clearcoat, dispersion (E5c, factors) | ✅ | `rswebgl-gltf/src/material.rs`, `rswebgl-scene/shaders/pbr.frag` |
+| Screen-space transmission, extension textures; viewer (E5d) | ⬜ |  |

@@ -56,6 +56,12 @@ fn every_feature_compiles_and_links() {
         0x1f << 5,                     // maps without UVs, normals or tangents
         1 << 7,                        // normal map without tangents: derived frame
         0x1f | 0x1f << 5 | 2 << 15 | 1 << 17,
+        // Material extensions, alone and together (dispersion needs a volume).
+        1 << 18,
+        1 << 18 | 1 << 19,
+        1 << 20,
+        1 << 18 | 1 << 19 | 1 << 21,
+        0x1f | 0x1f << 5 | 1 << 18 | 1 << 19 | 1 << 20 | 1 << 21,
     ]);
     for bits in keys {
         let key = PbrKey::from_bits(bits);

@@ -222,3 +222,13 @@ FBO blit). Done. Deferred polish:
   is also the background, so a sharp background is only as sharp as its
   `size`. A device without half-float render targets gets an error, no
   fallback (e.g. RGBM in RGBA8).
+- Material extensions (E5c): factors only — the extensions' textures
+  (transmission, thickness, clearcoat + its roughness and normal, specular
+  and specular color) aren't read. Transmission refracts the environment
+  only: objects behind glass or a gem don't show through it (needs an
+  opaque pass into a mipmapped texture, sampled by the transmissive pass —
+  Khronos' approach). One refraction (entry) for volumes; no internal
+  reflections, which is what makes cut diamonds sparkle — a dedicated gem
+  shader (ray-marching the stone's own geometry) is the jewelry-grade
+  follow-up. Punctual lights don't transmit. Not read: sheen, iridescence,
+  anisotropy, diffuse transmission, KHR_materials_variants.

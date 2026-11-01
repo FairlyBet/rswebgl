@@ -44,6 +44,19 @@ pub struct Material {
     pub(crate) emissive_strength: f32,
     // KHR_materials_unlit.
     pub(crate) unlit: bool,
+    // Extension factors (their textures aren't read yet): KHR_materials_ior,
+    // _specular, _transmission, _volume (attenuation distance 0 = none),
+    // _clearcoat, _dispersion. Defaults are the spec's "extension absent".
+    pub(crate) ior: f32,
+    pub(crate) specular: f32,
+    pub(crate) specular_color: [f32; 3],
+    pub(crate) transmission: f32,
+    pub(crate) thickness: f32,
+    pub(crate) attenuation_color: [f32; 3],
+    pub(crate) attenuation_distance: f32,
+    pub(crate) clearcoat: f32,
+    pub(crate) clearcoat_roughness: f32,
+    pub(crate) dispersion: f32,
 }
 
 #[wasm_bindgen]
@@ -139,6 +152,56 @@ impl Material {
     pub fn unlit(&self) -> bool {
         self.unlit
     }
+    /// `KHR_materials_ior` (1.5 without it).
+    #[wasm_bindgen(getter)]
+    pub fn ior(&self) -> f32 {
+        self.ior
+    }
+    /// `KHR_materials_specular` factor (1 without it).
+    #[wasm_bindgen(getter)]
+    pub fn specular(&self) -> f32 {
+        self.specular
+    }
+    /// `KHR_materials_specular` color factor (white without it).
+    #[wasm_bindgen(getter, js_name = specularColor)]
+    pub fn specular_color(&self) -> Vec<f32> {
+        self.specular_color.to_vec()
+    }
+    /// `KHR_materials_transmission` factor (0: opaque).
+    #[wasm_bindgen(getter)]
+    pub fn transmission(&self) -> f32 {
+        self.transmission
+    }
+    /// `KHR_materials_volume` thickness in mesh units (0: thin-walled).
+    #[wasm_bindgen(getter)]
+    pub fn thickness(&self) -> f32 {
+        self.thickness
+    }
+    /// `KHR_materials_volume`: the color white light turns into after
+    /// `attenuationDistance` inside.
+    #[wasm_bindgen(getter, js_name = attenuationColor)]
+    pub fn attenuation_color(&self) -> Vec<f32> {
+        self.attenuation_color.to_vec()
+    }
+    /// `KHR_materials_volume` attenuation distance; 0 = no absorption.
+    #[wasm_bindgen(getter, js_name = attenuationDistance)]
+    pub fn attenuation_distance(&self) -> f32 {
+        self.attenuation_distance
+    }
+    /// `KHR_materials_clearcoat` factor (0: no coat).
+    #[wasm_bindgen(getter)]
+    pub fn clearcoat(&self) -> f32 {
+        self.clearcoat
+    }
+    #[wasm_bindgen(getter, js_name = clearcoatRoughness)]
+    pub fn clearcoat_roughness(&self) -> f32 {
+        self.clearcoat_roughness
+    }
+    /// `KHR_materials_dispersion` (0: none; 20/Abbe number otherwise).
+    #[wasm_bindgen(getter)]
+    pub fn dispersion(&self) -> f32 {
+        self.dispersion
+    }
 }
 
 /// Translate one glTF material's data.
@@ -172,6 +235,27 @@ pub fn translate(mat: &gltf::Material) -> Material {
         emissive_uv: mat.emissive_texture().map_or(0, |i| i.tex_coord()),
         emissive_strength: mat.emissive_strength().unwrap_or(1.0),
         unlit: mat.unlit(),
+        ior: mat.ior().unwrap_or(1.5),
+        specular: mat.specular().map_or(1.0, |s| s.specular_factor()),
+        specular_color: mat
+            .specular()
+            .map_or([1.0; 3], |s| s.specular_color_factor()),
+        transmission: mat.transmission().map_or(0.0, |t| t.transmission_factor()),
+        thickness: mat.volume().map_or(0.0, |v| v.thickness_factor()),
+        attenuation_color: mat.volume().map_or([1.0; 3], |v| v.attenuation_color()),
+        attenuation_distance: mat
+            .volume()
+            .map(|v| v.attenuation_distance())
+            .filter(|d| d.is_finite())
+            .unwrap_or(0.0),
+        clearcoat: ext_f32(mat, "KHR_materials_clearcoat", "clearcoatFactor", 0.0),
+        clearcoat_roughness: ext_f32(
+            mat,
+            "KHR_materials_clearcoat",
+            "clearcoatRoughnessFactor",
+            0.0,
+        ),
+        dispersion: ext_f32(mat, "KHR_materials_dispersion", "dispersion", 0.0),
     }
 }
 
@@ -218,6 +302,16 @@ pub fn default_material() -> Material {
         emissive_uv: 0,
         emissive_strength: 1.0,
         unlit: false,
+        ior: 1.5,
+        specular: 1.0,
+        specular_color: [1.0; 3],
+        transmission: 0.0,
+        thickness: 0.0,
+        attenuation_color: [1.0; 3],
+        attenuation_distance: 0.0,
+        clearcoat: 0.0,
+        clearcoat_roughness: 0.0,
+        dispersion: 0.0,
     }
 }
 
@@ -248,6 +342,15 @@ pub fn render_state_for(m: &Material, world_det_negative: bool) -> RenderState {
     s
 }
 
+// A number in an extension the `gltf` crate doesn't model (read from its raw
+// JSON), or `default` when the extension or the property is absent.
+fn ext_f32(mat: &gltf::Material, ext: &str, key: &str, default: f32) -> f32 {
+    mat.extension_value(ext)
+        .and_then(|e| e.get(key))
+        .and_then(|v| v.as_f64())
+        .map_or(default, |v| v as f32)
+}
+
 fn tex_index(t: Option<gltf::Texture>) -> i32 {
     t.map(|t| t.index() as i32).unwrap_or(-1)
 }
@@ -272,7 +375,18 @@ mod tests {
                     "roughnessFactor": 0.75
                 }
             },
-            { "name": "mask", "alphaMode": "MASK", "alphaCutoff": 0.25 }
+            { "name": "mask", "alphaMode": "MASK", "alphaCutoff": 0.25 },
+            {
+                "name": "gem",
+                "extensions": {
+                    "KHR_materials_ior": { "ior": 2.42 },
+                    "KHR_materials_specular": { "specularFactor": 0.5, "specularColorFactor": [1, 0.5, 0.25] },
+                    "KHR_materials_transmission": { "transmissionFactor": 1 },
+                    "KHR_materials_volume": { "thicknessFactor": 0.3, "attenuationDistance": 2, "attenuationColor": [0.9, 0.8, 0.7] },
+                    "KHR_materials_clearcoat": { "clearcoatFactor": 0.75, "clearcoatRoughnessFactor": 0.1 },
+                    "KHR_materials_dispersion": { "dispersion": 0.4 }
+                }
+            }
         ]
     }"#;
 
@@ -318,6 +432,29 @@ mod tests {
         // A mirroring (negative-determinant) node flips the front face to CW.
         let mirrored = render_state_for(m, true);
         assert_eq!(mirrored.front_face, FrontFace::Cw);
+    }
+
+    #[test]
+    fn extension_factors() {
+        let plain = &materials()[0];
+        assert_eq!(plain.ior, 1.5);
+        assert_eq!((plain.specular, plain.specular_color), (1.0, [1.0; 3]));
+        assert_eq!(
+            (plain.transmission, plain.thickness, plain.clearcoat),
+            (0.0, 0.0, 0.0)
+        );
+        assert_eq!(plain.attenuation_distance, 0.0, "infinite = none");
+        assert_eq!(plain.dispersion, 0.0);
+
+        let gem = &materials()[3];
+        assert_eq!(gem.ior, 2.42);
+        assert_eq!((gem.specular, gem.specular_color), (0.5, [1.0, 0.5, 0.25]));
+        assert_eq!(gem.transmission, 1.0);
+        assert_eq!(gem.thickness, 0.3);
+        assert_eq!(gem.attenuation_distance, 2.0);
+        assert_eq!(gem.attenuation_color, [0.9, 0.8, 0.7]);
+        assert_eq!((gem.clearcoat, gem.clearcoat_roughness), (0.75, 0.1));
+        assert_eq!(gem.dispersion, 0.4);
     }
 
     #[test]

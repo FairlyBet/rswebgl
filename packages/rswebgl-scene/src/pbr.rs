@@ -18,7 +18,7 @@ pub(crate) const TONEMAP: &str = include_str!("../shaders/tonemap.glsl");
 
 // Key layout: bits 0..5 the primitive's ATTR_* bits; 5..10 which maps the
 // material has (`MAPS` order); 10..15 which of them read TEXCOORD_1; 15..17
-// the alpha mode; 17 unlit.
+// the alpha mode; 17 unlit; 18..22 material extensions (`EXTENSIONS`).
 const MAPS: [&str; 5] = [
     "BASE_COLOR",
     "METALLIC_ROUGHNESS",
@@ -37,6 +37,14 @@ const MAP_SHIFT: u32 = 5;
 const UV1_SHIFT: u32 = 10;
 const ALPHA_SHIFT: u32 = 15;
 const UNLIT: u32 = 1 << 17;
+// Material extensions with a non-default factor, each its own code path.
+const EXTENSIONS: [(u32, &str); 4] = [
+    (1 << 18, "HAS_TRANSMISSION"),
+    (1 << 19, "HAS_VOLUME"),
+    (1 << 20, "HAS_CLEARCOAT"),
+    (1 << 21, "HAS_DISPERSION"),
+];
+const TOP_BIT: u32 = 1 << 21;
 
 /// A shader variant: which features one program is compiled with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -69,15 +77,29 @@ impl PbrKey {
         if material.unlit() {
             key |= UNLIT;
         }
+        // Volume and dispersion only matter for light going through.
+        let transmissive = material.transmission() > 0.0;
+        let present = [
+            transmissive,
+            transmissive && material.thickness() > 0.0,
+            material.clearcoat() > 0.0,
+            transmissive && material.thickness() > 0.0 && material.dispersion() > 0.0,
+        ];
+        for ((bit, _), on) in EXTENSIONS.into_iter().zip(present) {
+            if on {
+                key |= bit;
+            }
+        }
         Self(key)
     }
 
     /// A key from raw bits: 0..5 `ATTR_*`, 5..10 maps (base color, metallic-
     /// roughness, normal, occlusion, emissive), 10..15 which maps read
-    /// TEXCOORD_1, 15..17 alpha mode, 17 unlit. For tools and tests; models
+    /// TEXCOORD_1, 15..17 alpha mode, 17 unlit, 18..22 transmission, volume,
+    /// clearcoat, dispersion. For tools and tests; models
     /// go through `new`.
     pub fn from_bits(bits: u32) -> Self {
-        Self(bits & ((UNLIT << 1) - 1))
+        Self(bits & ((TOP_BIT << 1) - 1))
     }
 
     pub fn bits(&self) -> u32 {
@@ -111,6 +133,11 @@ impl PbrKey {
         let _ = writeln!(s, "#define ALPHAMODE_{alpha}");
         if k & UNLIT != 0 {
             s.push_str("#define MATERIAL_UNLIT\n");
+        }
+        for (bit, name) in EXTENSIONS {
+            if k & bit != 0 {
+                let _ = writeln!(s, "#define {name}");
+            }
         }
         s
     }

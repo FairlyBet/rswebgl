@@ -175,7 +175,10 @@ pub struct SceneNode {
 /// `u_roughness_factor`, `u_emissive_factor` (vec3), `u_emissive_strength`,
 /// `u_normal_scale`, `u_occlusion_strength`, `u_alpha_cutoff` (floats),
 /// `u_alpha_mode` (int: 0=OPAQUE 1=MASK 2=BLEND), `u_has_base_color_tex`
-/// (bool), and the maps `MAP_UNIFORMS` (samplers, each with the glTF
+/// (bool), the extension factors `u_ior`, `u_specular_factor`,
+/// `u_specular_color` (vec3), `u_transmission`, `u_thickness`,
+/// `u_attenuation_color` (vec3), `u_attenuation_distance`, `u_clearcoat`,
+/// `u_clearcoat_roughness`, `u_dispersion`, and the maps `MAP_UNIFORMS` (samplers, each with the glTF
 /// sampler's state). Which maps exist and their TEXCOORD sets are on
 /// `Material`; which attributes a primitive has, on `DrawItem::attributes`.
 /// The transform is the caller's job (it depends on the camera) — use
@@ -453,7 +456,17 @@ fn build_material_groups(
         .uniform("u_occlusion_strength", UniformType::F32)
         .uniform("u_alpha_cutoff", UniformType::F32)
         .uniform("u_alpha_mode", UniformType::I32)
-        .uniform("u_has_base_color_tex", UniformType::Bool);
+        .uniform("u_has_base_color_tex", UniformType::Bool)
+        .uniform("u_ior", UniformType::F32)
+        .uniform("u_specular_factor", UniformType::F32)
+        .uniform("u_specular_color", UniformType::Vec3)
+        .uniform("u_transmission", UniformType::F32)
+        .uniform("u_thickness", UniformType::F32)
+        .uniform("u_attenuation_color", UniformType::Vec3)
+        .uniform("u_attenuation_distance", UniformType::F32)
+        .uniform("u_clearcoat", UniformType::F32)
+        .uniform("u_clearcoat_roughness", UniformType::F32)
+        .uniform("u_dispersion", UniformType::F32);
     for name in MAP_UNIFORMS {
         builder = builder.texture(name);
     }
@@ -469,6 +482,16 @@ fn build_material_groups(
     let f_cutoff = field("u_alpha_cutoff")?;
     let f_mode = field("u_alpha_mode")?;
     let f_has_tex = field("u_has_base_color_tex")?;
+    let f_ior = field("u_ior")?;
+    let f_specular = field("u_specular_factor")?;
+    let f_specular_color = field("u_specular_color")?;
+    let f_transmission = field("u_transmission")?;
+    let f_thickness = field("u_thickness")?;
+    let f_attenuation_color = field("u_attenuation_color")?;
+    let f_attenuation_distance = field("u_attenuation_distance")?;
+    let f_clearcoat = field("u_clearcoat")?;
+    let f_clearcoat_roughness = field("u_clearcoat_roughness")?;
+    let f_dispersion = field("u_dispersion")?;
     let f_maps: Vec<_> = MAP_UNIFORMS
         .iter()
         .map(|name| field(name))
@@ -491,6 +514,16 @@ fn build_material_groups(
         ctx.param_set_f32(g, f_occlusion, m.occlusion_strength);
         ctx.param_set_f32(g, f_cutoff, m.alpha_cutoff);
         ctx.param_set_i32(g, f_mode, m.alpha_mode as i32);
+        ctx.param_set_f32(g, f_ior, m.ior);
+        ctx.param_set_f32(g, f_specular, m.specular);
+        ctx.param_set_floats(g, f_specular_color, &m.specular_color);
+        ctx.param_set_f32(g, f_transmission, m.transmission);
+        ctx.param_set_f32(g, f_thickness, m.thickness);
+        ctx.param_set_floats(g, f_attenuation_color, &m.attenuation_color);
+        ctx.param_set_f32(g, f_attenuation_distance, m.attenuation_distance);
+        ctx.param_set_f32(g, f_clearcoat, m.clearcoat);
+        ctx.param_set_f32(g, f_clearcoat_roughness, m.clearcoat_roughness);
+        ctx.param_set_f32(g, f_dispersion, m.dispersion);
         let samplers = map_samplers.get(i).copied().unwrap_or_default();
         for (map, ((tex, _), f)) in material_maps(m).into_iter().zip(&f_maps).enumerate() {
             let Some(tex) = usize::try_from(tex).ok().and_then(|t| textures.get(t)) else {
