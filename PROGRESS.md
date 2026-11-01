@@ -182,3 +182,16 @@ and the future ECS. Nothing in it touches WebGL.
 
 The renderer's `UniformBuffer` already runs on `Layout` + `DirtyBits`; pools and
 handles get adopted in stage 2.
+
+## ECS and scene (`packages/rswebgl-ecs`, `packages/rswebgl-scene`)
+
+Design: `docs/design/ecs.md`. Host tests, no browser needed.
+
+| Entity                                   | Status | File                         |
+|------------------------------------------|--------|------------------------------|
+| World, generational entities             | ✅     | `rswebgl-ecs/src/world.rs`   |
+| Sparse-set storage, change ticks, removal log | ✅ | `rswebgl-ecs/src/storage.rs` |
+| Transform, Parent, WorldMatrix           | ✅     | `rswebgl-scene/src/transform.rs` |
+| Hierarchy: cached order, dirty subtrees, `set_parent`, `despawn_recursive` | ✅ | `rswebgl-scene/src/hierarchy.rs` |
+| Scene rendering (E3)                     | ⬜     |                              |
+| glTF into the scene, JS facade (E4)      | ⬜     |                              |

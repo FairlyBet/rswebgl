@@ -1,0 +1,9 @@
+[package]
+name = "rswebgl-scene"
+version = "0.1.0"
+edition = "2024"
+description = "Scene components and systems for rswebgl on top of rswebgl-ecs: transforms, hierarchy"
+
+[dependencies]
+rswebgl-ecs = { path = "../rswebgl-ecs" }
+glam = { workspace = true }
