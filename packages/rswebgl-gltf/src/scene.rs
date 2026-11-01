@@ -15,9 +15,9 @@ use glam::{Mat4, Quat, Vec3};
 use rswebgl::console;
 use rswebgl::context::Context;
 
-use crate::DrawItem;
 use crate::geometry::GeometryCache;
 use crate::material::{self, Material};
+use crate::{DrawItem, SceneNode};
 
 /// Growing axis-aligned bounds in world space.
 struct Aabb {
@@ -50,6 +50,7 @@ pub fn build_draw_list(
     geometry: &mut GeometryCache,
     materials: &[Material],
     out: &mut Vec<DrawItem>,
+    nodes: &mut Vec<SceneNode>,
 ) -> ([f32; 3], f32) {
     let mut bounds = Aabb::new();
     if let Some(scene) = doc.default_scene().or_else(|| doc.scenes().next()) {
@@ -58,11 +59,13 @@ pub fn build_draw_list(
                 ctx,
                 doc,
                 &node,
+                None,
                 Mat4::IDENTITY,
                 buffers,
                 geometry,
                 materials,
                 out,
+                nodes,
                 &mut bounds,
             );
         }
@@ -82,15 +85,23 @@ fn walk(
     ctx: &Context,
     doc: &gltf::Document,
     node: &gltf::Node,
+    parent: Option<u32>,
     parent_world: Mat4,
     buffers: &[Vec<u8>],
     geometry: &mut GeometryCache,
     materials: &[Material],
     out: &mut Vec<DrawItem>,
+    nodes: &mut Vec<SceneNode>,
     bounds: &mut Aabb,
 ) {
     let local = Mat4::from_cols_array_2d(&node.transform().matrix());
     let world = parent_world * local;
+    nodes.push(SceneNode {
+        index: node.index() as u32,
+        parent,
+        matrix: local.to_cols_array(),
+        name: node.name().map(str::to_owned),
+    });
 
     if let Some(mesh) = node.mesh() {
         let default = material::default_material();
@@ -117,6 +128,9 @@ fn walk(
                     node: node.index() as u32,
                     instance: instance as u32,
                     model: world.to_cols_array(),
+                    instance_matrix: local_instance.to_cols_array(),
+                    aabb_min: geo.aabb_min,
+                    aabb_max: geo.aabb_max,
                 });
             }
         }
@@ -124,7 +138,17 @@ fn walk(
 
     for child in node.children() {
         walk(
-            ctx, doc, &child, world, buffers, geometry, materials, out, bounds,
+            ctx,
+            doc,
+            &child,
+            Some(node.index() as u32),
+            world,
+            buffers,
+            geometry,
+            materials,
+            out,
+            nodes,
+            bounds,
         );
     }
 }

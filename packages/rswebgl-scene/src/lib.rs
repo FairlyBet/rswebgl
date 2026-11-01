@@ -31,12 +31,16 @@
 mod camera;
 mod culling;
 mod hierarchy;
+mod js;
+mod model;
 mod render;
 mod transform;
 
 pub use camera::{Camera, Projection};
 pub use culling::{Bounds, Frustum};
 pub use hierarchy::{HierarchyError, TransformSystem, children, despawn_recursive, set_parent};
+pub use js::Scene;
+pub use model::{Name, find_by_name, spawn_model};
 pub use render::{
     FRAME_BLOCK, FRAME_SLOT, MATERIAL_SLOT, MODEL_UNIFORM, MeshRenderer, NORMAL_MATRIX_UNIFORM,
     OBJECT_SLOT, RenderStats, SceneRenderer, Visible,

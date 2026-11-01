@@ -195,4 +195,6 @@ Design: `docs/design/ecs.md`. ECS and hierarchy: host tests; `SceneRenderer`: br
 | Hierarchy: cached order, dirty subtrees, `set_parent`, `despawn_recursive` | ✅ | `rswebgl-scene/src/hierarchy.rs` |
 | Camera, Bounds, frustum culling          | ✅     | `rswebgl-scene/src/{camera,culling}.rs` |
 | SceneRenderer: frame UBO, object groups, Pass assembly (E3) | ✅ | `rswebgl-scene/src/render.rs` |
-| glTF into the scene, JS facade (E4)      | ⬜     |                              |
+| glTF nodes → entities, `Name`, `find_by_name` (E4) | ✅ | `rswebgl-scene/src/model.rs` |
+| JS facade `Scene` (cdylib bundle; example `examples/js-scene`) | ✅ | `rswebgl-scene/src/js.rs` |
+| PBR materials, lights, IBL (E5)          | ⬜     |                              |

@@ -1,6 +1,6 @@
 # ECS и сцена
 
-Статус: E1 сделан (`packages/rswebgl-ecs`), E2–E3 сделаны (`packages/rswebgl-scene`).
+Статус: E1 сделан (`packages/rswebgl-ecs`), E2–E4 сделаны (`packages/rswebgl-scene`).
 
 Продолжение §7 `architecture.md`: что там оставлено «для ECS-документа»,
 решается здесь.
@@ -177,7 +177,8 @@ ctx.render(pass);
   вид — обратная `WorldMatrix` сущности камеры), `Bounds` (локальный AABB;
   без него сущность не отсекается), `MeshRenderer` (программа, состояние,
   VAO, группа материала, команда — хэндлы рендерера, сцена их не создаёт и
-  не удаляет), `Visible(bool)` (не наследуется).
+  не удаляет), `Visible(bool)` (в E4 стал наследуемым: скрытый предок
+  скрывает поддерево).
 - `SceneRenderer::render(&world, &ctx, camera, &mut pass)` — после
   `TransformSystem::update`, до `clear_trackers`: пишет матрицы камеры в
   UBO блока `Frame` (`u_view`, `u_proj`, `u_view_proj`, `u_camera_pos`),
@@ -200,3 +201,32 @@ ctx.render(pass);
   (`wasm-pack test --headless --chrome packages/rswebgl-scene`).
   Пример `examples/scene` (`trunk serve`): сетка 24×24 кубов на
   вращающемся pivot, половина ещё крутится сама.
+
+**E4 — сделан.** glTF в сцену и JS-фасад.
+
+- `rswebgl-gltf` дополнительно отдаёт дерево узлов сцены (`Model::nodes()`:
+  локальная матрица, родитель, имя; родители раньше детей), а у
+  `DrawItem` — локальный AABB примитива и матрицу инстанса
+  `EXT_mesh_gpu_instancing` относительно узла.
+- `spawn_model(world, &model, program)` → корневая сущность: узел glTF —
+  сущность с `Transform`, `Parent`, `Name`; примитив — дочерняя сущность
+  узла с `MeshRenderer`, `Bounds` и матрицей инстанса в `Transform`.
+  `find_by_name(world, root, name)` — найти деталь (камень, оправу).
+- `Visible(false)` теперь наследуется: скрыть узел = скрыть его примитивы.
+  Предки обходятся только пока в мире есть хоть один `Visible(false)`.
+- **JS: класс `Scene`** (`rswebgl-scene` собирается как cdylib — рендерер,
+  загрузчик glTF и сцена в одном модуле). Владеет `World`,
+  `TransformSystem`, `SceneRenderer`. Сущности — числа, компоненты —
+  методами по сущности (`setTranslation`, `setRotation[Euler]`, `setScale`,
+  `setLocalMatrix`, `lookAt`, `setParent`, `setPerspectiveCamera`,
+  `setCameraAspect`, `setMesh`, `setMaterial`, `setBounds`, `setVisible`,
+  `findByName`, `worldMatrix`, …). Мёртвая сущность — `console.error` один
+  раз и no-op; цикл в `setParent` — `false` + ошибка.
+- `scene.addModel(model, program)` забирает `Model` (в JS объект
+  поглощается — `.free()` не нужен); `scene.despawn(root)` удаляет поддерево
+  и GPU-ресурсы модели; `modelBounds(root)` — сфера для кадрирования камеры.
+- Кадр из JS: `pass.clearDraws(); scene.render(camera, pass); pass.sort();
+  ctx.render(pass)` — `render` сам обновляет трансформации и чистит трекеры.
+- Тесты в браузере (`tests/model.rs`): модель из data-URL, имена, иерархия,
+  сдвиг узла/корня, наследуемая видимость, освобождение ресурсов.
+  Пример `examples/js-scene`: модель glTF на поворотном столе из чистого JS.

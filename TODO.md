@@ -209,7 +209,15 @@ FBO blit). Done. Deferred polish:
   `WorldMatrix` change if culling shows up in profiles (thousands of objects).
 - Transparency: a `MeshRenderer` flag → `KEY_LAST` + back-to-front depth in
   the sort key (needed for the jewelry viewer's gems, with E5 materials).
-- `Visible(false)` isn't inherited; a hidden subtree needs every node hidden.
 - Many copies of one mesh → one instanced draw instead of a draw per entity.
 - The frame block must be declared with all four members (std140 size has to
   match); consider reflecting the block and binding a range instead.
+- `addModel` draws every primitive with one program; primitives differ in
+  attributes (normals, UVs, tangents) — E5 picks a shader variant per
+  primitive.
+- Front-face winding of a glTF part is fixed at load from its world matrix;
+  a part mirrored later by a negative scale draws inside out.
+- A model added twice needs two loads (`addModel` takes the `Model`); sharing
+  one model's GPU data between several roots would need reference counts.
+- JS reads (`worldMatrix`, `translation`, …) copy into a new `Float32Array`;
+  zero-copy views over component storage when a viewer needs bulk reads.

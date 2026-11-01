@@ -62,6 +62,12 @@ pub struct DrawItem {
     pub(crate) node: u32,
     pub(crate) instance: u32,
     pub(crate) model: [f32; 16], // world matrix, column-major
+    // The EXT_mesh_gpu_instancing transform on top of the node (identity
+    // without it), column-major.
+    pub(crate) instance_matrix: [f32; 16],
+    // The primitive's POSITION bounds, in mesh space.
+    pub(crate) aabb_min: [f32; 3],
+    pub(crate) aabb_max: [f32; 3],
 }
 
 #[wasm_bindgen]
@@ -118,6 +124,30 @@ impl DrawItem {
     pub fn model_cols(&self) -> [f32; 16] {
         self.model
     }
+
+    /// The instance transform relative to the node (identity unless the node
+    /// uses `EXT_mesh_gpu_instancing`): `model = node_world * instance`.
+    pub fn instance_cols(&self) -> [f32; 16] {
+        self.instance_matrix
+    }
+
+    /// The primitive's bounding box in mesh space: `(min, max)`.
+    pub fn local_bounds(&self) -> ([f32; 3], [f32; 3]) {
+        (self.aabb_min, self.aabb_max)
+    }
+}
+
+/// A node of the default scene: its local transform and parent, for whoever
+/// rebuilds the hierarchy (the flat draw list already has world matrices).
+#[derive(Clone, Debug)]
+pub struct SceneNode {
+    /// glTF node index (`DrawItem::node` refers to it).
+    pub index: u32,
+    /// Parent's glTF node index; None for a root of the scene.
+    pub parent: Option<u32>,
+    /// Local transform, column-major.
+    pub matrix: [f32; 16],
+    pub name: Option<String>,
 }
 
 /// A translated glTF asset: a flat draw list plus the GPU resources behind it.
@@ -132,6 +162,7 @@ impl DrawItem {
 #[wasm_bindgen]
 pub struct Model {
     pub(crate) items: Vec<DrawItem>,
+    pub(crate) nodes: Vec<SceneNode>,
     pub(crate) materials: Vec<Material>,
     pub(crate) material_layout: ParamLayoutId,
     // One per material, plus the default material's last.
@@ -235,6 +266,11 @@ impl Model {
         &self.items
     }
 
+    /// The default scene's nodes, parents before children.
+    pub fn nodes(&self) -> &[SceneNode] {
+        &self.nodes
+    }
+
     /// The GPU buffers the model created (one per distinct accessor).
     pub fn buffers(&self) -> &[BufferId] {
         &self.buffers
@@ -293,6 +329,7 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
     }
     let textures = set.textures;
     let mut items = Vec::new();
+    let mut nodes = Vec::new();
     let mut geometry = geometry::GeometryCache::default();
     let (center, radius) = scene::build_draw_list(
         ctx,
@@ -301,6 +338,7 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
         &mut geometry,
         &materials,
         &mut items,
+        &mut nodes,
     );
 
     let (material_layout, material_groups) =
@@ -312,6 +350,7 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
 
     Ok(Model {
         items,
+        nodes,
         materials,
         material_layout,
         material_groups,

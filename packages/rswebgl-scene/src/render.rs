@@ -20,7 +20,7 @@ use rswebgl_ecs::{Entity, Tick, World};
 
 use crate::camera::Camera;
 use crate::culling::{Bounds, Frustum};
-use crate::transform::WorldMatrix;
+use crate::transform::{Parent, WorldMatrix};
 
 /// Name of the per-frame uniform block. Shaders declare it as
 ///
@@ -59,8 +59,9 @@ pub struct MeshRenderer {
     pub command: DrawCommand,
 }
 
-/// Hides the entity when false. No component = visible. Not inherited:
-/// hiding a parent leaves its children drawn.
+/// Hides the entity and everything under it when false. No component =
+/// visible. A hidden ancestor wins: `Visible(true)` doesn't show a child of a
+/// hidden parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Visible(pub bool);
 
@@ -190,9 +191,12 @@ impl SceneRenderer {
             return self.stats;
         };
         let bounds = world.storage::<Bounds>();
-        let visible = world.storage::<Visible>();
+        // Ancestors are walked per mesh only while something is hidden.
+        let any_hidden = world
+            .storage::<Visible>()
+            .is_some_and(|v| v.data().iter().any(|v| !v.0));
         for (e, mesh) in meshes.iter() {
-            if visible.and_then(|v| v.get(e)).is_some_and(|v| !v.0) {
+            if any_hidden && hidden(world, e) {
                 continue;
             }
             let Some(row) = worlds.row(e) else {
@@ -313,4 +317,19 @@ impl SceneRenderer {
             keep
         });
     }
+}
+
+// Whether `e` or an ancestor has `Visible(false)`. Bounded against a
+// hand-made `Parent` cycle.
+fn hidden(world: &World, mut e: Entity) -> bool {
+    for _ in 0..=world.len() {
+        if world.get::<Visible>(e).is_some_and(|v| !v.0) {
+            return true;
+        }
+        match world.get::<Parent>(e) {
+            Some(p) => e = p.0,
+            None => return false,
+        }
+    }
+    false
 }

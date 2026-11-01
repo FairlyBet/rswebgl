@@ -301,10 +301,14 @@ dependencies = [
 name = "rswebgl-scene"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "glam",
+ "js-sys",
  "rswebgl",
  "rswebgl-ecs",
+ "rswebgl-gltf",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
 ]

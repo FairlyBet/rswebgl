@@ -2,16 +2,25 @@
 name = "rswebgl-scene"
 version = "0.1.0"
 edition = "2024"
-description = "Scene components and systems for rswebgl on top of rswebgl-ecs: transforms, hierarchy, culling, draw-list assembly"
+description = "Scene for rswebgl on rswebgl-ecs: transforms, hierarchy, culling, draw-list assembly, glTF models, the JS facade"
+
+# cdylib: `wasm-pack build packages/rswebgl-scene --target web` is the JS bundle
+# (renderer + glTF loader + scene in one module).
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rswebgl = { workspace = true }
 rswebgl-ecs = { path = "../rswebgl-ecs" }
+rswebgl-gltf = { path = "../rswebgl-gltf" }
 glam = { workspace = true }
+wasm-bindgen = { workspace = true }
 
 # Host tests: `cargo test -p rswebgl-scene`.
 # Browser tests: `wasm-pack test --headless --chrome packages/rswebgl-scene`.
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
-wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = "0.4"
+js-sys = { workspace = true }
+base64 = "0.22"
 web-sys = { workspace = true, features = ["Document", "HtmlCanvasElement", "WebGl2RenderingContext"] }
