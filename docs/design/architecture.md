@@ -708,5 +708,25 @@ ANGLE, так что на слабых телефонах счёт идёт на
 - Таймеры требуют `EXT_disjoint_timer_query_webgl2`, браузеры его часто
   скрывают: `can_time_gpu`, а `create_query(TimeElapsed)` без него — ошибка.
 
+**Ядро: transform feedback.** Сделан (`feedback.rs`).
+
+- Программа объявляет захватываемые varyings при создании
+  (`create_program_with_feedback`, Interleaved или Separate); объект
+  `FeedbackId` держит буферы (`transform_feedback_set_buffer[_range]`,
+  удерживает их как вложения фреймбуфера); проход пишет в него
+  (`pass.set_transform_feedback(tf, mode, discard)`). Рендерер начинает запись
+  перед первым draw и заканчивает после последнего, так что draw-вызовы
+  дописывают подряд; после прохода объект отвязан, и буфер — обычный источник
+  вершин (ping-pong для частиц).
+- Правила WebGL2 проверяются для каждого draw с причиной вместо GL-ошибки:
+  режим равен режиму записи (Points / Lines / Triangles), только
+  неиндексированные draw (indexed — INVALID_OPERATION, проверено), одна
+  программа на запись, все записываемые буферы привязаны, нет выхода за конец
+  буфера (размер считается из типов varyings).
+- `QueryKind::TransformFeedbackPrimitivesWritten` через
+  `pass.set_transform_feedback_query`.
+
+Ядро WebGL2 покрыто целиком.
+
 **Следующее:** сцена на ECS и PBR-шейдер, затем вьювер glTF из cgtools как
 проверка всей связки.

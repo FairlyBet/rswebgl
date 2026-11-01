@@ -7,6 +7,7 @@ use web_sys::{WebGl2RenderingContext as Gl, WebGlProgram, WebGlShader, WebGlUnif
 use crate::console;
 use crate::context::{Context, stale};
 use crate::extension::Extension;
+use crate::feedback::{FeedbackLayout, FeedbackMode, feedback_layout};
 use crate::ids::{ParamLayoutId, ProgramId};
 use crate::limits;
 use crate::param::{ParamGroupObj, ParamLayoutObj, PlainField};
@@ -288,6 +289,9 @@ pub(crate) struct ProgramObj {
     mappings: Vec<Mapping>,
     // Inputs (uniforms, then samplers, then blocks) already reported unset.
     reported_unset: Vec<bool>,
+    // Captured outputs, if linked with feedback varyings (filled in on link).
+    feedback_mode: Option<FeedbackMode>,
+    pub(crate) feedback: Option<FeedbackLayout>,
 }
 
 impl ProgramObj {
@@ -297,6 +301,7 @@ impl ProgramObj {
         frag_src: &str,
         parallel: bool,
         validate: Validation,
+        feedback: Option<(&[String], FeedbackMode)>,
     ) -> Result<ProgramObj, Error> {
         let vert = create_shader(gl, Gl::VERTEX_SHADER, vert_src)?;
         let frag = create_shader(gl, Gl::FRAGMENT_SHADER, frag_src)?;
@@ -304,6 +309,11 @@ impl ProgramObj {
         let raw = gl.create_program().ok_or("createProgram failed")?;
         gl.attach_shader(&raw, &vert);
         gl.attach_shader(&raw, &frag);
+        // Captured outputs are declared before the link.
+        if let Some((names, mode)) = feedback {
+            let arr: js_sys::Array = names.iter().map(|n| JsValue::from_str(n)).collect();
+            gl.transform_feedback_varyings(&raw, &arr, mode as u32);
+        }
         gl.link_program(&raw);
 
         let mut program = ProgramObj {
@@ -316,6 +326,8 @@ impl ProgramObj {
             refl: None,
             mappings: Vec::new(),
             reported_unset: Vec::new(),
+            feedback_mode: feedback.map(|(_, m)| m),
+            feedback: None,
         };
 
         // Without parallel compile the first status query blocks on the link
@@ -361,6 +373,9 @@ impl ProgramObj {
             self.reported_unset =
                 vec![false; refl.uniforms.len() + refl.samplers.len() + refl.blocks.len()];
             self.refl = Some(refl);
+            if let Some(mode) = self.feedback_mode {
+                self.feedback = Some(feedback_layout(gl, &self.raw, mode));
+            }
             Ok(())
         } else {
             let prog_log = gl
@@ -567,6 +582,35 @@ impl Context {
     /// creation doesn't block and errors are reported when the link completes.
     #[wasm_bindgen(js_name = createProgram)]
     pub fn create_program(&self, vert_src: &str, frag_src: &str) -> Result<ProgramId, Error> {
+        self.new_program(vert_src, frag_src, None)
+    }
+
+    /// `create_program` that also captures vertex shader outputs `varyings`
+    /// into buffers (transform feedback; see `Pass::set_transform_feedback`).
+    /// `Interleaved` writes them all into buffer 0, one vertex after another;
+    /// `Separate` writes varying `i` into buffer `i`.
+    #[wasm_bindgen(js_name = createProgramWithFeedback)]
+    pub fn create_program_with_feedback(
+        &self,
+        vert_src: &str,
+        frag_src: &str,
+        varyings: Vec<String>,
+        mode: FeedbackMode,
+    ) -> Result<ProgramId, Error> {
+        if varyings.is_empty() {
+            return Err("create_program_with_feedback: no varyings to capture".into());
+        }
+        self.new_program(vert_src, frag_src, Some((&varyings, mode)))
+    }
+}
+
+impl Context {
+    fn new_program(
+        &self,
+        vert_src: &str,
+        frag_src: &str,
+        feedback: Option<(&[String], FeedbackMode)>,
+    ) -> Result<ProgramId, Error> {
         self.check_alive()?;
         let parallel = self.is_extension_enabled(Extension::KhrParallelShaderCompile);
         let obj = ProgramObj::new(
@@ -575,6 +619,7 @@ impl Context {
             frag_src,
             parallel,
             self.core.validate.get(),
+            feedback,
         )?;
         let mut res = self.res();
         match res.programs.insert(obj) {
@@ -582,7 +627,10 @@ impl Context {
             Err(e) => Err(e.to_string().into()),
         }
     }
+}
 
+#[wasm_bindgen]
+impl Context {
     #[wasm_bindgen(js_name = destroyProgram)]
     pub fn destroy_program(&self, program: ProgramId) {
         let destroyed = self.res().programs.destroy(program.0);

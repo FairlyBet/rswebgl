@@ -15,9 +15,12 @@
 use wasm_bindgen::prelude::*;
 
 use crate::console;
-use crate::draw::{DrawCommand, Viewport};
+use crate::draw::{DrawCommand, DrawMode, Viewport};
+use crate::feedback::PassFeedback;
 use crate::framebuffer::{ClearMask, InvalidateMask};
-use crate::ids::{FramebufferId, ParamGroupId, ProgramId, QueryId, StateId, VertexArrayId};
+use crate::ids::{
+    FeedbackId, FramebufferId, ParamGroupId, ProgramId, QueryId, StateId, VertexArrayId,
+};
 use crate::param::GROUP_SLOTS;
 
 fn slot_index(slot: u32) -> Option<usize> {
@@ -187,6 +190,8 @@ pub struct Pass {
     pub(crate) resolve: Option<FramebufferId>,
     // NULL = none; else a TimeElapsed query around the whole pass.
     pub(crate) timer: QueryId,
+    // Some = the draws record into a transform feedback object.
+    pub(crate) feedback: Option<PassFeedback>,
     pub(crate) items: Vec<DrawItem>,
 }
 
@@ -199,6 +204,7 @@ impl Pass {
             invalidate: InvalidateMask::none(),
             resolve: None,
             timer: QueryId::NULL,
+            feedback: None,
             items: Vec::new(),
         }
     }
@@ -302,6 +308,49 @@ impl Pass {
     #[wasm_bindgen(js_name = clearTimer)]
     pub fn clear_timer(&mut self) {
         self.timer = QueryId::NULL;
+    }
+
+    /// Records the pass's draws into transform feedback object `tf`: their
+    /// vertex shader outputs are appended to its buffers. `mode` is the
+    /// primitive type (Points, Lines or Triangles) every draw must use;
+    /// `discard` turns rasterization off, for a pass that only computes (the
+    /// clear still happens). All draws must use one program created with
+    /// `create_program_with_feedback`, and be non-indexed.
+    #[wasm_bindgen(js_name = setTransformFeedback)]
+    pub fn set_transform_feedback(&mut self, tf: FeedbackId, mode: DrawMode, discard: bool) {
+        if !matches!(
+            mode,
+            DrawMode::Points | DrawMode::Lines | DrawMode::Triangles
+        ) {
+            return console::error(&format!(
+                "[rswebgl] set_transform_feedback: {mode:?} can't be recorded; use Points, \n                 Lines or Triangles; ignored"
+            ));
+        }
+        let query = self.feedback.map_or(QueryId::NULL, |f| f.query);
+        self.feedback = Some(PassFeedback {
+            feedback: tf,
+            mode,
+            discard,
+            query,
+        });
+    }
+
+    /// Counts the primitives the recording writes with `query`, a
+    /// `TransformFeedbackPrimitivesWritten` query. Needs
+    /// `set_transform_feedback` first.
+    #[wasm_bindgen(js_name = setTransformFeedbackQuery)]
+    pub fn set_transform_feedback_query(&mut self, query: QueryId) {
+        match &mut self.feedback {
+            Some(f) => f.query = query,
+            None => console::error(
+                "[rswebgl] set_transform_feedback_query: the pass doesn't record; ignored",
+            ),
+        }
+    }
+
+    #[wasm_bindgen(js_name = clearTransformFeedback)]
+    pub fn clear_transform_feedback(&mut self) {
+        self.feedback = None;
     }
 
     /// Wraps the most recently added draw in occlusion query `query`

@@ -55,3 +55,8 @@ typed_handle!(
     /// a pass; its result arrives a frame or so later.
     pub struct QueryId
 );
+typed_handle!(
+    /// A transform feedback object: the buffers a recording pass writes
+    /// vertex shader outputs into.
+    pub struct FeedbackId
+);

@@ -39,11 +39,17 @@ pub enum QueryKind {
     /// GPU time a pass took, in nanoseconds. Needs
     /// `EXT_disjoint_timer_query_webgl2` (see `Context::can_time_gpu`).
     TimeElapsed = 0x88BF,
+    /// Primitives a transform feedback recording wrote (see
+    /// `Pass::set_transform_feedback_query`).
+    TransformFeedbackPrimitivesWritten = 0x8C88,
 }
 
 impl QueryKind {
     pub(crate) fn is_occlusion(self) -> bool {
-        self != QueryKind::TimeElapsed
+        matches!(
+            self,
+            QueryKind::AnySamplesPassed | QueryKind::AnySamplesPassedConservative
+        )
     }
 }
 
@@ -95,6 +101,7 @@ impl QueryObj {
 pub(crate) enum QueryUse {
     Draw,
     Pass,
+    Feedback,
 }
 
 /// Begins query `q` for `usage`; returns the GL target to end it on, or None
@@ -112,11 +119,16 @@ pub(crate) fn begin(
     let fits = match usage {
         QueryUse::Draw => obj.kind.is_occlusion(),
         QueryUse::Pass => obj.kind == QueryKind::TimeElapsed,
+        QueryUse::Feedback => obj.kind == QueryKind::TransformFeedbackPrimitivesWritten,
     };
     if !fits {
         let (what, want) = match usage {
             QueryUse::Draw => ("a draw", "an occlusion kind"),
             QueryUse::Pass => ("a pass timer", "TimeElapsed"),
+            QueryUse::Feedback => (
+                "a transform feedback recording",
+                "TransformFeedbackPrimitivesWritten",
+            ),
         };
         console::error_once(&format!(
             "[rswebgl] render: {what} needs a query of {want}, got {:?}; not measured",

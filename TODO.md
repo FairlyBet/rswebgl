@@ -58,8 +58,7 @@ attached. Left:
   queries, results a few frames behind) instead of the app juggling them; a
   timer spanning several passes; `TIMESTAMP_EXT` isn't exposed by WebGL2.
 - Occlusion queries wrap one draw (`Pass::set_last_draw_query`). Not done: a
-  query around several draws (a whole object of many primitives), and
-  `TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN` (comes with transform feedback).
+  query around several draws (a whole object of many primitives).
 - **`WEBGL_multi_draw`.** Several draws in one JS call (offset/count arrays).
   Real perf win for many-object scenes; fits `draw.rs`/`DrawCommand` as a
   `multi_draw_*` variant.
@@ -98,6 +97,15 @@ resources is the app's job (see the cube example). Possible follow-ups:
   they're doing.
 - **`EXT_depth_clamp`.** Disable near/far clipping (shadow volumes).
 - **`EXT_float_blend`.** Blending into 32F targets (16F already blends).
+
+## Transform feedback (`src/feedback.rs`)
+
+- At most 4 bindings (the guaranteed `MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS`);
+  the real limit isn't queried.
+- One program per recording. Several would need pause / resume around each
+  program switch.
+- A draw that reads the buffer it records into is a GL error, not checked.
+- No JS example yet (GPU particles would be the natural one).
 
 ## glTF loader (`packages/rswebgl-gltf`)
 

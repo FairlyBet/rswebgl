@@ -147,6 +147,10 @@ impl DrawCommand {
 }
 
 impl DrawCommand {
+    pub(crate) fn is_arrays(&self) -> bool {
+        self.kind == ARRAYS
+    }
+
     pub(crate) fn execute(&self, gl: &WebGl2RenderingContext) {
         let m = self.mode.as_gl();
         match self.kind {

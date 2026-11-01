@@ -21,6 +21,7 @@ use crate::framebuffer::{
 use crate::{console, copy};
 use rswebgl_foundation::pool::Pool;
 
+use crate::feedback::Recording;
 use crate::ids::{
     FramebufferId, ProgramId, SamplerId, StateId, TextureId, UniformBufferId, VertexArrayId,
 };
@@ -171,6 +172,7 @@ fn run_pass(
         param_groups,
         render_states,
         queries,
+        feedbacks,
         ..
     } = res;
 
@@ -213,6 +215,18 @@ fn run_pass(
         }
     }
 
+    // Transform feedback — a pass that records needs its object.
+    let mut recording = match pass.feedback {
+        None => None,
+        Some(want) => match Recording::new(feedbacks, want) {
+            Some(r) => Some(r),
+            None => {
+                st.stats.skipped += pass.items.len() as u32;
+                return;
+            }
+        },
+    };
+
     for d in &pass.items {
         let Some(program) = programs.get_mut(d.program.0) else {
             stale("program", "render (draw)", d.program);
@@ -224,6 +238,12 @@ fn run_pass(
         // one-shot pass (a bake, a pack) can't silently draw nothing; callers who
         // want to avoid the stall poll `program_is_ready` before submitting.
         if !program.ensure_linked(gl) {
+            st.stats.skipped += 1;
+            continue;
+        }
+        if let Some(r) = &mut recording
+            && !r.admit(d, program)
+        {
             st.stats.skipped += 1;
             continue;
         }
@@ -280,6 +300,9 @@ fn run_pass(
             n_used += 1;
         }
         program.check_covered(&used[..n_used]);
+        if let Some(r) = &mut recording {
+            r.start(gl, queries);
+        }
         let occlusion = if d.query.is_null() {
             None
         } else {
@@ -290,6 +313,9 @@ fn run_pass(
             gl.end_query(target);
         }
         st.stats.draws += 1;
+    }
+    if let Some(r) = recording {
+        r.finish(gl);
     }
 
     // Resolve — copy color 0 into the resolve target (the MSAA resolve). It

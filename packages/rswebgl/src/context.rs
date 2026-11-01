@@ -13,6 +13,7 @@ use crate::console;
 use crate::context_loss::{self, LossState};
 use crate::draw::Viewport;
 use crate::extension::Extension;
+use crate::feedback::FeedbackObj;
 use crate::framebuffer::{DefaultFramebuffer, FramebufferObj};
 use crate::limits;
 use crate::param::{ParamGroupObj, ParamLayoutObj};
@@ -157,6 +158,7 @@ pub(crate) struct Resources {
     pub(crate) render_states: Pool<RenderState>,
     pub(crate) samplers: Pool<SamplerObj>,
     pub(crate) queries: Pool<QueryObj>,
+    pub(crate) feedbacks: Pool<FeedbackObj>,
 }
 
 impl Resources {
@@ -172,6 +174,7 @@ impl Resources {
         self.uniform_buffers.drain();
         self.samplers.drain();
         self.queries.drain();
+        self.feedbacks.drain();
         // Parameter layouts and groups are CPU-only and survive; the texture and
         // buffer handles inside groups go stale like every other GPU handle.
     }
