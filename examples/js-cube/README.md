@@ -1,8 +1,11 @@
 # js-cube
 
 A grid of cubes driven from plain JS through the generated bindings: no Rust
-of its own. Press **S** to toggle draw-list sorting and watch the program /
-state switch counts in the corner.
+of its own, rendered through a 4× MSAA framebuffer resolved into the canvas.
+Press **S** to toggle draw-list sorting and watch the program / state switch
+counts in the corner; **M** toggles MSAA.
+
+
 
 ```bash
 wasm-pack build packages/rswebgl --target web --out-dir ../../examples/js-cube/pkg

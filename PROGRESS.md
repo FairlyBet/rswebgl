@@ -88,7 +88,7 @@
 |-----------------------------|--------|-----------------------|
 | readPixels (sync + async via PBO + fence) | ✅ | `src/readback.rs` |
 | readBuffer                  | ✅     | `src/readback.rs` (per read) |
-| blitFramebuffer             | ❌     | —                     |
+| blitFramebuffer (+ pass MSAA resolve) | ✅ | `src/copy.rs`, `src/renderer.rs` |
 | invalidateFramebuffer       | ✅     | `src/renderer.rs`     |
 | invalidateSubFramebuffer    | ❌     | —                     |
 | drawBuffers (MRT)           | ✅     | `src/framebuffer.rs`  |
@@ -97,8 +97,8 @@
 
 | Entity                      | Status | File |
 |-----------------------------|--------|------|
-| copyBufferSubData           | ❌     | —    |
-| getBufferSubData            | 🔶     | `src/readback.rs` (async reads; no general buffer readback) |
+| copyBufferSubData           | ✅     | `src/copy.rs` (not index buffers: WebGL forbids) |
+| getBufferSubData (sync + async) | ✅ | `src/readback.rs` (`buffer_read*`) |
 
 ## Texture Operations
 
@@ -115,8 +115,9 @@
 | DOM-source uploads          | ✅     | `src/texture.rs`           |
 | `load_image` (onload upload)| ✅     | `src/texture.rs`           |
 | GPU channel packing (ORM)   | ✅     | `src/texture_packer.rs`    |
-| copyTexImage2D              | ❌     | deferred (read-fb / pass)  |
-| copyTexSubImage2D / 3D      | ❌     | deferred (read-fb / pass)  |
+| copyTexImage2D              | ➖     | storage-first: use copyTexSubImage2D |
+| copyTexSubImage2D           | ✅     | `src/copy.rs`              |
+| copyTexSubImage3D           | ❌     | —                          |
 | Pixel pack params           | ➖     | not needed: reads use 4-byte components |
 
 ## Clear

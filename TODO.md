@@ -162,13 +162,11 @@ FBO blit). Done. Deferred polish:
   tens of states, not thousands.
 - The GL state cache trusts that only the library binds. Raw GL on the same
   context needs `ctx.invalidate_state()` afterwards.
-- MSAA → texture resolve (`blitFramebuffer`) and `invalidateSubFramebuffer` are
-  still unimplemented (deferred from the FBO work).
-- `copyTex(Sub)Image2D/3D` deferred: they copy from the bound READ framebuffer,
-  which the per-pass renderer owns — belongs in a future pass/renderer-level
-  copy op rather than loose `Texture` methods.
-- Pixel *pack* params + `readPixels` not yet implemented (only *unpack* is, via
-  `PixelUnpack`).
+- Pass resolve copies color attachment 0 only; MRT or depth resolves go
+  through `blit_framebuffer` by hand. `invalidateSubFramebuffer` and
+  `copyTexSubImage3D` (into a layer of an array / 3D texture) aren't done.
+- Async reads poll their fence on a 1 ms timer. Polling once per frame from
+  `render` would save timer wake-ups if many reads are in flight.
 
 ## JS API
 

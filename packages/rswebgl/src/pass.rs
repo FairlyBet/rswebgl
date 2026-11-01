@@ -181,6 +181,8 @@ pub struct Pass {
     pub(crate) viewport: Option<Viewport>,
     pub(crate) clear: ClearMask,
     pub(crate) invalidate: InvalidateMask,
+    // Some(NULL) = resolve into the canvas.
+    pub(crate) resolve: Option<FramebufferId>,
     pub(crate) items: Vec<DrawItem>,
 }
 
@@ -191,6 +193,7 @@ impl Pass {
             viewport: None,
             clear: ClearMask::none(),
             invalidate: InvalidateMask::none(),
+            resolve: None,
             items: Vec::new(),
         }
     }
@@ -265,6 +268,21 @@ impl Pass {
     #[wasm_bindgen(js_name = setInvalidate)]
     pub fn set_invalidate(&mut self, mask: &InvalidateMask) {
         self.invalidate = *mask;
+    }
+
+    /// After drawing, copy the target's color attachment 0 into `dst`
+    /// (`FramebufferId::NULL` = the canvas) — the MSAA resolve: render into a
+    /// multisampled renderbuffer, resolve into a texture or the canvas. Same
+    /// size required; the copy happens before `set_invalidate` discards the
+    /// multisampled data, so both together are the cheap path on tiled GPUs.
+    #[wasm_bindgen(js_name = setResolve)]
+    pub fn set_resolve(&mut self, dst: FramebufferId) {
+        self.resolve = Some(dst);
+    }
+
+    #[wasm_bindgen(js_name = clearResolve)]
+    pub fn clear_resolve(&mut self) {
+        self.resolve = None;
     }
 
     /// Appends a batch's draws. The batch is left as is, so it can be added

@@ -15,7 +15,10 @@ use web_sys::WebGl2RenderingContext;
 
 use crate::context::{Context, Resources, stale};
 use crate::draw::Viewport;
-use crate::framebuffer::{ClearMask, DefaultFramebuffer, InvalidateMask, framebuffer_status_str};
+use crate::framebuffer::{
+    ClearMask, DefaultFramebuffer, FramebufferObj, InvalidateMask, framebuffer_status_str,
+};
+use crate::{console, copy};
 use rswebgl_foundation::pool::Pool;
 
 use crate::ids::{
@@ -260,6 +263,47 @@ fn execute_pass(
         st.stats.draws += 1;
     }
 
+    // Resolve — copy color 0 into the resolve target (the MSAA resolve). It
+    // binds DRAW to the resolve target; the store op below goes through READ,
+    // which still holds this pass's target.
+    let mut fb_binding = WebGl2RenderingContext::FRAMEBUFFER;
+    let mut resolved_into = None;
+    if let Some(dst) = pass.resolve {
+        let size = |f: Option<&FramebufferObj>| match f {
+            Some(f) => f.size(),
+            None => (default_fb.width(), default_fb.height()),
+        };
+        let dst_obj = if dst.is_null() {
+            Ok(None)
+        } else {
+            framebuffers.get(dst.0).map(Some).ok_or(())
+        };
+        match dst_obj {
+            Err(()) => stale("framebuffer", "render (resolve target)", dst),
+            Ok(d) if size(d) != size(target) => console::error_once(&format!(
+                "[rswebgl] resolve: target is {:?} but the resolve target is {:?}; \
+                 sizes must match, skipped",
+                size(target),
+                size(d)
+            )),
+            Ok(d) => {
+                let (w, h) = size(target);
+                let all = Viewport::new(0, 0, w, h);
+                copy::blit(
+                    gl,
+                    target.map(|f| &f.raw),
+                    d.map(|f| &f.raw),
+                    all,
+                    all,
+                    WebGl2RenderingContext::COLOR_BUFFER_BIT,
+                    WebGl2RenderingContext::NEAREST,
+                );
+                fb_binding = WebGl2RenderingContext::READ_FRAMEBUFFER;
+                resolved_into = Some((dst, d.map(|f| &f.raw)));
+            }
+        }
+    }
+
     // Store op — discard attachments we won't read again.
     if pass.invalidate != InvalidateMask::none() {
         let arr = js_sys::Array::new();
@@ -277,7 +321,15 @@ fn execute_pass(
                 }
             }
         }
-        let _ = gl.invalidate_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, arr.as_ref());
+        let _ = gl.invalidate_framebuffer(fb_binding, arr.as_ref());
+    }
+
+    // After a resolve, point READ at the resolve target too, so both bindings
+    // (and the cache) agree on one framebuffer — a raw readPixels afterwards
+    // reads what was resolved rather than failing on a multisampled source.
+    if let Some((dst, raw)) = resolved_into {
+        gl.bind_framebuffer(WebGl2RenderingContext::READ_FRAMEBUFFER, raw);
+        st.target = Some(dst);
     }
 }
 

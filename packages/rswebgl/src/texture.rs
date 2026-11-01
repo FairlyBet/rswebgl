@@ -378,7 +378,7 @@ pub(crate) fn mip_levels(w: i32, h: i32) -> i32 {
 impl Context {
     // Resolves `tex`, binds it to its target, runs `f`, unbinds. Reports a
     // stale handle (as `op`) and returns None instead.
-    fn with_texture<T>(
+    pub(crate) fn with_texture<T>(
         &self,
         tex: TextureId,
         op: &str,

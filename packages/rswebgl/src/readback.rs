@@ -22,9 +22,10 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{WebGl2RenderingContext as Gl, WebGlBuffer, WebGlSync};
 
+use crate::buffer::BufferKind;
 use crate::context::Context;
 use crate::error::{Error, err};
-use crate::ids::FramebufferId;
+use crate::ids::{BufferId, FramebufferId};
 
 /// What to read and as what.
 #[wasm_bindgen]
@@ -73,11 +74,11 @@ impl ReadFormat {
 
 /// A rectangle of a framebuffer's color attachment.
 #[derive(Clone, Copy)]
-struct Region {
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
+pub(crate) struct Region {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) width: i32,
+    pub(crate) height: i32,
 }
 
 #[wasm_bindgen]
@@ -104,7 +105,8 @@ impl Context {
             width,
             height,
         };
-        let len = self.bind_read_source(fb, attachment, r, format)?;
+        self.bind_read_source(fb, attachment, r)?;
+        let len = r.width as usize * r.height as usize * format.pixel_size();
         let buf = ArrayBuffer::new(len as u32);
         let (f, t) = format.gl();
         self.gl()
@@ -178,14 +180,13 @@ impl Context {
     }
 
     // Binds `fb` for reading attachment `attachment`, after checking the
-    // region lies inside it. Returns the byte length of the result.
-    fn bind_read_source(
+    // region lies inside it.
+    pub(crate) fn bind_read_source(
         &self,
         fb: FramebufferId,
         attachment: u32,
         r: Region,
-        format: ReadFormat,
-    ) -> Result<usize, Error> {
+    ) -> Result<(), Error> {
         self.check_alive()?;
         let gl = self.gl();
         let (w, h) = if fb.is_null() {
@@ -227,7 +228,7 @@ impl Context {
                 r.y
             ));
         }
-        Ok(r.width as usize * r.height as usize * format.pixel_size())
+        Ok(())
     }
 
     fn start_readback(
@@ -237,7 +238,8 @@ impl Context {
         r: Region,
         format: ReadFormat,
     ) -> Result<PendingRead, Error> {
-        let len = self.bind_read_source(fb, attachment, r, format)?;
+        self.bind_read_source(fb, attachment, r)?;
+        let len = r.width as usize * r.height as usize * format.pixel_size();
         let gl = self.gl();
         let buffer = gl.create_buffer().ok_or("read: createBuffer failed")?;
         gl.bind_buffer(Gl::PIXEL_PACK_BUFFER, Some(&buffer));
@@ -311,4 +313,112 @@ async fn sleep(d: Duration) {
         }
     });
     let _ = JsFuture::from(p).await;
+}
+
+// ---------------------------------------------------------------------------
+// Buffer readback
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl Context {
+    /// Reads `len` bytes of `buffer` from `offset`, waiting for any GPU work
+    /// that writes it — prefer `buffer_read_async` in a running app. Index
+    /// buffers can't be read (WebGL keeps them off the copy targets).
+    #[wasm_bindgen(js_name = bufferRead)]
+    pub fn buffer_read(&self, buffer: BufferId, offset: u32, len: u32) -> Result<Vec<u8>, Error> {
+        let raw = self.readable_buffer(buffer, offset, len)?;
+        let gl = self.gl();
+        let mut out = vec![0u8; len as usize];
+        gl.bind_buffer(Gl::COPY_READ_BUFFER, Some(&raw));
+        gl.get_buffer_sub_data_with_i32_and_u8_array(Gl::COPY_READ_BUFFER, offset as i32, &mut out);
+        gl.bind_buffer(Gl::COPY_READ_BUFFER, None);
+        Ok(out)
+    }
+
+    /// `buffer_read` without the stall, for JS: a promise of the bytes.
+    #[wasm_bindgen(js_name = bufferReadAsync)]
+    pub fn buffer_read_promise(&self, buffer: BufferId, offset: u32, len: u32) -> js_sys::Promise {
+        let read = self.buffer_read_async(buffer, offset, len);
+        wasm_bindgen_futures::future_to_promise(async move {
+            let bytes = read.await?;
+            Ok(Uint8Array::from(&bytes[..]).into())
+        })
+    }
+}
+
+impl Context {
+    /// `buffer_read` without the stall: copies the range into a scratch buffer
+    /// on the GPU *now* (later writes to `buffer` don't show) and resolves once
+    /// the GPU has done it.
+    pub fn buffer_read_async(
+        &self,
+        buffer: BufferId,
+        offset: u32,
+        len: u32,
+    ) -> impl Future<Output = Result<Vec<u8>, Error>> + 'static {
+        let started = self.start_buffer_readback(buffer, offset, len);
+        let ctx = self.clone();
+        async move {
+            let pending = started?;
+            let result = pending.finish(ctx.gl()).await;
+            pending.delete(ctx.gl());
+            result
+        }
+    }
+
+    fn readable_buffer(
+        &self,
+        buffer: BufferId,
+        offset: u32,
+        len: u32,
+    ) -> Result<WebGlBuffer, Error> {
+        self.check_alive()?;
+        let res = self.res();
+        let Some(b) = res.buffers.get(buffer.0) else {
+            return Err(err!("read: buffer {:?} is destroyed or invalid", buffer.0));
+        };
+        if b.kind == BufferKind::Index {
+            return Err("read: index buffers can't be read back".into());
+        }
+        if offset as u64 + len as u64 > b.size as u64 {
+            return Err(err!(
+                "read: {len} bytes from {offset} overrun the {}-byte buffer",
+                b.size
+            ));
+        }
+        Ok(b.raw.clone())
+    }
+
+    fn start_buffer_readback(
+        &self,
+        buffer: BufferId,
+        offset: u32,
+        len: u32,
+    ) -> Result<PendingRead, Error> {
+        let src = self.readable_buffer(buffer, offset, len)?;
+        let gl = self.gl();
+        let scratch = gl.create_buffer().ok_or("read: createBuffer failed")?;
+        gl.bind_buffer(Gl::COPY_WRITE_BUFFER, Some(&scratch));
+        gl.buffer_data_with_i32(Gl::COPY_WRITE_BUFFER, len as i32, Gl::STREAM_READ);
+        gl.bind_buffer(Gl::COPY_READ_BUFFER, Some(&src));
+        gl.copy_buffer_sub_data_with_i32_and_i32_and_i32(
+            Gl::COPY_READ_BUFFER,
+            Gl::COPY_WRITE_BUFFER,
+            offset as i32,
+            0,
+            len as i32,
+        );
+        gl.bind_buffer(Gl::COPY_READ_BUFFER, None);
+        gl.bind_buffer(Gl::COPY_WRITE_BUFFER, None);
+        let Some(sync) = gl.fence_sync(Gl::SYNC_GPU_COMMANDS_COMPLETE, 0) else {
+            gl.delete_buffer(Some(&scratch));
+            return Err("read: fenceSync failed".into());
+        };
+        gl.flush();
+        Ok(PendingRead {
+            buffer: scratch,
+            sync,
+            len: len as usize,
+        })
+    }
 }

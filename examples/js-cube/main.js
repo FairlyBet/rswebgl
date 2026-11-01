@@ -2,6 +2,7 @@
 // A grid of spinning cubes driven entirely from JS: the generated bindings,
 // no Rust code of its own. Two programs and two render states, interleaved on
 // purpose: sorting the draw list groups them, and the frame stats show it.
+// Rendered through a 4× MSAA framebuffer resolved into the canvas.
 //
 // Build the bindings first (see README.md), then serve this folder.
 
@@ -14,9 +15,11 @@ import init, {
   DrawCommand,
   DrawMode,
   IndexType,
+  InvalidateMask,
   ParamLayoutBuilder,
   Pass,
   RenderState,
+  RenderbufferFormat,
   UniformType,
   VaoBuilder,
 } from "./pkg/rswebgl.js";
@@ -50,7 +53,10 @@ const GRID = 12; // GRID × GRID cubes
 await init();
 
 const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById("c"));
-const ctx = Context.fromCanvas(canvas, new ContextOptions());
+// No built-in antialiasing: MSAA comes from our own target (M toggles it).
+const options = new ContextOptions();
+options.antialias = false;
+const ctx = Context.fromCanvas(canvas, options);
 const fb = ctx.defaultFramebuffer();
 fb.setClearColor(0.07, 0.07, 0.09, 1);
 fb.enableAutoResize();
@@ -116,9 +122,51 @@ for (let i = 0; i < GRID * GRID; i++) {
   });
 }
 
-// One pass, rebuilt every frame into the same memory.
-const pass = Pass.toDefault();
-pass.setClear(ClearMask.colorDepth());
+// --- target: a 4× MSAA framebuffer resolved into the canvas, or the canvas -
+// The resolve happens right after the draws and the samples are then
+// discarded (invalidate), so on tiled mobile GPUs they never leave tile memory.
+
+let msaa = true;
+let msaaFb = NULL;
+let msaaW = 0;
+let msaaH = 0;
+/** @type {Pass | null} */
+let pass = null; // rebuilt every frame into the same memory; replaced with the target
+
+function createMsaaTarget(w, h) {
+  const fbo = ctx.createFramebuffer(w, h);
+  const color = ctx.createRenderbufferMultisample(RenderbufferFormat.Rgba8, 4, w, h);
+  const depth = ctx.createRenderbufferMultisample(RenderbufferFormat.Depth24, 4, w, h);
+  ctx.framebufferAttachColorRenderbuffer(fbo, 0, color);
+  ctx.framebufferAttachDepthRenderbuffer(fbo, depth);
+  // The framebuffer holds them now: they go when it is destroyed.
+  ctx.destroyRenderbuffer(color);
+  ctx.destroyRenderbuffer(depth);
+  ctx.framebufferSetColorClearF32(fbo, 0, 0.07, 0.07, 0.09, 1);
+  return fbo;
+}
+
+// The pass for this frame: follows the canvas size and the MSAA toggle.
+function framePass(w, h) {
+  const stale = msaa ? msaaFb === NULL || msaaW !== w || msaaH !== h : msaaFb !== NULL;
+  if (stale) {
+    if (msaaFb !== NULL) ctx.destroyFramebuffer(msaaFb);
+    msaaFb = msaa ? createMsaaTarget(w, h) : NULL;
+    msaaW = w;
+    msaaH = h;
+    pass?.free();
+    pass = null;
+  }
+  if (!pass) {
+    pass = msaa ? new Pass(msaaFb) : Pass.toDefault();
+    pass.setClear(ClearMask.colorDepth());
+    if (msaa) {
+      pass.setResolve(NULL);
+      pass.setInvalidate(InvalidateMask.all());
+    }
+  }
+  return pass;
+}
 
 // --- math (column-major, like GLSL) ----------------------------------------
 
@@ -154,12 +202,14 @@ const statsEl = /** @type {HTMLElement} */ (document.getElementById("stats"));
 let sorted = true;
 window.addEventListener("keydown", (e) => {
   if (e.key === "s" || e.key === "S") sorted = !sorted;
+  if (e.key === "m" || e.key === "M") msaa = !msaa;
 });
 
 function frame(ms) {
   const t = ms / 1000;
   const proj = perspective(Math.PI / 4, fb.width() / Math.max(1, fb.height()), 0.1, 100);
 
+  const pass = framePass(fb.width(), fb.height());
   pass.clearDraws();
   for (const o of objects) {
     mul(proj, model(o.x, o.y, t + o.x * 0.3, m), mvp);
@@ -173,7 +223,7 @@ function frame(ms) {
   ctx.render(pass);
   const s = ctx.frameStats();
   statsEl.textContent =
-    `draws ${s.draws}  (S: sort ${sorted ? "on" : "off"})\n` +
+    `draws ${s.draws}  (S: sort ${sorted ? "on" : "off"}, M: MSAA ${msaa ? "4x" : "off"})\n` +
     `programs ${s.programs}  states ${s.states}  vaos ${s.vertexArrays}\n` +
     `uniforms ${s.uniforms}  textures ${s.textures}  blocks ${s.blocks}`;
   s.free();
