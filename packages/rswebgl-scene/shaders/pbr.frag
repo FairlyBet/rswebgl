@@ -2,8 +2,8 @@
 // (appendix B: GGX distribution, height-correlated Smith visibility, Schlick
 // Fresnel, Lambert diffuse), punctual lights (KHR_lights_punctual units),
 // image-based light from the scene's environment (split sum), emissive,
-// alpha modes, then exposure and the display transform (`tonemap.glsl`,
-// prepended by `PbrShaders`).
+// alpha modes, then `scene_output`. Everything the scene binds (camera,
+// lights, environment, object) comes from the prelude, `scene.frag.glsl`.
 //
 // Defines (`PbrShaders` adds the ones that apply):
 //   geometry   HAS_NORMAL HAS_UV0 HAS_TANGENT HAS_COLOR HAS_UV1
@@ -21,12 +21,6 @@
 // bent by the IOR inside a volume), is absorbed over the volume's thickness,
 // and with dispersion each color channel bends by its own IOR.
 
-precision highp float;
-// Samplers default to lowp in fragment shaders, which can clip HDR values on
-// mobile GPUs.
-precision highp sampler2D;
-precision highp samplerCube;
-
 in vec3 v_world;
 in vec2 v_uv0;
 in vec2 v_uv1;
@@ -39,34 +33,6 @@ in vec4 v_tangent;
 #ifdef HAS_COLOR
 in vec4 v_color;
 #endif
-
-layout(std140) uniform Frame {
-    mat4 u_view;
-    mat4 u_proj;
-    mat4 u_view_proj;
-    vec4 u_camera_pos;
-};
-
-// Lights: the scene's lighting block (rswebgl-scene `LIGHTING_BLOCK`).
-#define MAX_LIGHTS 8
-struct Light {
-    vec4 position;  // xyz world position (point, spot)
-    vec4 direction; // xyz world direction the light points (directional, spot)
-    vec4 color;     // rgb color, w intensity (lux for directional, candela else)
-    vec4 params;    // x range (0 = infinite), y spot scale, z spot offset, w type
-};
-layout(std140) uniform Lighting {
-    Light u_lights[MAX_LIGHTS];
-    vec4 u_environment; // rgb intensity of the environment light
-    vec4 u_lighting;    // x light count, y exposure, z environment rotation,
-                        // w last mip of the specular cube
-};
-
-// Environment: the scene's cube maps (diffuse stores E/π) and the split-sum
-// BRDF table (R scale, G bias by n·v and roughness).
-uniform samplerCube u_env_diffuse;
-uniform samplerCube u_env_specular;
-uniform sampler2D u_env_brdf;
 
 // Material: the loader's material group (rswebgl-gltf).
 uniform vec4 u_base_color_factor;
@@ -103,7 +69,6 @@ uniform float u_transmission;
 uniform float u_thickness;            // mesh units
 uniform vec3 u_attenuation_color;
 uniform float u_attenuation_distance; // 0 = no absorption
-uniform mat4 u_model;                 // its scale turns thickness into world units
 #endif
 #ifdef HAS_CLEARCOAT
 uniform float u_clearcoat;
@@ -362,6 +327,6 @@ void main() {
 #endif
     color += emissive;
 
-    frag_color = vec4(to_srgb(tone_map(color * u_lighting.y)), base.a);
+    frag_color = vec4(scene_output(color), base.a);
 #endif
 }

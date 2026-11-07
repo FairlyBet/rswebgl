@@ -30,7 +30,8 @@ mod pack;
 mod scene;
 mod textures;
 
-pub use material::{AlphaMode, Material, default_material};
+pub use geometry::Triangles;
+pub use material::{AlphaMode, Material, PROPERTIES, Property, default_material};
 
 use rswebgl::context::Context;
 use rswebgl::draw::DrawCommand;
@@ -81,6 +82,7 @@ pub struct DrawItem {
     // The primitive's POSITION bounds, in mesh space.
     pub(crate) aabb_min: [f32; 3],
     pub(crate) aabb_max: [f32; 3],
+    pub(crate) triangles: Option<std::rc::Rc<Triangles>>,
 }
 
 #[wasm_bindgen]
@@ -147,6 +149,12 @@ impl DrawItem {
     /// uses `EXT_mesh_gpu_instancing`): `model = node_world * instance`.
     pub fn instance_cols(&self) -> [f32; 16] {
         self.instance_matrix
+    }
+
+    /// The primitive's triangles in mesh space (for picking), if it's a
+    /// `TRIANGLES` primitive. Shared between the items drawing it.
+    pub fn triangles(&self) -> Option<std::rc::Rc<Triangles>> {
+        self.triangles.clone()
     }
 
     /// The primitive's bounding box in mesh space: `(min, max)`.
@@ -295,6 +303,12 @@ impl Model {
     /// The materials, by glTF index (`DrawItem::material_index`).
     pub fn materials(&self) -> &[Material] {
         &self.materials
+    }
+
+    /// The material groups: one per material (same order as `materials`),
+    /// then the default material's.
+    pub fn material_groups(&self) -> &[ParamGroupId] {
+        &self.material_groups
     }
 
     /// The default scene's nodes, parents before children.
@@ -447,51 +461,23 @@ fn build_material_groups(
     textures: &[TextureId],
 ) -> Result<(ParamLayoutId, Vec<ParamGroupId>), Error> {
     let mut builder = ParamLayoutBuilder::new()
-        .uniform("u_base_color_factor", UniformType::Vec4)
-        .uniform("u_metallic_factor", UniformType::F32)
-        .uniform("u_roughness_factor", UniformType::F32)
-        .uniform("u_emissive_factor", UniformType::Vec3)
-        .uniform("u_emissive_strength", UniformType::F32)
-        .uniform("u_normal_scale", UniformType::F32)
-        .uniform("u_occlusion_strength", UniformType::F32)
-        .uniform("u_alpha_cutoff", UniformType::F32)
         .uniform("u_alpha_mode", UniformType::I32)
-        .uniform("u_has_base_color_tex", UniformType::Bool)
-        .uniform("u_ior", UniformType::F32)
-        .uniform("u_specular_factor", UniformType::F32)
-        .uniform("u_specular_color", UniformType::Vec3)
-        .uniform("u_transmission", UniformType::F32)
-        .uniform("u_thickness", UniformType::F32)
-        .uniform("u_attenuation_color", UniformType::Vec3)
-        .uniform("u_attenuation_distance", UniformType::F32)
-        .uniform("u_clearcoat", UniformType::F32)
-        .uniform("u_clearcoat_roughness", UniformType::F32)
-        .uniform("u_dispersion", UniformType::F32);
+        .uniform("u_has_base_color_tex", UniformType::Bool);
+    for p in material::PROPERTIES {
+        let ty = match p.len {
+            1 => UniformType::F32,
+            3 => UniformType::Vec3,
+            _ => UniformType::Vec4,
+        };
+        builder = builder.uniform(p.uniform, ty);
+    }
     for name in MAP_UNIFORMS {
         builder = builder.texture(name);
     }
     let layout = ctx.create_param_layout(&builder)?;
     let field = |name| ctx.param_field(layout, name);
-    let f_color = field("u_base_color_factor")?;
-    let f_metallic = field("u_metallic_factor")?;
-    let f_roughness = field("u_roughness_factor")?;
-    let f_emissive = field("u_emissive_factor")?;
-    let f_emissive_strength = field("u_emissive_strength")?;
-    let f_normal_scale = field("u_normal_scale")?;
-    let f_occlusion = field("u_occlusion_strength")?;
-    let f_cutoff = field("u_alpha_cutoff")?;
     let f_mode = field("u_alpha_mode")?;
     let f_has_tex = field("u_has_base_color_tex")?;
-    let f_ior = field("u_ior")?;
-    let f_specular = field("u_specular_factor")?;
-    let f_specular_color = field("u_specular_color")?;
-    let f_transmission = field("u_transmission")?;
-    let f_thickness = field("u_thickness")?;
-    let f_attenuation_color = field("u_attenuation_color")?;
-    let f_attenuation_distance = field("u_attenuation_distance")?;
-    let f_clearcoat = field("u_clearcoat")?;
-    let f_clearcoat_roughness = field("u_clearcoat_roughness")?;
-    let f_dispersion = field("u_dispersion")?;
     let f_maps: Vec<_> = MAP_UNIFORMS
         .iter()
         .map(|name| field(name))
@@ -505,25 +491,8 @@ fn build_material_groups(
         .enumerate()
     {
         let g = ctx.create_param_group(layout)?;
-        ctx.param_set_floats(g, f_color, &m.base_color_factor);
-        ctx.param_set_f32(g, f_metallic, m.metallic);
-        ctx.param_set_f32(g, f_roughness, m.roughness);
-        ctx.param_set_floats(g, f_emissive, &m.emissive);
-        ctx.param_set_f32(g, f_emissive_strength, m.emissive_strength);
-        ctx.param_set_f32(g, f_normal_scale, m.normal_scale);
-        ctx.param_set_f32(g, f_occlusion, m.occlusion_strength);
-        ctx.param_set_f32(g, f_cutoff, m.alpha_cutoff);
+        m.write_properties(ctx, g);
         ctx.param_set_i32(g, f_mode, m.alpha_mode as i32);
-        ctx.param_set_f32(g, f_ior, m.ior);
-        ctx.param_set_f32(g, f_specular, m.specular);
-        ctx.param_set_floats(g, f_specular_color, &m.specular_color);
-        ctx.param_set_f32(g, f_transmission, m.transmission);
-        ctx.param_set_f32(g, f_thickness, m.thickness);
-        ctx.param_set_floats(g, f_attenuation_color, &m.attenuation_color);
-        ctx.param_set_f32(g, f_attenuation_distance, m.attenuation_distance);
-        ctx.param_set_f32(g, f_clearcoat, m.clearcoat);
-        ctx.param_set_f32(g, f_clearcoat_roughness, m.clearcoat_roughness);
-        ctx.param_set_f32(g, f_dispersion, m.dispersion);
         let samplers = map_samplers.get(i).copied().unwrap_or_default();
         for (map, ((tex, _), f)) in material_maps(m).into_iter().zip(&f_maps).enumerate() {
             let Some(tex) = usize::try_from(tex).ok().and_then(|t| textures.get(t)) else {

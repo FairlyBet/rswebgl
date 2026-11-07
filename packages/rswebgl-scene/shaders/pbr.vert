@@ -1,9 +1,8 @@
-// glTF 2.0 metallic-roughness — vertex stage. `PbrShaders` prepends
-// `#version 300 es` and one `#define` per feature the primitive has:
+// glTF 2.0 metallic-roughness — vertex stage, after the scene prelude
+// (`scene.vert.glsl`: camera, object). `PbrShaders` adds one `#define` per
+// feature the primitive has:
 //   HAS_NORMAL HAS_UV0 HAS_TANGENT HAS_COLOR HAS_UV1
 // Attribute locations are the loader's (rswebgl-gltf `geometry.rs`).
-
-precision highp float;
 
 layout(location = 0) in vec3 a_position;
 #ifdef HAS_NORMAL
@@ -21,17 +20,6 @@ layout(location = 4) in vec4 a_color;
 #ifdef HAS_UV1
 layout(location = 5) in vec2 a_uv1;
 #endif
-
-// Camera: the scene's frame block (rswebgl-scene `FRAME_BLOCK`).
-layout(std140) uniform Frame {
-    mat4 u_view;
-    mat4 u_proj;
-    mat4 u_view_proj;
-    vec4 u_camera_pos;
-};
-// Object: the scene's per-object group.
-uniform mat4 u_model;
-uniform mat3 u_normal_matrix;
 
 out vec3 v_world;
 out vec2 v_uv0;

@@ -303,3 +303,27 @@ pub fn despawn_recursive(world: &mut World, e: Entity) -> usize {
     }
     count
 }
+
+/// `root` and everything under it, parents before children. Builds a map of
+/// children from every `Parent` once, so it's for occasional queries.
+pub fn descendants(world: &World, root: Entity) -> Vec<Entity> {
+    if !world.is_alive(root) {
+        return Vec::new();
+    }
+    let mut by_parent: HashMap<Entity, Vec<Entity>> = HashMap::new();
+    if let Some(parents) = world.storage::<Parent>() {
+        for (child, p) in parents.iter() {
+            by_parent.entry(p.0).or_default().push(child);
+        }
+    }
+    let mut out = vec![root];
+    let mut i = 0;
+    // Bounded against a hand-made cycle through `root`.
+    while i < out.len() && out.len() <= world.len() {
+        if let Some(kids) = by_parent.get(&out[i]) {
+            out.extend(kids.iter().filter(|&&k| k != root));
+        }
+        i += 1;
+    }
+    out
+}

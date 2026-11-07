@@ -340,3 +340,44 @@ ctx.render(pass);
   IOR 2.4 отражает сильнее 1.5, лак отражает поверх шероховатого чёрного,
   объём поглощает синий. Пять мутаций ловятся. DragonDispersion из
   Khronos рендерится (`?model=` в `examples/js-scene`).
+
+**API сцены — вторая редакция (после E5c).** Что поменялось и почему:
+
+- **Материалы — первый класс в `Scene`.** Материал — число (его группа
+  параметров). `materials(root)`, `findMaterial(root, name)` (имена
+  glTF), `meshMaterial(e)` (для узла — первый меш под ним),
+  `materialProperty` / `setMaterialProperty(mat, name, value)` по именам
+  свойств glTF (`baseColorFactor`, `roughnessFactor`, `ior`,
+  `transmissionFactor`, …; одна таблица `PROPERTIES` в загрузчике служит и
+  созданию групп, и правкам), `cloneMaterial` (копия группы —
+  `Context::copy_param_group`) и `setMaterial(e, mat)` на всё поддерево.
+  Свойство, переходящее через ноль у transmission / volume / clearcoat /
+  dispersion, переключает вариант шейдера у всех мешей с этим материалом
+  (компонент `Primitive` хранит атрибуты примитива).
+- **Объекты-опции вместо длинных позиционных списков:** `setLight(e,
+  { type, color, intensity, range, innerConeAngle, outerConeAngle })`,
+  `setCamera(e, { type, yfov | ymag, znear, zfar })` (имена из glTF),
+  `setMesh(e, { program, state, vao, material, transparent }, draw)`;
+  векторы — массивы (`lookAt(e, eye, target)`, `setBounds(e, min, max)`).
+  Типы опций — в `.d.ts` (`typescript_custom_section`); кривые опции —
+  исключение.
+- **Кадр одним вызовом:** `renderFrame(camera)` — aspect камеры по канвасу,
+  свой переиспользуемый pass с очисткой, сортировка, отрисовка.
+  `render(camera, pass)` остаётся для своих целей (offscreen, MSAA).
+- **Чтение без лишних аллокаций:** `copyWorldMatrix(e, out)`,
+  `worldPosition(e)`.
+- **Выбор кликом:** `pick(camera, x, y)` по NDC → сущность примитива (её
+  `parent` — узел glTF), `pickPoint`, `pickDistance`. Меши glTF — по
+  треугольникам (загрузчик держит копию позиций и индексов,
+  `DrawItem::triangles`), прочие — по `Bounds`; скрытые пропускаются.
+- **Свои шейдеры — через прелюдию, а не контракт.** Пункт «блок `Frame`
+  надо объявить ровно так» переосмыслен: сцена сама подставляет
+  объявления. `shaders/scene.{vert,frag}.glsl` объявляют всё, что сцена
+  привязывает (камера, свет, окружение, матрицы объекта), плюс помощники
+  `scene_irradiance(n)`, `scene_reflection(r, roughness)`,
+  `scene_output(linear)`. `scene.createProgram(vert, frag)` /
+  `create_scene_program` добавляет `#version`, прелюдию и `#line 1` —
+  ошибки компиляции показывают строки пользовательского кода. Встроенный
+  PBR и фон собираются тем же путём.
+- По ходу: исправлена паника рендерера при отрисовке группы, чей layout
+  удалён раньше неё (`Pool::get_in_use`).

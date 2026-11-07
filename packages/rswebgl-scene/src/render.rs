@@ -23,7 +23,7 @@ use crate::camera::Camera;
 use crate::culling::{Bounds, Frustum};
 use crate::environment::{Environment, FULLSCREEN_VERT, brdf_lut_texture};
 use crate::light::Light;
-use crate::pbr::TONEMAP;
+use crate::shader::create_scene_program;
 use crate::transform::{Parent, WorldMatrix};
 
 /// Name of the per-frame uniform block. Shaders declare it as
@@ -325,12 +325,7 @@ impl SceneRenderer {
             return;
         };
         let program = *self.skybox.get_or_insert_with(|| {
-            let head = "#version 300 es\nprecision highp float;\n";
-            ctx.create_program(
-                &format!("{head}{FULLSCREEN_VERT}"),
-                &format!("{head}{TONEMAP}{SKYBOX_FRAG}"),
-            )
-            .map_err(|e| {
+            create_scene_program(ctx, FULLSCREEN_VERT, SKYBOX_FRAG).map_err(|e| {
                 console::error(&format!(
                     "[rswebgl-scene] background shader failed to build: {e}"
                 ))
@@ -599,7 +594,7 @@ impl SceneRenderer {
 
 // Whether `e` or an ancestor has `Visible(false)`. Bounded against a
 // hand-made `Parent` cycle.
-fn hidden(world: &World, mut e: Entity) -> bool {
+pub(crate) fn hidden(world: &World, mut e: Entity) -> bool {
     for _ in 0..=world.len() {
         if world.get::<Visible>(e).is_some_and(|v| !v.0) {
             return true;

@@ -2,12 +2,12 @@
 // A glTF model in a scene, driven from plain JS. The scene owns the entities
 // (plain numbers), their transforms and the draw list; JS only says what goes
 // where. Shading is the built-in glTF PBR (a shader variant per primitive and
-// material); lights are entities too. One `scene.render(camera, pass)` per
-// frame updates world matrices, culls, and appends the draws.
+// material); lights are entities too. One `scene.renderFrame(camera)` per
+// frame updates world matrices, culls, sorts and draws to the canvas.
 //
 // Build the bundle first (see README.md), then serve this folder.
 
-import init, { ClearMask, Context, ContextOptions, Pass, Scene, loadModel } from "./pkg/rswebgl_scene.js";
+import init, { Context, ContextOptions, Scene, loadModel } from "./pkg/rswebgl_scene.js";
 
 const MODEL_URL =
   "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/main/2.0/DamagedHelmet/glTF-Binary/DamagedHelmet.glb";
@@ -44,9 +44,11 @@ scene.setBackground(0.3);
 
 // Frame the model: a camera looking at its bounding sphere.
 const [cx, cy, cz, radius] = scene.modelBounds(root);
+const center = [cx, cy, cz];
 const camera = scene.spawn();
-scene.setPerspectiveCamera(camera, Math.PI / 4, radius * 0.05, radius * 20);
+scene.setCamera(camera, { type: "perspective", yfov: Math.PI / 4, znear: radius * 0.05, zfar: radius * 20 });
 const distance = (radius / Math.sin(Math.PI / 8)) * 1.1;
+scene.lookAt(camera, [cx, cy + radius * 0.3, cz + distance], center);
 
 // A pivot at the model's center carries the turntable rotation; the model
 // hangs off it, moved so its center sits on the pivot.
@@ -56,16 +58,26 @@ scene.setParent(root, pivot);
 scene.setTranslation(root, -cx, -cy, -cz);
 
 // A key light on top of the environment: lights are entities aimed with lookAt.
-const light = (x, y, z, r, g, b, lux) => {
-  const e = scene.spawn();
-  scene.setDirectionalLight(e, r, g, b, lux);
-  scene.lookAt(e, cx + x, cy + y, cz + z, cx, cy, cz);
-  return e;
-};
-light(1, 1.5, 1.2, 1, 0.96, 0.9, 2); // key
+const key = scene.spawn();
+scene.setLight(key, { type: "directional", color: [1, 0.96, 0.9], intensity: 2 });
+scene.lookAt(key, [cx + radius, cy + radius * 1.5, cz + radius * 1.2], center);
 
-const pass = Pass.toDefault();
-pass.setClear(ClearMask.colorDepth());
+// Click a part: its name shows; C paints it a new color (on a copy of its
+// material, so parts sharing the original keep theirs).
+let picked = 0;
+canvas.addEventListener("click", (e) => {
+  const x = (e.offsetX / canvas.clientWidth) * 2 - 1;
+  const y = 1 - (e.offsetY / canvas.clientHeight) * 2;
+  picked = scene.pick(camera, x, y);
+});
+const ownMaterial = new Map(); // picked entity → its own copy
+const recolor = () => {
+  if (!picked) return;
+  let own = ownMaterial.get(picked);
+  if (!own) ownMaterial.set(picked, (own = scene.cloneMaterial(scene.meshMaterial(picked))));
+  scene.setMaterialProperty(own, "baseColorFactor", [Math.random(), Math.random(), Math.random(), 1]);
+  scene.setMaterial(picked, own);
+};
 
 let visible = true;
 let background = true;
@@ -74,16 +86,18 @@ let spinning = true;
 let exposure = 1;
 let angle = 0;
 window.addEventListener("keydown", (e) => {
-  if (e.key === "v" || e.key === "V") scene.setVisible(root, (visible = !visible));
-  if (e.key === "r" || e.key === "R") spinning = !spinning;
-  if (e.key === "+" || e.key === "=") scene.setExposure((exposure *= 1.25));
-  if (e.key === "-") scene.setExposure((exposure /= 1.25));
-  if (e.key === "b" || e.key === "B") {
+  const k = e.key.toLowerCase();
+  if (k === "v") scene.setVisible(root, (visible = !visible));
+  if (k === "r") spinning = !spinning;
+  if (k === "+" || k === "=") scene.setExposure((exposure *= 1.25));
+  if (k === "-") scene.setExposure((exposure /= 1.25));
+  if (k === "b") {
     background = !background;
     if (background) scene.setBackground(0.3);
     else scene.clearBackground();
   }
-  if (e.key === "e" || e.key === "E") scene.setEnvironmentRotation((envAngle += Math.PI / 4));
+  if (k === "e") scene.setEnvironmentRotation((envAngle += Math.PI / 4));
+  if (k === "c") recolor();
 });
 
 let last = performance.now();
@@ -91,19 +105,14 @@ function frame(now) {
   if (spinning) angle += ((now - last) / 1000) * 0.6;
   last = now;
   scene.setRotationEuler(pivot, 0, angle, 0);
-  scene.lookAt(camera, cx, cy + radius * 0.3, cz + distance, cx, cy, cz);
-  scene.setCameraAspect(camera, fb.width() / Math.max(1, fb.height()));
+  scene.renderFrame(camera);
 
-  pass.clearDraws();
-  scene.render(camera, pass);
-  pass.sort();
-  ctx.render(pass);
-
+  const part = picked ? (scene.name(scene.parent(picked)) ?? `entity ${picked}`) : "—";
   statsEl.textContent =
     `entities ${scene.entityCount()}  drawn ${scene.drawn()}  culled ${scene.culled()}  ` +
     `shader variants ${scene.shaderVariantCount()}  exposure ${exposure.toFixed(2)}\n` +
-    `V: ${visible ? "hide" : "show"} model   R: ${spinning ? "pause" : "resume"}   +/-: exposure   ` +
-    `B: background   E: turn the environment`;
+    `picked: ${part}   click: pick   C: recolor it   V: ${visible ? "hide" : "show"} model   ` +
+    `R: ${spinning ? "pause" : "resume"}   +/-: exposure   B: background   E: turn the environment`;
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

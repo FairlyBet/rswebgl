@@ -13,7 +13,7 @@ use rswebgl::framebuffer::ClearMask;
 use rswebgl::pass::Pass;
 use rswebgl_ecs::Entity;
 use rswebgl_gltf::load_model;
-use rswebgl_scene::{Parent, Scene};
+use rswebgl_scene::{Camera, Parent, Scene};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -121,8 +121,8 @@ fn setup() -> Setup {
     let mut scene = Scene::new(&ctx).expect("scene");
     // 4 units across, looking down −Z: x = −1, 0, +1 at pixels 16, 32, 48.
     let camera = scene.spawn();
-    scene.set_orthographic_camera(camera, 2.0, 0.1, 100.0);
-    scene.look_at(camera, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0);
+    scene.insert_camera(camera, Camera::orthographic(2.0, 1.0, 0.1, 100.0));
+    scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
     let mut pass = Pass::to_default();
     // The loader's render states test depth: clear it too, or the next
     // frame in the same task fails every fragment.

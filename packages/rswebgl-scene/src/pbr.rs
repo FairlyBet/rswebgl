@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
+use crate::shader::shader_sources;
 use rswebgl::context::Context;
 use rswebgl::error::Error;
 use rswebgl::ids::ProgramId;
@@ -14,7 +15,6 @@ use rswebgl_gltf::{
 
 const VERT: &str = include_str!("../shaders/pbr.vert");
 const FRAG: &str = include_str!("../shaders/pbr.frag");
-pub(crate) const TONEMAP: &str = include_str!("../shaders/tonemap.glsl");
 
 // Key layout: bits 0..5 the primitive's ATTR_* bits; 5..10 which maps the
 // material has (`MAPS` order); 10..15 which of them read TEXCOORD_1; 15..17
@@ -144,11 +144,7 @@ impl PbrKey {
 
     /// Vertex and fragment source of this variant.
     pub fn sources(&self) -> (String, String) {
-        let head = format!("#version 300 es\n{}", self.defines());
-        (
-            format!("{head}{VERT}"),
-            format!("{head}precision highp float;\n{TONEMAP}{FRAG}"),
-        )
+        shader_sources(VERT, FRAG, &self.defines())
     }
 }
 
@@ -194,6 +190,11 @@ impl PbrShaders {
             None => PbrKey::new(item.attributes(), &rswebgl_gltf::default_material()),
         };
         self.program(ctx, key)
+    }
+
+    /// Whether `program` is one of these variants.
+    pub fn is_pbr(&self, program: ProgramId) -> bool {
+        self.programs.values().any(|&p| p == program)
     }
 
     /// Variants compiled so far.

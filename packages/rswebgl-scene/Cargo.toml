@@ -15,6 +15,7 @@ rswebgl-ecs = { path = "../rswebgl-ecs" }
 rswebgl-gltf = { path = "../rswebgl-gltf" }
 glam = { workspace = true }
 wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
 
 # Host tests: `cargo test -p rswebgl-scene`.
 # Browser tests: `wasm-pack test --headless --chrome packages/rswebgl-scene`.

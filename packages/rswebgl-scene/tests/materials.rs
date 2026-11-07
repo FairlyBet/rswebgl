@@ -14,7 +14,7 @@ use rswebgl::context::{Context, ContextOptions};
 use rswebgl::framebuffer::ClearMask;
 use rswebgl::pass::Pass;
 use rswebgl_gltf::load_model;
-use rswebgl_scene::{Scene, encode_hdr};
+use rswebgl_scene::{Camera, Scene, encode_hdr};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -150,9 +150,9 @@ async fn extensions_shade_as_specified() {
 
     let mut scene = Scene::new(&ctx).expect("scene");
     let camera = scene.spawn();
-    scene.set_orthographic_camera(camera, 0.5, 0.1, 100.0);
+    scene.insert_camera(camera, Camera::orthographic(0.5, 1.0, 0.1, 100.0));
     scene.set_camera_aspect(camera, n as f32);
-    scene.look_at(camera, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0);
+    scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
     scene.add_model(load_model(&ctx, &asset_url()).await.expect("load"));
     scene
         .set_environment_hdr(&red_front_blue_back(), 64)

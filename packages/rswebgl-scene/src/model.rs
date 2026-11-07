@@ -2,15 +2,25 @@
 //! root entity, each primitive a child entity of its node that draws.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use glam::{Mat4, Vec3};
 use rswebgl::ids::ProgramId;
 use rswebgl_ecs::{Entity, World};
-use rswebgl_gltf::{DrawItem, Model};
+use rswebgl_gltf::{DrawItem, Model, Triangles};
 
 use crate::culling::Bounds;
 use crate::render::MeshRenderer;
 use crate::transform::{Parent, Transform};
+
+/// What a glTF primitive entity keeps from the loader: its vertex attributes
+/// (`ATTR_*`, to pick a PBR variant when its material changes) and its
+/// triangles in mesh space (for picking), if it's a `TRIANGLES` primitive.
+#[derive(Debug, Clone)]
+pub struct Primitive {
+    pub attributes: u32,
+    pub triangles: Option<Rc<Triangles>>,
+}
 
 /// A name to find an entity by (glTF node names, or the app's own).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +36,8 @@ pub struct Name(pub String);
 ///   — and the primitive's state, vertex array, material group, draw command,
 ///   transparent if its material blends), its mesh-space `Bounds`, and the
 ///   `EXT_mesh_gpu_instancing` transform as its `Transform` (identity
-///   without it). A primitive `program_for` returns None for is left out.
+///   without it), and a `Primitive`. A primitive `program_for` returns None
+///   for is left out.
 ///
 /// The entities refer to the model's GPU resources; the model still owns
 /// them. Move or hide parts by their node entities (`find_by_name`).
@@ -82,6 +93,13 @@ pub fn spawn_model(
                 material: item.material_group(),
                 command: item.draw_command(),
                 transparent: item.render_state().blend,
+            },
+        );
+        world.insert(
+            e,
+            Primitive {
+                attributes: item.attributes(),
+                triangles: item.triangles(),
             },
         );
     }

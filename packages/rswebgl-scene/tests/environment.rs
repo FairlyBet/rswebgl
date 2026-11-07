@@ -15,7 +15,7 @@ use rswebgl::framebuffer::ClearMask;
 use rswebgl::pass::Pass;
 use rswebgl_ecs::Entity;
 use rswebgl_gltf::load_model;
-use rswebgl_scene::{Scene, encode_hdr};
+use rswebgl_scene::{Camera, Scene, encode_hdr};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -85,7 +85,7 @@ fn direction_map() -> Vec<u8> {
 // The background seen by a camera looking from the origin toward (x, y, z).
 fn look(scene: &mut Scene, ctx: &Context, gl: &Gl, camera: Entity, dir: [f32; 3]) -> [u8; 4] {
     // lookAt can't take an up-parallel direction; nudge it.
-    scene.look_at(camera, 0.0, 0.0, 0.0, dir[0], dir[1], dir[2] + 1e-3);
+    scene.look_at(camera, &[0.0, 0.0, 0.0], &[dir[0], dir[1], dir[2] + 1e-3]);
     let mut pass = Pass::to_default();
     pass.set_clear(&ClearMask::color_depth());
     scene.render(camera, &mut pass);
@@ -99,7 +99,7 @@ fn baked_directions_match_the_equirect_map() {
     let (ctx, gl) = context();
     let mut scene = Scene::new(&ctx).expect("scene");
     let camera = scene.spawn();
-    scene.set_perspective_camera(camera, 0.5, 0.1, 10.0);
+    scene.insert_camera(camera, Camera::perspective(0.5, 1.0, 0.1, 10.0));
     scene
         .set_environment_hdr(&direction_map(), 64)
         .expect("bake");
@@ -208,8 +208,8 @@ async fn a_baked_uniform_environment_lights_like_the_constant_one() {
     let (ctx, gl) = context();
     let mut scene = Scene::new(&ctx).expect("scene");
     let camera = scene.spawn();
-    scene.set_orthographic_camera(camera, 2.0, 0.1, 100.0);
-    scene.look_at(camera, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0);
+    scene.insert_camera(camera, Camera::orthographic(2.0, 1.0, 0.1, 100.0));
+    scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
     scene.add_model(load_model(&ctx, &quads_url()).await.expect("load"));
 
     let frame = |scene: &mut Scene| -> [[u8; 4]; 3] {

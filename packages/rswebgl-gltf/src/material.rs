@@ -5,6 +5,8 @@
 //! "no texture". `RenderState` is derived per draw item (not per material),
 //! because front-face winding depends on the node's world-transform determinant.
 
+use rswebgl::context::Context;
+use rswebgl::ids::ParamGroupId;
 use rswebgl::render_state::{BlendFactor, CullFace, DepthFunc, FrontFace, RenderState};
 use wasm_bindgen::prelude::*;
 
@@ -21,6 +23,7 @@ pub enum AlphaMode {
 #[wasm_bindgen]
 #[derive(Clone, Debug)]
 pub struct Material {
+    pub(crate) name: Option<String>,
     pub(crate) base_color_factor: [f32; 4],
     pub(crate) metallic: f32,
     pub(crate) roughness: f32,
@@ -61,6 +64,11 @@ pub struct Material {
 
 #[wasm_bindgen]
 impl Material {
+    /// The glTF material name, if it has one.
+    #[wasm_bindgen(getter)]
+    pub fn name(&self) -> Option<String> {
+        self.name.clone()
+    }
     #[wasm_bindgen(getter, js_name = baseColorFactor)]
     pub fn base_color_factor(&self) -> Vec<f32> {
         self.base_color_factor.to_vec()
@@ -204,10 +212,121 @@ impl Material {
     }
 }
 
+/// A numeric material property: its glTF name (as in the spec and its
+/// extensions: `baseColorFactor`, `roughnessFactor`, `ior`, …), the uniform
+/// that carries it in a material group, and how many floats it has.
+#[derive(Debug, Clone, Copy)]
+pub struct Property {
+    pub name: &'static str,
+    pub uniform: &'static str,
+    pub len: usize,
+}
+
+const fn prop(name: &'static str, uniform: &'static str, len: usize) -> Property {
+    Property { name, uniform, len }
+}
+
+/// Every numeric property a material group carries, by glTF name.
+pub const PROPERTIES: [Property; 18] = [
+    prop("baseColorFactor", "u_base_color_factor", 4),
+    prop("metallicFactor", "u_metallic_factor", 1),
+    prop("roughnessFactor", "u_roughness_factor", 1),
+    prop("emissiveFactor", "u_emissive_factor", 3),
+    prop("emissiveStrength", "u_emissive_strength", 1),
+    prop("normalScale", "u_normal_scale", 1),
+    prop("occlusionStrength", "u_occlusion_strength", 1),
+    prop("alphaCutoff", "u_alpha_cutoff", 1),
+    prop("ior", "u_ior", 1),
+    prop("specularFactor", "u_specular_factor", 1),
+    prop("specularColorFactor", "u_specular_color", 3),
+    prop("transmissionFactor", "u_transmission", 1),
+    prop("thicknessFactor", "u_thickness", 1),
+    prop("attenuationColor", "u_attenuation_color", 3),
+    prop("attenuationDistance", "u_attenuation_distance", 1),
+    prop("clearcoatFactor", "u_clearcoat", 1),
+    prop("clearcoatRoughnessFactor", "u_clearcoat_roughness", 1),
+    prop("dispersion", "u_dispersion", 1),
+];
+
+impl Material {
+    // The storage of each of `PROPERTIES`, in the same order.
+    fn values_mut(&mut self) -> [&mut [f32]; 18] {
+        [
+            &mut self.base_color_factor,
+            std::slice::from_mut(&mut self.metallic),
+            std::slice::from_mut(&mut self.roughness),
+            &mut self.emissive,
+            std::slice::from_mut(&mut self.emissive_strength),
+            std::slice::from_mut(&mut self.normal_scale),
+            std::slice::from_mut(&mut self.occlusion_strength),
+            std::slice::from_mut(&mut self.alpha_cutoff),
+            std::slice::from_mut(&mut self.ior),
+            std::slice::from_mut(&mut self.specular),
+            &mut self.specular_color,
+            std::slice::from_mut(&mut self.transmission),
+            std::slice::from_mut(&mut self.thickness),
+            &mut self.attenuation_color,
+            std::slice::from_mut(&mut self.attenuation_distance),
+            std::slice::from_mut(&mut self.clearcoat),
+            std::slice::from_mut(&mut self.clearcoat_roughness),
+            std::slice::from_mut(&mut self.dispersion),
+        ]
+    }
+
+    /// The property named `name` (see `PROPERTIES`), or None for an unknown
+    /// name.
+    pub fn property(&self, name: &str) -> Option<Vec<f32>> {
+        let i = PROPERTIES.iter().position(|p| p.name == name)?;
+        Some(self.clone().values_mut()[i].to_vec())
+    }
+
+    /// Sets a property; `values` must have its length (4 for
+    /// `baseColorFactor`, 3 for colors, 1 otherwise). An infinite
+    /// `attenuationDistance` means no absorption (stored as 0).
+    pub fn set_property(&mut self, name: &str, values: &[f32]) -> Result<(), String> {
+        let i = PROPERTIES
+            .iter()
+            .position(|p| p.name == name)
+            .ok_or_else(|| format!("no material property \"{name}\""))?;
+        let len = PROPERTIES[i].len;
+        if values.len() != len {
+            return Err(format!(
+                "material property \"{name}\" takes {len} value(s), got {}",
+                values.len()
+            ));
+        }
+        let mut v = values.to_vec();
+        if name == "attenuationDistance" && !v[0].is_finite() {
+            v[0] = 0.0;
+        }
+        self.values_mut()[i].copy_from_slice(&v);
+        Ok(())
+    }
+
+    /// Writes every numeric property into `group` (a group of a
+    /// `Model::material_layout`).
+    pub fn write_properties(&self, ctx: &Context, group: ParamGroupId) {
+        for (p, v) in PROPERTIES.iter().zip(self.clone().values_mut()) {
+            ctx.param_set_floats_by_name(group, p.uniform, v);
+        }
+    }
+
+    /// Writes one property into `group`.
+    pub fn write_property(&self, ctx: &Context, group: ParamGroupId, name: &str) {
+        if let (Some(p), Some(v)) = (
+            PROPERTIES.iter().find(|p| p.name == name),
+            self.property(name),
+        ) {
+            ctx.param_set_floats_by_name(group, p.uniform, &v);
+        }
+    }
+}
+
 /// Translate one glTF material's data.
 pub fn translate(mat: &gltf::Material) -> Material {
     let pbr = mat.pbr_metallic_roughness();
     Material {
+        name: mat.name().map(str::to_owned),
         base_color_factor: pbr.base_color_factor(),
         metallic: pbr.metallic_factor(),
         roughness: pbr.roughness_factor(),
@@ -281,6 +400,7 @@ pub fn remap_textures(m: &mut Material, remap: &[i32]) {
 /// white, fully metallic and rough, opaque.
 pub fn default_material() -> Material {
     Material {
+        name: None,
         base_color_factor: [1.0, 1.0, 1.0, 1.0],
         metallic: 1.0,
         roughness: 1.0,
@@ -455,6 +575,38 @@ mod tests {
         assert_eq!(gem.attenuation_color, [0.9, 0.8, 0.7]);
         assert_eq!((gem.clearcoat, gem.clearcoat_roughness), (0.75, 0.1));
         assert_eq!(gem.dispersion, 0.4);
+    }
+
+    #[test]
+    fn properties_by_gltf_name() {
+        let mut m = materials()[1].clone();
+        assert_eq!(m.name.as_deref(), Some("blend"));
+        assert_eq!(
+            m.property("baseColorFactor"),
+            Some(vec![0.1, 0.2, 0.3, 0.5])
+        );
+        assert_eq!(m.property("roughnessFactor"), Some(vec![0.75]));
+        assert_eq!(m.property("nope"), None);
+
+        m.set_property("baseColorFactor", &[1.0, 0.8, 0.3, 1.0])
+            .unwrap();
+        m.set_property("transmissionFactor", &[1.0]).unwrap();
+        assert_eq!(m.base_color_factor, [1.0, 0.8, 0.3, 1.0]);
+        assert_eq!(m.transmission, 1.0);
+        m.set_property("attenuationDistance", &[f32::INFINITY])
+            .unwrap();
+        assert_eq!(m.attenuation_distance, 0.0, "infinite = none");
+        assert!(m.set_property("baseColorFactor", &[1.0]).is_err(), "length");
+        assert!(m.set_property("nope", &[1.0]).is_err());
+        // Every property reads back.
+        for p in PROPERTIES {
+            assert_eq!(
+                m.property(p.name).map(|v| v.len()),
+                Some(p.len),
+                "{}",
+                p.name
+            );
+        }
     }
 
     #[test]

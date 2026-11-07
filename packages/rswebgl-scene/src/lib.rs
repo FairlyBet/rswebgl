@@ -38,20 +38,26 @@ mod js;
 mod light;
 mod model;
 mod pbr;
+mod pick;
 mod render;
+mod shader;
 mod transform;
 
 pub use camera::{Camera, Projection};
 pub use culling::{Bounds, Frustum};
 pub use environment::Environment;
 pub use hdr::{HdrImage, decode_hdr, encode_hdr};
-pub use hierarchy::{HierarchyError, TransformSystem, children, despawn_recursive, set_parent};
+pub use hierarchy::{
+    HierarchyError, TransformSystem, children, descendants, despawn_recursive, set_parent,
+};
 pub use js::Scene;
 pub use light::{Light, LightKind};
-pub use model::{Name, find_by_name, spawn_model};
+pub use model::{Name, Primitive, find_by_name, spawn_model};
 pub use pbr::{PbrKey, PbrShaders};
+pub use pick::{Hit, Ray, pick, pick_ray, ray_aabb, ray_triangle};
 pub use render::{
     FRAME_BLOCK, FRAME_SLOT, LIGHTING_BLOCK, MATERIAL_SLOT, MAX_LIGHTS, MODEL_UNIFORM,
     MeshRenderer, NORMAL_MATRIX_UNIFORM, OBJECT_SLOT, RenderStats, SceneRenderer, Visible,
 };
+pub use shader::{FRAG_PRELUDE, VERT_PRELUDE, create_scene_program, shader_sources};
 pub use transform::{Parent, Transform, WorldMatrix};

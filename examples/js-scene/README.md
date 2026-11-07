@@ -9,7 +9,8 @@ Default model: Khronos' DamagedHelmet (fetched from GitHub; all five PBR maps),
 shaded by the built-in glTF PBR, lit by an HDR environment (three.js' Venice
 sunset, baked into cube maps on load and shown blurred behind it) plus a key
 light. Other assets: `?model=<url>` and `?env=<url.hdr>`.
-Keys: **V** hides / shows the model (through its root, so the
+**Click** a part to pick it (its name shows), **C** paints it a random color
+(through a copy of its material). Keys: **V** hides / shows the model (through its root, so the
 whole subtree), **R** pauses the turntable, **+ / −** change the exposure, **B**
 toggles the background, **E** turns the environment.
 

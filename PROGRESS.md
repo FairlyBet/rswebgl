@@ -201,4 +201,5 @@ Design: `docs/design/ecs.md`. ECS and hierarchy: host tests; `SceneRenderer`: br
 | PBR shader variants, full glTF materials, lights, transparency (E5a) | ✅ | `rswebgl-scene/src/{pbr,light}.rs`, `shaders/` |
 | IBL: HDR decode, GPU bake, BRDF LUT, background (E5b) | ✅ | `rswebgl-scene/src/{environment,hdr,brdf_lut}.rs` |
 | Material extensions: ior, specular, transmission, volume, clearcoat, dispersion (E5c, factors) | ✅ | `rswebgl-gltf/src/material.rs`, `rswebgl-scene/shaders/pbr.frag` |
+| Scene API v2: materials by name/property, clones, options objects, renderFrame, picking, shader preludes | ✅ | `rswebgl-scene/src/{js,pick,shader}*` |
 | Screen-space transmission, extension textures; viewer (E5d) | ⬜ |  |

@@ -203,16 +203,15 @@ FBO blit). Done. Deferred polish:
 - World-space AABBs are recomputed for culling every frame; cache them per
   `WorldMatrix` change if culling shows up in profiles (thousands of objects).
 - Many copies of one mesh → one instanced draw instead of a draw per entity.
-- The frame block must be declared with all four members (std140 size has to
-  match); consider reflecting the block and binding a range instead.
 - Transparent draws sort per object (bounds center), not per triangle:
   intersecting or concave blended meshes can still show order errors.
 - Front-face winding of a glTF part is fixed at load from its world matrix;
   a part mirrored later by a negative scale draws inside out.
 - A model added twice needs two loads (`addModel` takes the `Model`); sharing
   one model's GPU data between several roots would need reference counts.
-- JS reads (`worldMatrix`, `translation`, …) copy into a new `Float32Array`;
-  zero-copy views over component storage when a viewer needs bulk reads.
+- JS reads: `copyWorldMatrix` fills a buffer of the caller's; the rest
+  (`translation`, `pickPoint`, …) return a new array. Zero-copy views over
+  component storage when a viewer needs bulk reads.
 - PBR (E5a): lights are capped at 8 per frame (all lights reach every draw;
   no per-object light lists); spot lights untested by pixels; no shadows.
   `KHR_lights_punctual` lights in a glTF file aren't spawned yet.
@@ -232,3 +231,14 @@ FBO blit). Done. Deferred polish:
   shader (ray-marching the stone's own geometry) is the jewelry-grade
   follow-up. Punctual lights don't transmit. Not read: sheen, iridescence,
   anisotropy, diffuse transmission, KHR_materials_variants.
+- Picking keeps a CPU copy of every glTF triangle primitive's positions and
+  indices (12 B per vertex + 4 B per index): a loader option to skip it for
+  models that are never picked. Picking tests every triangle of the
+  meshes whose box the ray hits (no BVH); fine for jewelry-sized models.
+  Skinned or morphed meshes would need their deformed positions.
+- Materials: properties are numeric only — swapping a material's textures
+  from JS isn't there yet. `cloneMaterial` shares the source model's
+  textures, so a clone outlives its model only as long as nothing samples
+  them.
+- Options objects are read with `Reflect` per call (setup-time API; not for
+  per-frame use).

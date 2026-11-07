@@ -1,0 +1,178 @@
+//! Cameras, lights and the environment for JS.
+
+use glam::Vec3;
+use rswebgl::console;
+use rswebgl::error::Error;
+use rswebgl_ecs::Entity;
+use wasm_bindgen::prelude::*;
+
+use super::{Scene, options};
+use crate::camera::Camera;
+use crate::environment::Environment;
+use crate::hdr::decode_hdr;
+use crate::light::Light;
+
+#[wasm_bindgen]
+impl Scene {
+    // --- cameras --------------------------------------------------------------
+
+    /// Makes `e` a camera (see `CameraOptions`; glTF camera names). It looks
+    /// down its local −Z: place it with `lookAt` or the transform setters.
+    /// `renderFrame` keeps its aspect in step with the canvas. Throws on bad
+    /// options.
+    #[wasm_bindgen(js_name = setCamera)]
+    pub fn set_camera(
+        &mut self,
+        e: Entity,
+        #[wasm_bindgen(unchecked_param_type = "CameraOptions")] camera: JsValue,
+    ) -> Result<(), Error> {
+        let aspect = self.world.get::<Camera>(e).map_or(1.0, |c| c.aspect);
+        let near = options::f32_or(&camera, "znear", 0.1)?;
+        let far = options::f32_or(&camera, "zfar", 1000.0)?;
+        if !(near > 0.0 && far > near) {
+            return Err("setCamera: needs 0 < znear < zfar".into());
+        }
+        let cam = match options::string(&camera, "type")?.as_str() {
+            "perspective" => {
+                let fov = options::f32_or(&camera, "yfov", std::f32::consts::FRAC_PI_4)?;
+                Camera::perspective(fov, aspect, near, far)
+            }
+            "orthographic" => {
+                let ymag = options::f32_or(&camera, "ymag", 1.0)?;
+                Camera::orthographic(ymag, aspect, near, far)
+            }
+            other => {
+                return Err(format!(
+                    "setCamera: type \"{other}\" isn't \"perspective\" or \"orthographic\""
+                )
+                .into());
+            }
+        };
+        self.insert_camera(e, cam);
+        Ok(())
+    }
+
+    /// Width / height of the target, for cameras used with `render` into a
+    /// pass of yours (`renderFrame` sets it from the canvas).
+    #[wasm_bindgen(js_name = setCameraAspect)]
+    pub fn set_camera_aspect(&mut self, e: Entity, aspect: f32) {
+        match self.world.get_mut::<Camera>(e) {
+            Some(mut c) => c.aspect = aspect,
+            None => console::error_once(
+                "[rswebgl-scene] setCameraAspect: the entity is not a camera; ignored",
+            ),
+        }
+    }
+
+    // --- lights ---------------------------------------------------------------
+
+    /// Makes `e` a punctual light (see `LightOptions`; KHR_lights_punctual
+    /// names and units). Directional and spot lights shine down the entity's
+    /// −Z: aim them with `lookAt`. Up to 8 lights reach the shaders. Throws on
+    /// bad options.
+    #[wasm_bindgen(js_name = setLight)]
+    pub fn set_light(
+        &mut self,
+        e: Entity,
+        #[wasm_bindgen(unchecked_param_type = "LightOptions")] light: JsValue,
+    ) -> Result<(), Error> {
+        let color = options::vec3_or(&light, "color", Vec3::ONE)?;
+        let intensity = options::f32_or(&light, "intensity", 1.0)?;
+        let range = options::f32_or(&light, "range", 0.0)?;
+        let l = match options::string(&light, "type")?.as_str() {
+            "directional" => Light::directional(color, intensity),
+            "point" => Light::point(color, intensity, range),
+            "spot" => {
+                let inner = options::f32_or(&light, "innerConeAngle", 0.0)?;
+                let outer = options::f32_or(&light, "outerConeAngle", std::f32::consts::FRAC_PI_4)?;
+                if !(0.0 <= inner && inner < outer && outer <= std::f32::consts::FRAC_PI_2) {
+                    return Err("setLight: needs 0 ≤ innerConeAngle < outerConeAngle ≤ π/2".into());
+                }
+                Light::spot(color, intensity, range, inner, outer)
+            }
+            other => {
+                return Err(format!(
+                    "setLight: type \"{other}\" isn't \"directional\", \"point\" or \"spot\""
+                )
+                .into());
+            }
+        };
+        self.insert_light(e, l);
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = removeLight)]
+    pub fn remove_light(&mut self, e: Entity) {
+        self.world.remove::<Light>(e);
+    }
+
+    /// Scales radiance before tone mapping. Default 1.
+    #[wasm_bindgen(js_name = setExposure)]
+    pub fn set_exposure(&mut self, exposure: f32) {
+        self.renderer.set_exposure(exposure);
+    }
+
+    // --- environment ----------------------------------------------------------
+
+    /// Scales the environment's light (linear RGB). Without an environment
+    /// (the default white one) it's a flat ambient light: default 0.2.
+    /// `setEnvironmentHdr` resets it to 1.
+    #[wasm_bindgen(js_name = setEnvironmentIntensity)]
+    pub fn set_environment_intensity(&mut self, r: f32, g: f32, b: f32) {
+        self.renderer.set_environment_intensity(Vec3::new(r, g, b));
+    }
+
+    /// Lights the scene with an HDR environment: the bytes of a Radiance
+    /// `.hdr` equirectangular image (fetch it yourself). Baked on the GPU into
+    /// cube maps `size` texels per face (256 is a good default). Replaces the
+    /// previous environment; throws if the file can't be read or the device
+    /// can't render to half-float textures.
+    #[wasm_bindgen(js_name = setEnvironmentHdr)]
+    pub fn set_environment_hdr(&mut self, bytes: &[u8], size: u32) -> Result<(), Error> {
+        let image = decode_hdr(bytes)?;
+        let env = Environment::from_equirect(&self.ctx, &image, size)?;
+        self.renderer.set_environment(&self.ctx, env);
+        Ok(())
+    }
+
+    /// Back to the default: a flat white ambient light at intensity 0.2.
+    #[wasm_bindgen(js_name = clearEnvironment)]
+    pub fn clear_environment(&mut self) {
+        self.renderer.clear_environment(&self.ctx);
+    }
+
+    #[wasm_bindgen(js_name = hasEnvironment)]
+    pub fn has_environment(&self) -> bool {
+        self.renderer.has_environment()
+    }
+
+    /// Turns the environment (light and background) about +Y, in radians.
+    #[wasm_bindgen(js_name = setEnvironmentRotation)]
+    pub fn set_environment_rotation(&mut self, radians: f32) {
+        self.renderer.set_environment_rotation(radians);
+    }
+
+    /// Shows the environment behind the scene, `blur` 0 (sharp) … 1.
+    #[wasm_bindgen(js_name = setBackground)]
+    pub fn set_background(&mut self, blur: f32) {
+        self.renderer.set_background(Some(blur));
+    }
+
+    /// No background: the clear color shows.
+    #[wasm_bindgen(js_name = clearBackground)]
+    pub fn clear_background(&mut self) {
+        self.renderer.set_background(None);
+    }
+}
+
+impl Scene {
+    /// `setCamera` from Rust.
+    pub fn insert_camera(&mut self, e: Entity, camera: Camera) {
+        self.insert(e, "setCamera", camera);
+    }
+
+    /// `setLight` from Rust.
+    pub fn insert_light(&mut self, e: Entity, light: Light) {
+        self.insert(e, "setLight", light);
+    }
+}

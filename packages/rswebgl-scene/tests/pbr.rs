@@ -9,12 +9,13 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext as Gl};
 
+use glam::Vec3;
 use rswebgl::context::{Context, ContextOptions};
 use rswebgl::framebuffer::ClearMask;
 use rswebgl::pass::Pass;
 use rswebgl_ecs::Entity;
 use rswebgl_gltf::load_model;
-use rswebgl_scene::{PbrKey, PbrShaders, Scene};
+use rswebgl_scene::{Camera, Light, PbrKey, PbrShaders, Scene};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -165,8 +166,8 @@ async fn setup() -> Setup {
     let mut scene = Scene::new(&ctx).expect("scene");
     let camera = scene.spawn();
     // 4 units across, looking down −Z from z = 5: x = −1, 0, +1 at 16, 32, 48.
-    scene.set_orthographic_camera(camera, 2.0, 0.1, 100.0);
-    scene.look_at(camera, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0);
+    scene.insert_camera(camera, Camera::orthographic(2.0, 1.0, 0.1, 100.0));
+    scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
     let model = load_model(&ctx, &asset_url()).await.expect("load");
     let root = scene.add_model(model);
     let mut pass = Pass::to_default();
@@ -240,7 +241,8 @@ async fn lights_ambient_unlit_emissive_and_exposure() {
     // A directional light down −Z (the spawn orientation) hits the quads
     // head on.
     let sun = s.scene.spawn();
-    s.scene.set_directional_light(sun, 1.0, 1.0, 1.0, 2.0);
+    s.scene
+        .insert_light(sun, Light::directional(Vec3::new(1.0, 1.0, 1.0), 2.0));
     s.frame();
     let lit = s.pixel(white);
     assert!(
@@ -258,12 +260,14 @@ async fn lights_ambient_unlit_emissive_and_exposure() {
     s.scene.remove_light(sun);
     let lamp = s.scene.spawn();
     s.scene.set_translation(lamp, -1.0, 0.0, 1.0);
-    s.scene.set_point_light(lamp, 0.0, 0.0, 1.0, 2.0, 0.0);
+    s.scene
+        .insert_light(lamp, Light::point(Vec3::new(0.0, 0.0, 1.0), 2.0, 0.0));
     s.frame();
     let blue = s.pixel(white);
     assert!(blue[2] > blue[0] + 40, "blue light: {blue:?}");
     // Out of range: no contribution.
-    s.scene.set_point_light(lamp, 0.0, 0.0, 1.0, 2.0, 0.5);
+    s.scene
+        .insert_light(lamp, Light::point(Vec3::new(0.0, 0.0, 1.0), 2.0, 0.5));
     s.frame();
     assert_eq!(s.pixel(white), ambient);
 
