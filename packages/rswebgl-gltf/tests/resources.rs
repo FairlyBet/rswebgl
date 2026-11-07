@@ -174,3 +174,151 @@ async fn destroy_frees_everything_even_mid_load() {
     .await;
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+// A 1×1 RGBA PNG of one color: stored (uncompressed) deflate, so it's built
+// here rather than pasted.
+fn png(rgba: [u8; 4]) -> Vec<u8> {
+    fn crc32(data: &[u8]) -> u32 {
+        let mut c = 0xffff_ffffu32;
+        for &b in data {
+            c ^= b as u32;
+            for _ in 0..8 {
+                c = if c & 1 != 0 {
+                    0xedb8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
+            }
+        }
+        !c
+    }
+    fn chunk(out: &mut Vec<u8>, kind: &[u8], data: &[u8]) {
+        out.extend((data.len() as u32).to_be_bytes());
+        let start = out.len();
+        out.extend(kind);
+        out.extend(data);
+        let crc = crc32(&out[start..]);
+        out.extend(crc.to_be_bytes());
+    }
+    let raw = [0, rgba[0], rgba[1], rgba[2], rgba[3]]; // filter byte + pixel
+    let (mut a, mut b) = (1u32, 0u32);
+    for &x in &raw {
+        a = (a + x as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    let mut zlib = vec![0x78, 0x01, 1, raw.len() as u8, 0, !(raw.len() as u8), 0xff];
+    zlib.extend(raw);
+    zlib.extend(((b << 16) | a).to_be_bytes());
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunk(&mut out, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    chunk(&mut out, b"IDAT", &zlib);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+// One triangle with a material whose occlusion and metallic-roughness maps
+// are separate textures (so they're packed into one ORM texture), the
+// occlusion one given by `occlusion_uri`.
+fn orm_asset_url(occlusion_uri: &str) -> String {
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let mut bin = Vec::new();
+    for v in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+        bin.extend_from_slice(&v.to_le_bytes());
+    }
+    let mr = format!("data:image/png;base64,{}", b64(&png([0, 128, 255, 255])));
+    let json = format!(
+        r#"{{
+  "asset": {{ "version": "2.0" }},
+  "buffers": [{{ "byteLength": 36, "uri": "data:application/octet-stream;base64,{bin}" }}],
+  "bufferViews": [{{ "buffer": 0, "byteLength": 36 }}],
+  "accessors": [{{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                   "min": [0, 0, 0], "max": [1, 1, 0] }}],
+  "images": [{{ "uri": "{occlusion_uri}" }}, {{ "uri": "{mr}" }}],
+  "textures": [{{ "source": 0 }}, {{ "source": 1 }}],
+  "materials": [{{
+    "occlusionTexture": {{ "index": 0 }},
+    "pbrMetallicRoughness": {{ "metallicRoughnessTexture": {{ "index": 1 }} }}
+  }}],
+  "meshes": [{{ "primitives": [{{ "attributes": {{ "POSITION": 0 }}, "material": 0 }}] }}],
+  "nodes": [{{ "mesh": 0 }}],
+  "scenes": [{{ "nodes": [0] }}]
+}}"#,
+        bin = b64(&bin)
+    );
+    format!("data:model/gltf+json;base64,{}", b64(json.as_bytes()))
+}
+
+// The packed texture's one texel, once the pack has run.
+async fn read_orm(ctx: &Context, model: &Model) -> Vec<u8> {
+    assert_eq!(
+        model.texture_count(),
+        1,
+        "the two maps became one ORM texture"
+    );
+    let tex = model.texture(0);
+    for _ in 0..50 {
+        sleep(20).await;
+        let fb = ctx.create_framebuffer(1, 1).unwrap();
+        ctx.framebuffer_attach_color_texture_2d(fb, 0, tex, 0);
+        let complete = ctx.is_framebuffer_complete(fb);
+        let px = complete.then(|| {
+            ctx.read_pixels(fb, 0, 0, 0, 1, 1, rswebgl::readback::ReadFormat::Rgba8)
+                .unwrap()
+        });
+        ctx.destroy_framebuffer(fb);
+        if let Some(px) = px {
+            return px;
+        }
+    }
+    panic!("the ORM texture was never filled");
+}
+
+#[wasm_bindgen_test]
+async fn separate_occlusion_and_mr_maps_pack_into_one() {
+    let ctx = context();
+    let occlusion = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png([200, 0, 0, 255]))
+    );
+    let model = load_model(&ctx, &orm_asset_url(&occlusion))
+        .await
+        .expect("load");
+    // R = occlusion, G = roughness, B = metallic.
+    assert_eq!(read_orm(&ctx, &model).await, [200, 128, 255, 255]);
+}
+
+// An occlusion map that can't load doesn't stall the pack or blacken the
+// model: it packs as "no occlusion" (1), and says so.
+#[wasm_bindgen_test]
+async fn a_failed_orm_source_packs_as_a_constant() {
+    let ctx = context();
+    let mut model = None;
+    let errors = capture_errors(async {
+        // Not base64: rejected before any request, which used to leave the
+        // pack waiting forever.
+        let m = load_model(&ctx, &orm_asset_url("data:image/png;base64,***"))
+            .await
+            .expect("load");
+        let px = read_orm(&ctx, &m).await;
+        model = Some((m, px));
+    })
+    .await;
+    let (_, px) = model.unwrap();
+    assert_eq!(px, [255, 128, 255, 255]);
+    assert!(
+        errors.iter().any(|e| e.contains("occlusion map failed")),
+        "{errors:?}"
+    );
+}
+
+// Losing the context while the model downloads is an error, not a panic.
+#[wasm_bindgen_test]
+async fn a_context_lost_during_load_is_an_error() {
+    let ctx = context();
+    let url = asset_url();
+    let load = load_model(&ctx, &url);
+    assert!(ctx.simulate_context_loss());
+    sleep(20).await;
+    let err = load.await.err().expect("an error");
+    assert!(err.contains("lost"), "{err}");
+}

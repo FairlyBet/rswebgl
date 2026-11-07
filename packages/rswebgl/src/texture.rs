@@ -348,7 +348,9 @@ impl TextureObj {
                 "MAX_TEXTURE_SIZE / MAX_ARRAY_TEXTURE_LAYERS",
             ),
         };
-        let problem = if width < 1 || height < 1 || depth < 1 {
+        let problem = if self.internal.get() != 0 {
+            Some("is already allocated (immutable storage is one-shot)".to_string())
+        } else if width < 1 || height < 1 || depth < 1 {
             Some(format!("size {width}x{height}x{depth} must be at least 1"))
         } else if width as u32 > max_wh || height as u32 > max_wh || depth as u32 > max_d {
             Some(format!(
@@ -381,6 +383,27 @@ pub(crate) fn mip_levels(w: i32, h: i32) -> i32 {
 impl Context {
     // Resolves `tex`, binds it to its target, runs `f`, unbinds. Reports a
     // stale handle (as `op`) and returns None instead.
+    // `texture_storage_2d`, saying whether storage was allocated.
+    fn allocate_2d(
+        &self,
+        tex: TextureId,
+        levels: i32,
+        format: &TextureFormat,
+        width: i32,
+        height: i32,
+    ) -> bool {
+        let filter_float = self.can_filter_float32();
+        self.with_texture(tex, "texture_storage_2d", |gl, t, obj| {
+            let fits = obj.storage_fits(levels, width, height, 1);
+            if fits {
+                gl.tex_storage_2d(t, levels, format.internal as u32, width, height);
+                storage_allocated(gl, t, obj, format.internal as u32, filter_float);
+            }
+            fits
+        })
+        .unwrap_or(false)
+    }
+
     pub(crate) fn with_texture<T>(
         &self,
         tex: TextureId,
@@ -526,13 +549,7 @@ impl Context {
         width: i32,
         height: i32,
     ) {
-        let filter_float = self.can_filter_float32();
-        self.with_texture(tex, "texture_storage_2d", |gl, t, obj| {
-            if obj.storage_fits(levels, width, height, 1) {
-                gl.tex_storage_2d(t, levels, format.internal as u32, width, height);
-                storage_allocated(gl, t, obj, format.internal as u32, filter_float);
-            }
-        });
+        self.allocate_2d(tex, levels, format, width, height);
     }
 
     /// Allocate immutable storage (`texStorage3D`). For TEXTURE_3D and
@@ -992,9 +1009,13 @@ impl Context {
     /// can ignore the arguments. If the texture is destroyed before the image
     /// arrives, the upload is skipped.
     ///
-    /// The texture must be freshly created (storage is immutable / one-shot).
-    /// The image is requested with `crossOrigin = "anonymous"` so the result is
-    /// CORS-clean and usable as a texture.
+    /// The texture must be freshly created (storage is immutable / one-shot);
+    /// an image larger than the GPU allows isn't uploaded (reported, `(0, 0)`).
+    /// Pixels upload as stored — no flip unless `flip_y`, no premultiplying,
+    /// no browser color-space conversion (glTF's convention). `on_load` always
+    /// comes exactly once, never before this returns. The image is requested
+    /// with `crossOrigin = "anonymous"` so the result is CORS-clean and usable
+    /// as a texture.
     #[wasm_bindgen(js_name = textureLoadImage)]
     pub fn texture_load_image(
         &self,
@@ -1009,6 +1030,7 @@ impl Context {
             Ok(img) => img,
             Err(_) => {
                 console::error("[rswebgl] failed to create HtmlImageElement");
+                failed_later(on_load);
                 return;
             }
         };
@@ -1046,7 +1068,9 @@ impl Context {
         on_load: js_sys::Function,
     ) {
         let parts = js_sys::Array::new();
-        parts.push(&js_sys::Uint8Array::from(bytes));
+        // A view, not a copy: the Blob constructor copies the bytes right away,
+        // before anything could grow (and move) wasm memory.
+        parts.push(&unsafe { js_sys::Uint8Array::view(bytes) }.into());
         let opts = BlobPropertyBag::new();
         opts.set_type(mime);
         let blob = match Blob::new_with_u8_array_sequence_and_options(&parts, &opts) {
@@ -1055,6 +1079,7 @@ impl Context {
                 console::error(&format!(
                     "[rswebgl] load_bytes: Blob creation failed: {e:?}"
                 ));
+                failed_later(on_load);
                 return;
             }
         };
@@ -1064,6 +1089,7 @@ impl Context {
                 console::error(&format!(
                     "[rswebgl] load_bytes: createObjectURL failed: {e:?}"
                 ));
+                failed_later(on_load);
                 return;
             }
         };
@@ -1073,6 +1099,7 @@ impl Context {
             Err(_) => {
                 console::error("[rswebgl] failed to create HtmlImageElement");
                 let _ = Url::revoke_object_url(&url);
+                failed_later(on_load);
                 return;
             }
         };
@@ -1280,16 +1307,23 @@ impl Context {
                 } else {
                     1
                 };
-                ctx.texture_storage_2d(tex, levels, &format, w, h);
-                let unpack = PixelUnpack {
-                    flip_y,
-                    ..PixelUnpack::default()
-                };
-                ctx.texture_sub_image_2d_from_image(tex, 0, 0, 0, &img_cb, &format, &unpack);
-                if generate_mipmaps {
-                    ctx.texture_generate_mipmaps(tex);
+                if ctx.allocate_2d(tex, levels, &format, w, h) {
+                    // No browser color-space conversion: the image's stored values,
+                    // as glTF (and data maps generally) expect.
+                    let unpack = PixelUnpack {
+                        flip_y,
+                        colorspace_conversion: false,
+                        ..PixelUnpack::default()
+                    };
+                    ctx.texture_sub_image_2d_from_image(tex, 0, 0, 0, &img_cb, &format, &unpack);
+                    if generate_mipmaps {
+                        ctx.texture_generate_mipmaps(tex);
+                    }
+                    (w, h)
+                } else {
+                    // Already reported (too large for this GPU, or loaded twice).
+                    (0, 0)
                 }
-                (w, h)
             } else {
                 console::error(&format!("[rswebgl] image failed to load: {src_owned}"));
                 (0, 0) // signal failure to the callback
@@ -1391,4 +1425,14 @@ fn pixel_view(data: &[u8], data_type: u32) -> Result<js_sys::Object, String> {
         }
         _ => js_sys::Uint32Array::new_with_byte_offset_and_length(&buffer, 0, len).into(),
     })
+}
+
+/// `on_load(0, 0)` for a load that couldn't even start, called on a microtask:
+/// the callback always comes once and never synchronously, so a caller can
+/// set up what it needs after starting the load (as the glTF loader's
+/// texture-packing join does).
+pub fn failed_later(on_load: js_sys::Function) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = on_load.call2(&JsValue::NULL, &0.into(), &0.into());
+    });
 }

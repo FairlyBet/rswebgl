@@ -341,8 +341,12 @@ pub fn load_model_js(ctx: &Context, url: String) -> js_sys::Promise {
 /// resolves; textures are created empty and fill in asynchronously as their
 /// images decode (sampling one before it arrives shows black, then it pops in).
 pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
-    let bytes = fetch::fetch_bytes(url).await.map_err(js_err)?;
-    let (document, blob) = parse(&bytes)?;
+    // The file itself goes as soon as it's parsed: a GLB's binary chunk is
+    // copied out, and holding both would double the peak memory.
+    let (document, blob) = {
+        let bytes = fetch::fetch_bytes(url).await.map_err(js_err)?;
+        parse(&bytes)?
+    };
 
     let base = fetch::absolute_base(url).map_err(js_err)?;
     let buffers = buffers::resolve_buffers(&document, blob, &base)
@@ -353,7 +357,11 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
     // into one ORM texture where safe; `remap` rewrites material texture indices
     // to match (a packed pair, or two textures with the same image and sampler,
     // collapse into one).
-    let set = pack::build_texture_set(ctx, &document, &buffers, &base);
+    // The context may have been lost while the files downloaded.
+    if ctx.is_lost() {
+        return Err("WebGL context lost while the model loaded".into());
+    }
+    let set = pack::build_texture_set(ctx, &document, &buffers, &base)?;
     let mut materials: Vec<Material> = document
         .materials()
         .map(|m| material::translate(&m))

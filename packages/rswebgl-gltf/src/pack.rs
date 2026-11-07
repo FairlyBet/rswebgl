@@ -26,6 +26,7 @@ use wasm_bindgen::prelude::*;
 
 use rswebgl::console;
 use rswebgl::context::Context;
+use rswebgl::error::Error;
 use rswebgl::ids::{SamplerId, TextureId};
 use rswebgl::sampler::SamplerDesc;
 use rswebgl::texture::TextureTarget;
@@ -44,7 +45,7 @@ pub fn build_texture_set(
     doc: &gltf::Document,
     buffers: &[Vec<u8>],
     base: &str,
-) -> TextureSet {
+) -> Result<TextureSet, Error> {
     let docs: Vec<gltf::Texture> = doc.textures().collect();
     let tex_count = docs.len();
 
@@ -105,7 +106,7 @@ pub fn build_texture_set(
             srgb.contains(&i),
             needs_mips[&key],
             empty_callback(),
-        );
+        )?;
         remap[i] = textures.len() as i32;
         seen.insert(key, remap[i]);
         textures.push(tex);
@@ -114,7 +115,7 @@ pub fn build_texture_set(
     // 2. One packed ORM texture per accepted pair; both source indices point here.
     if let Some(packer) = &packer {
         for &(occ, mr) in &accepted {
-            let output = build_packed_orm(ctx, &docs, buffers, base, occ, mr, packer.clone());
+            let output = build_packed_orm(ctx, &docs, buffers, base, occ, mr, packer.clone())?;
             let p = textures.len() as i32;
             remap[occ] = p;
             remap[mr] = p;
@@ -122,12 +123,12 @@ pub fn build_texture_set(
         }
     }
 
-    TextureSet {
+    Ok(TextureSet {
         textures,
         remap,
         doc_samplers,
         samplers,
-    }
+    })
 }
 
 /// Which roles a texture is used in across all materials.
@@ -223,6 +224,9 @@ struct OrmJoin {
     h: i32,
     occ: TextureId,
     mr: TextureId,
+    // Whether each source decoded: a failed one is replaced by a constant.
+    occ_ok: bool,
+    mr_ok: bool,
     output: TextureId,
 }
 
@@ -236,15 +240,13 @@ fn build_packed_orm(
     occ_idx: usize,
     mr_idx: usize,
     packer: Rc<TexturePacker>,
-) -> TextureId {
+) -> Result<TextureId, Error> {
     // The output adopts the MR texture's sampler (wrap/filter); ORM is linear data.
     let mr_doc = &docs[mr_idx];
     let sampler = mr_doc.sampler();
     let (min, _) = min_filter(sampler.min_filter());
     let mag = mag_filter(sampler.mag_filter());
-    let output = ctx
-        .create_texture(TextureTarget::Texture2D, min, mag)
-        .expect("create_texture");
+    let output = ctx.create_texture(TextureTarget::Texture2D, min, mag)?;
     ctx.texture_set_wrap_s(output, wrap(sampler.wrap_s()));
     ctx.texture_set_wrap_t(output, wrap(sampler.wrap_t()));
 
@@ -255,6 +257,8 @@ fn build_packed_orm(
         h: 0,
         occ: TextureId::NULL,
         mr: TextureId::NULL,
+        occ_ok: false,
+        mr_ok: false,
         output,
     }));
 
@@ -266,8 +270,8 @@ fn build_packed_orm(
         base,
         false,
         false,
-        source_callback(&join, &packer),
-    );
+        source_callback(&join, &packer, Source::Occlusion),
+    )?;
     let mr_src = build_texture(
         ctx,
         mr_doc,
@@ -275,8 +279,8 @@ fn build_packed_orm(
         base,
         false,
         false,
-        source_callback(&join, &packer),
-    );
+        source_callback(&join, &packer, Source::MetallicRoughness),
+    )?;
 
     // onload is always async, so the join's sources are in place before either
     // callback fires. The join (and thus the sources) stays alive via the
@@ -287,22 +291,43 @@ fn build_packed_orm(
         j.mr = mr_src;
     }
 
-    output
+    Ok(output)
+}
+
+// Which source of an ORM pack a load callback is for.
+#[derive(Clone, Copy)]
+enum Source {
+    Occlusion,
+    MetallicRoughness,
 }
 
 /// A one-shot `on_load(width, height)` callback that advances the ORM join.
-fn source_callback(join: &Rc<RefCell<OrmJoin>>, packer: &Rc<TexturePacker>) -> js_sys::Function {
+fn source_callback(
+    join: &Rc<RefCell<OrmJoin>>,
+    packer: &Rc<TexturePacker>,
+    source: Source,
+) -> js_sys::Function {
     let join = join.clone();
     let packer = packer.clone();
     Closure::once_into_js(move |w: f64, h: f64| {
-        on_source_loaded(&join, &packer, w as i32, h as i32);
+        on_source_loaded(&join, &packer, source, w as i32, h as i32);
     })
     .unchecked_into()
 }
 
-fn on_source_loaded(join: &Rc<RefCell<OrmJoin>>, packer: &TexturePacker, w: i32, h: i32) {
+fn on_source_loaded(
+    join: &Rc<RefCell<OrmJoin>>,
+    packer: &TexturePacker,
+    source: Source,
+    w: i32,
+    h: i32,
+) {
     let mut j = join.borrow_mut();
     if w > 0 && h > 0 {
+        match source {
+            Source::Occlusion => j.occ_ok = true,
+            Source::MetallicRoughness => j.mr_ok = true,
+        }
         // Pack at the larger of the two source sizes; the GPU resamples the rest.
         j.w = j.w.max(w);
         j.h = j.h.max(h);
@@ -313,12 +338,18 @@ fn on_source_loaded(join: &Rc<RefCell<OrmJoin>>, packer: &TexturePacker, w: i32,
     }
 
     let (ctx, occ, mr, w, h, output) = (j.ctx.clone(), j.occ, j.mr, j.w, j.h, j.output);
+    let (occ_ok, mr_ok) = (j.occ_ok, j.mr_ok);
     drop(j); // release the borrow before the GPU work
 
     // The sources are transient: only the packed output is kept.
+    // (Unless already gone with a lost context: nothing to free, nothing to
+    // report.)
     let free_sources = || {
-        ctx.destroy_texture(occ);
-        ctx.destroy_texture(mr);
+        for t in [occ, mr] {
+            if ctx.texture_is_valid(t) {
+                ctx.destroy_texture(t);
+            }
+        }
     };
 
     // The model was destroyed while the sources loaded: nothing to fill.
@@ -332,10 +363,26 @@ fn on_source_loaded(join: &Rc<RefCell<OrmJoin>>, packer: &TexturePacker, w: i32,
         return;
     }
 
+    // A source that failed reads as 1 — what glTF means by "no texture" for
+    // occlusion and for the roughness / metallic factors' multiplier — rather
+    // than as an empty texture (black: fully occluded, or a smooth dielectric).
     let mut spec = PackSpec::new();
-    spec.set_source(Channel::R, occ, Channel::R); // occlusion -> R
-    spec.set_source(Channel::G, mr, Channel::G); // roughness  -> G
-    spec.set_source(Channel::B, mr, Channel::B); // metallic   -> B
+    if occ_ok {
+        spec.set_source(Channel::R, occ, Channel::R); // occlusion -> R
+    } else {
+        console::error("[rswebgl-gltf] occlusion map failed to load; packed as no occlusion");
+        spec.set_constant(Channel::R, 1.0);
+    }
+    if mr_ok {
+        spec.set_source(Channel::G, mr, Channel::G); // roughness  -> G
+        spec.set_source(Channel::B, mr, Channel::B); // metallic   -> B
+    } else {
+        console::error(
+            "[rswebgl-gltf] metallic-roughness map failed to load; packed as the factors alone",
+        );
+        spec.set_constant(Channel::G, 1.0);
+        spec.set_constant(Channel::B, 1.0);
+    }
     spec.set_constant(Channel::A, 1.0);
 
     if let Err(e) = packer.pack_into(output, &spec, w, h, false, true) {
