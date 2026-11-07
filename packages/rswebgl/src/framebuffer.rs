@@ -639,6 +639,19 @@ impl FramebufferObj {
         self.color.get(index as usize).is_some_and(Option::is_some)
     }
 
+    /// The sized internal format of color attachment `index` and its sample
+    /// count (0 = single-sampled), or None without one.
+    pub(crate) fn color_format(&self, res: &Resources, index: u32) -> Option<(u32, i32)> {
+        let a = self.color.get(index as usize)?.as_ref()?;
+        match a.source() {
+            Source::Texture(t) => Some((res.textures.get_in_use(t.0)?.internal.get(), 0)),
+            Source::Renderbuffer(r) => {
+                let rb = res.renderbuffers.get_in_use(r.0)?;
+                Some((rb.internal(), rb.samples()))
+            }
+        }
+    }
+
     // Clears this FBO's attachments per the mask, using each attachment's typed
     // clear value. The FBO must already be bound (the renderer ensures this).
     pub(crate) fn clear(&self, gl: &WebGl2RenderingContext, mask: ClearMask) {

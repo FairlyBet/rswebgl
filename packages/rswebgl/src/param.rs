@@ -386,7 +386,8 @@ impl Context {
             blocks: src.blocks.clone(),
         };
         let layout = obj.layout;
-        res.param_layouts.retain(layout.0);
+        // The source may hold a layout already destroyed: the copy shares it.
+        res.param_layouts.retain_in_use(layout.0);
         match res.param_groups.insert(obj) {
             Ok(h) => Ok(h.into()),
             Err(e) => {

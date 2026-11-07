@@ -228,6 +228,21 @@ pub(crate) struct Core {
     // Set when GL state may differ from `state` in unknown ways (context loss
     // or restore, `invalidate_state`); `state` is reset on its next access.
     state_stale: Cell<bool>,
+    // Bumped by every loss: an async read or query started before it must not
+    // touch (or wait on) objects of the dead context, even once restored.
+    pub(crate) epoch: Cell<u32>,
+    // Whether this context counts in `LOST_CONTEXTS` (lost, not yet past
+    // `on_restored`): taken back when the context is restored or dropped.
+    pub(crate) counted_lost: Cell<bool>,
+}
+
+impl Drop for Core {
+    fn drop(&mut self) {
+        // A context lost for good mustn't keep every other one quiet.
+        if self.counted_lost.get() {
+            note_lost(false);
+        }
+    }
 }
 
 impl Core {
@@ -442,6 +457,8 @@ impl Context {
             loss: LossState::new(),
             state: RefCell::new(GlState::default()),
             state_stale: Cell::new(false),
+            epoch: Cell::new(0),
+            counted_lost: Cell::new(false),
         });
         context_loss::install(&core);
         let ctx = Context { core };

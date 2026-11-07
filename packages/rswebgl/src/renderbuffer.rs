@@ -54,6 +54,14 @@ pub(crate) struct RenderbufferObj {
 }
 
 impl RenderbufferObj {
+    pub(crate) fn internal(&self) -> u32 {
+        self.format.as_gl()
+    }
+
+    pub(crate) fn samples(&self) -> i32 {
+        self.samples
+    }
+
     pub(crate) fn delete(self, gl: &WebGl2RenderingContext) {
         gl.delete_renderbuffer(Some(&self.raw));
     }

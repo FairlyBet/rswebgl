@@ -270,21 +270,25 @@ fn run_pass(
 
         // Values are compared against what the program holds, so unchanged ones
         // cost a compare, not a GL call.
+        // A group, texture or uniform buffer destroyed meanwhile skips the draw
+        // (reported): drawing would show whatever an earlier draw left bound.
         let mut used = [0usize; GROUP_SLOTS];
         let mut n_used = 0;
+        let mut complete = true;
         for &gid in &d.groups {
             if gid.is_null() {
                 continue;
             }
             let Some(group) = param_groups.get(gid.0) else {
                 stale("param group", "render (draw)", gid);
-                continue;
+                complete = false;
+                break;
             };
             let layout = param_layouts
                 .get_in_use(group.layout.0)
                 .expect("a group keeps its layout alive");
             let m = program.mapping(group.layout, layout);
-            apply_group(
+            complete &= apply_group(
                 gl,
                 program,
                 m,
@@ -298,6 +302,13 @@ fn run_pass(
             );
             used[n_used] = m;
             n_used += 1;
+            if !complete {
+                break;
+            }
+        }
+        if !complete {
+            st.stats.skipped += 1;
+            continue;
         }
         program.check_covered(&used[..n_used]);
         if let Some(r) = &mut recording {
@@ -589,7 +600,8 @@ impl GlState {
 
 // Applies one group to the program in use through mapping `m`: changed plain
 // values, its textures (on the units the program assigned), its uniform
-// buffers (flushed, on the program's binding points).
+// buffers (flushed, on the program's binding points). False if one of the
+// textures or buffers the program reads was destroyed (reported).
 #[allow(clippy::too_many_arguments)]
 fn apply_group(
     gl: &WebGl2RenderingContext,
@@ -602,7 +614,8 @@ fn apply_group(
     uniform_buffers: &mut Pool<UniformBufferObj>,
     bindings: &mut GlBindings,
     stats: &mut FrameStats,
-) {
+) -> bool {
+    let mut complete = true;
     for (i, f) in layout.plain.iter().enumerate() {
         if program.upload_field(gl, m, i, f, group) {
             stats.uniforms += 1;
@@ -623,11 +636,15 @@ fn apply_group(
                     stats.textures += 1;
                 }
             }
-            None => stale(
-                "texture",
-                &format!("texture \"{}\"", layout.textures[i]),
-                tex,
-            ),
+            None => {
+                stale(
+                    "texture",
+                    &format!("texture \"{}\"", layout.textures[i]),
+                    tex,
+                );
+                complete = false;
+                continue;
+            }
         }
         // The sampler goes with the texture: a NULL one unbinds whatever an
         // earlier draw left on this unit, so the texture's own parameters apply.
@@ -667,6 +684,7 @@ fn apply_group(
                 &format!("block \"{}\"", layout.blocks[i]),
                 ubo,
             );
+            complete = false;
             continue;
         };
         // The UBO's bytes can be dirty while the binding is unchanged, so flush
@@ -678,6 +696,7 @@ fn apply_group(
             stats.blocks += 1;
         }
     }
+    complete
 }
 
 // What's actually bound to each texture unit / uniform-buffer binding point.

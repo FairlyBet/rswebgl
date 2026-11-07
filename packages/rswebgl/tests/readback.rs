@@ -165,3 +165,75 @@ async fn context_loss_fails_a_pending_read() {
     let msg = js_sys::Error::from(e).message();
     assert!(String::from(msg).contains("lost"));
 }
+
+// WebGL reports these as GL errors, not exceptions: without a check they'd
+// "succeed" with zeros.
+#[wasm_bindgen_test]
+async fn wrong_format_and_multisampled_reads_are_errors() {
+    let f = fixture();
+    let err = f
+        .ctx
+        .read_pixels(CANVAS, 0, 0, 0, 1, 1, ReadFormat::RgbaF32)
+        .unwrap_err();
+    assert!(err.contains("reads as Rgba8"), "{err}");
+
+    if f.ctx
+        .can_render_to_renderbuffer(RenderbufferFormat::Rgba32f)
+    {
+        let fb = f.ctx.create_framebuffer(4, 4).unwrap();
+        let rb = f
+            .ctx
+            .create_renderbuffer(RenderbufferFormat::Rgba32f, 4, 4)
+            .unwrap();
+        f.ctx.framebuffer_attach_color_renderbuffer(fb, 0, rb);
+        let err = f
+            .ctx
+            .read_pixels_async(fb, 0, 0, 0, 1, 1, ReadFormat::Rgba8)
+            .await
+            .unwrap_err();
+        assert!(err.contains("reads as RgbaF32"), "{err}");
+    }
+
+    let msaa = f.ctx.create_framebuffer(4, 4).unwrap();
+    let rb = f
+        .ctx
+        .create_renderbuffer_multisample(RenderbufferFormat::Rgba8, 4, 4, 4)
+        .unwrap();
+    f.ctx.framebuffer_attach_color_renderbuffer(msaa, 0, rb);
+    let err = f
+        .ctx
+        .read_pixels(msaa, 0, 0, 0, 1, 1, ReadFormat::Rgba8)
+        .unwrap_err();
+    assert!(err.contains("multisampled"), "{err}");
+    assert_eq!(f.gl.get_error(), web_sys::WebGl2RenderingContext::NO_ERROR);
+}
+
+// Lost and restored while a read waits: the read fails as lost, and nothing
+// of the old context is touched on the new one (no GL errors left behind).
+#[wasm_bindgen_test]
+async fn a_read_across_loss_and_restore_fails_cleanly() {
+    let f = fixture();
+    draw_middle(&f, CANVAS, solid_program(&f, "1.0, 0.0, 0.0, 1.0"));
+    let read = f
+        .ctx
+        .read_pixels_async(CANVAS, 0, MID.0, MID.1, 1, 1, ReadFormat::Rgba8);
+    assert!(f.ctx.simulate_context_loss());
+    // Let the loss event arrive, then restore before the read is polled.
+    sleep_ms(20).await;
+    assert!(f.ctx.simulate_context_restore());
+    sleep_ms(20).await;
+    assert!(!f.ctx.is_lost());
+    let err = read.await.unwrap_err();
+    assert!(err.contains("lost"), "{err}");
+    assert_eq!(f.gl.get_error(), web_sys::WebGl2RenderingContext::NO_ERROR);
+}
+
+async fn sleep_ms(ms: i32) {
+    let p = js_sys::Promise::new(&mut |resolve, _| {
+        web_sys::window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+            .unwrap();
+    });
+    wasm_bindgen_futures::JsFuture::from(p).await.unwrap();
+}

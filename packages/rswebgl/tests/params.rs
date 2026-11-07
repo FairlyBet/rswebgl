@@ -133,6 +133,18 @@ fn a_copied_group_is_independent() {
         f.ctx.copy_param_group(red).is_err(),
         "copying a destroyed group"
     );
+
+    // A copy made after the layout is gone keeps it alive on its own:
+    // destroying the group it came from doesn't pull the layout away.
+    let copy2 = f.ctx.copy_param_group(copy).unwrap();
+    f.ctx.destroy_param_group(copy);
+    f.ctx.destroy_param_group(blue); // copy2 is the layout's last holder
+    set_color(&f, copy2, GREEN);
+    let mut c = Batch::new(program, f.ctx.render_state(&RenderState::new()));
+    c.set_group(0, copy2);
+    draw_quad(&mut c, &f, 1);
+    render(&f, vec![c]);
+    assert_eq!(read_quads(&f.gl), [BLACK, GREEN, BLACK]);
 }
 
 // A sampler in the batch's group and one in each draw's group get distinct
@@ -282,4 +294,55 @@ fn fields_resolve_by_name_once() {
             .texture("x"),
     );
     assert!(dup.is_err());
+}
+
+// A draw whose group (or a texture in it) was destroyed is skipped, not drawn
+// with whatever an earlier draw left in the program.
+#[wasm_bindgen_test]
+fn a_draw_with_a_destroyed_group_or_texture_is_skipped() {
+    let f = fixture();
+    let program = f.ctx.create_program(VERT, COLOR_FRAG).unwrap();
+    let layout = color_layout(&f);
+    let red = color_group(&f, layout, RED);
+    let gone = color_group(&f, layout, GREEN);
+    let state = f.ctx.render_state(&RenderState::new());
+    let batch = |g| {
+        let mut b = Batch::new(program, state);
+        b.set_group(0, g);
+        b
+    };
+    // Red at 0 leaves red in the program; the destroyed group's quad at 1
+    // would come out red too if it were drawn.
+    let mut a = batch(red);
+    draw_quad(&mut a, &f, 0);
+    let mut b = batch(gone);
+    draw_quad(&mut b, &f, 1);
+    f.ctx.destroy_param_group(gone);
+    f.ctx.reset_frame_stats();
+    let errors = capture_console("error", || render(&f, vec![a, b]));
+    assert_eq!(read_quads(&f.gl), [RED, BLACK, BLACK]);
+    assert_eq!(f.ctx.frame_stats().skipped, 1);
+    assert!(
+        errors.iter().any(|e| e.contains("param group")),
+        "{errors:?}"
+    );
+
+    // The same for a texture the program samples.
+    let tex_program = f.ctx.create_program(VERT, TWO_SAMPLER_FRAG).unwrap();
+    let tex_layout = f
+        .ctx
+        .create_param_layout(&ParamLayoutBuilder::new().texture("u_a").texture("u_b"))
+        .unwrap();
+    let g = f.ctx.create_param_group(tex_layout).unwrap();
+    let t = solid_texture(&f.ctx, [255, 255, 255, 255]);
+    f.ctx.param_set_texture_by_name(g, "u_a", t);
+    f.ctx.param_set_texture_by_name(g, "u_b", t);
+    f.ctx.destroy_texture(t);
+    let mut c = Batch::new(tex_program, state);
+    c.set_group(0, g);
+    draw_quad(&mut c, &f, 2);
+    f.ctx.reset_frame_stats();
+    capture_console("error", || render(&f, vec![c]));
+    assert_eq!(read_quads(&f.gl)[2], BLACK);
+    assert_eq!(f.ctx.frame_stats().skipped, 1);
 }

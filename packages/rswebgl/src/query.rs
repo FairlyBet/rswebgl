@@ -67,33 +67,56 @@ pub(crate) struct QueryObj {
     raw: WebGlQuery,
     kind: QueryKind,
     state: QueryState,
+    // Bumped by every run, so a wait can tell its run from a later one.
+    run: u32,
+    // A timer the GPU was disturbed during (seen by any timer's read of the
+    // context-wide `GPU_DISJOINT_EXT`, which reading clears).
+    disturbed: bool,
 }
 
-impl QueryObj {
-    // Moves a pending query on if GL has its result.
-    fn poll(&mut self, gl: &Gl) {
-        if self.state != QueryState::Pending
-            || gl.is_context_lost()
-            || !gl
-                .get_query_parameter(&self.raw, Gl::QUERY_RESULT_AVAILABLE)
-                .is_truthy()
-        {
-            return;
+// `GPU_DISJOINT_EXT` is one flag for the whole context, cleared by reading it:
+// when it's set, every timer running at the time is disturbed, not just the
+// one whose read happened to see it.
+fn check_disjoint(gl: &Gl, queries: &mut Pool<QueryObj>) {
+    if gl
+        .get_parameter(GPU_DISJOINT_EXT)
+        .is_ok_and(|v| v.is_truthy())
+    {
+        for q in queries.values_mut() {
+            if q.kind == QueryKind::TimeElapsed && q.state == QueryState::Pending {
+                q.disturbed = true;
+            }
         }
-        let value = gl
-            .get_query_parameter(&self.raw, Gl::QUERY_RESULT)
-            .as_f64()
-            .unwrap_or(0.0);
-        let disjoint = self.kind == QueryKind::TimeElapsed
-            && gl
-                .get_parameter(GPU_DISJOINT_EXT)
-                .is_ok_and(|v| v.is_truthy());
-        self.state = if disjoint {
-            QueryState::Disjoint
-        } else {
-            QueryState::Ready(value)
-        };
     }
+}
+
+// Moves pending query `q` on if GL has its result.
+fn poll(gl: &Gl, queries: &mut Pool<QueryObj>, q: QueryId) {
+    let Some(obj) = queries.get(q.0) else {
+        return;
+    };
+    if obj.state != QueryState::Pending
+        || gl.is_context_lost()
+        || !gl
+            .get_query_parameter(&obj.raw, Gl::QUERY_RESULT_AVAILABLE)
+            .is_truthy()
+    {
+        return;
+    }
+    let value = gl
+        .get_query_parameter(&obj.raw, Gl::QUERY_RESULT)
+        .as_f64()
+        .unwrap_or(0.0);
+    let timer = obj.kind == QueryKind::TimeElapsed;
+    if timer {
+        check_disjoint(gl, queries);
+    }
+    let obj = queries.get_mut(q.0).expect("looked up above");
+    obj.state = if timer && obj.disturbed {
+        QueryState::Disjoint
+    } else {
+        QueryState::Ready(value)
+    };
 }
 
 /// What the renderer wants a query for.
@@ -112,6 +135,14 @@ pub(crate) fn begin(
     q: crate::ids::QueryId,
     usage: QueryUse,
 ) -> Option<u32> {
+    // Clear the context's disjoint flag before a timer starts, so it only
+    // reports what happens during this run (and owns up to earlier ones).
+    if queries
+        .get(q.0)
+        .is_some_and(|o| o.kind == QueryKind::TimeElapsed)
+    {
+        check_disjoint(gl, queries);
+    }
     let Some(obj) = queries.get_mut(q.0) else {
         stale("query", "render", q);
         return None;
@@ -139,6 +170,8 @@ pub(crate) fn begin(
     let target = obj.kind as u32;
     gl.begin_query(target, &obj.raw);
     obj.state = QueryState::Pending;
+    obj.run = obj.run.wrapping_add(1);
+    obj.disturbed = false;
     Some(target)
 }
 
@@ -161,6 +194,8 @@ impl Context {
                 raw,
                 kind,
                 state: QueryState::Unused,
+                run: 0,
+                disturbed: false,
             })
             .map(Into::into)
             .map_err(|e| Error::from(e.to_string()))
@@ -191,7 +226,7 @@ impl Context {
     /// Whether the query was run and its result hasn't arrived yet.
     #[wasm_bindgen(js_name = queryPending)]
     pub fn query_pending(&self, q: QueryId) -> bool {
-        self.poll_query(q) == Some(QueryState::Pending)
+        matches!(self.poll_query(q), Some((QueryState::Pending, _)))
     }
 
     /// The result of the query's last run: 1 / 0 for occlusion, nanoseconds
@@ -200,7 +235,7 @@ impl Context {
     /// frame the query ran in — poll next frame.
     #[wasm_bindgen(js_name = queryResult)]
     pub fn query_result(&self, q: QueryId) -> Option<f64> {
-        match self.poll_query(q)? {
+        match self.poll_query(q)?.0 {
             QueryState::Ready(v) => Some(v),
             _ => None,
         }
@@ -215,37 +250,52 @@ impl Context {
 }
 
 impl Context {
-    fn poll_query(&self, q: QueryId) -> Option<QueryState> {
+    // The query's state (polled) and run number.
+    fn poll_query(&self, q: QueryId) -> Option<(QueryState, u32)> {
         let mut res = self.res();
-        let Some(obj) = res.queries.get_mut(q.0) else {
+        if res.queries.get(q.0).is_none() {
             stale("query", "query_result", q);
             return None;
-        };
-        obj.poll(self.gl());
-        Some(obj.state)
+        }
+        poll(self.gl(), &mut res.queries, q);
+        res.queries.get(q.0).map(|o| (o.state, o.run))
     }
 
     /// Waits for the result of the query's current run. An error if it was
-    /// never run, the timer was disturbed, or the query or context goes away
+    /// never run, the timer was disturbed, the query is run again before the
+    /// result arrives (a query re-run every frame: poll `query_result` instead,
+    /// or wait on a query run once), or the query or context goes away
     /// meanwhile.
     pub fn query_result_async(
         &self,
         q: QueryId,
     ) -> impl Future<Output = Result<f64, Error>> + 'static {
         let ctx = self.clone();
+        let started = self.poll_query(q).map(|(_, run)| run);
+        let epoch = self.core.epoch.get();
+        // Submit the queued commands, or the result may not come before the
+        // next frame flushes them (or ever, without one).
+        self.gl().flush();
         async move {
+            let run = started.ok_or("query: destroyed or invalid")?;
             loop {
-                if ctx.is_lost() {
+                if ctx.is_lost() || ctx.core.epoch.get() != epoch {
                     return Err("query: the WebGL context was lost".into());
                 }
-                match ctx.poll_query(q) {
+                let state = match ctx.poll_query(q) {
                     None => return Err("query: destroyed or invalid".into()),
-                    Some(QueryState::Unused) => return Err("query: never run".into()),
-                    Some(QueryState::Disjoint) => {
+                    Some((_, r)) if r != run => {
+                        return Err("query: run again before its result arrived".into());
+                    }
+                    Some((state, _)) => state,
+                };
+                match state {
+                    QueryState::Unused => return Err("query: never run".into()),
+                    QueryState::Disjoint => {
                         return Err("query: the GPU timer was disturbed (disjoint)".into());
                     }
-                    Some(QueryState::Ready(v)) => return Ok(v),
-                    Some(QueryState::Pending) => sleep(Duration::from_millis(1)).await,
+                    QueryState::Ready(v) => return Ok(v),
+                    QueryState::Pending => sleep(Duration::from_millis(1)).await,
                 }
             }
         }

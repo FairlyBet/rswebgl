@@ -78,9 +78,12 @@ pub(crate) fn install(core: &Rc<Core>) {
     let lost = Closure::<dyn FnMut(Event)>::new(move |e: Event| {
         // Without this the browser never restores the context.
         e.prevent_default();
-        note_lost(true);
         console::warn("[rswebgl] WebGL context lost");
         if let Some(core) = weak.upgrade() {
+            if !core.counted_lost.replace(true) {
+                note_lost(true);
+            }
+            core.epoch.set(core.epoch.get().wrapping_add(1));
             core.forget_all();
             let ctx = Context { core };
             invoke(&ctx.core.loss.on_lost, &ctx);
@@ -90,7 +93,6 @@ pub(crate) fn install(core: &Rc<Core>) {
     let weak: Weak<Core> = Rc::downgrade(core);
     let restored = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
         console::log("[rswebgl] WebGL context restored");
-        note_lost(false);
         if let Some(core) = weak.upgrade() {
             core.invalidate_state();
             for ext in core.loss.extensions.borrow().iter() {
@@ -98,6 +100,11 @@ pub(crate) fn install(core: &Rc<Core>) {
             }
             let ctx = Context { core };
             invoke(&ctx.core.loss.on_restored, &ctx);
+            // Only now: rebuilding in `on_restored` (dropping old handles) stays
+            // quiet.
+            if ctx.core.counted_lost.replace(false) {
+                note_lost(false);
+            }
         }
     });
 

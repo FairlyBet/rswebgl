@@ -152,6 +152,19 @@ impl<T> Pool<T> {
         }
     }
 
+    /// Like `retain`, but also for an object destroyed while still in use —
+    /// for a new user taking it over from an existing one (a copy of a
+    /// parameter group shares the layout its source keeps alive).
+    pub fn retain_in_use(&mut self, h: Handle) -> bool {
+        match self.slot_mut(h) {
+            Some(s) if matches!(s.state, State::Live(_) | State::Doomed(_)) => {
+                s.uses += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Drops one use. Returns the value if this was the last use of an object
     /// that was already destroyed (it's removed now, for the caller to clean
     /// up). Works on destroyed-but-in-use objects, which `get` no longer sees.
@@ -222,6 +235,14 @@ impl<T> Pool<T> {
         self.retired
     }
 
+    /// Live objects, mutably.
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.slots.iter_mut().filter_map(|s| match &mut s.state {
+            State::Live(v) => Some(v),
+            _ => None,
+        })
+    }
+
     /// Live objects with their handles.
     pub fn iter(&self) -> impl Iterator<Item = (Handle, &T)> {
         self.slots
@@ -275,6 +296,9 @@ mod tests {
         assert_eq!(p.destroy(a), Destroyed::Deferred);
         assert_eq!(p.get(a), None, "gone for everyone else");
         assert_eq!(p.get_in_use(a), Some(&"a"), "the holder still reads it");
+        assert!(!p.retain(a), "no new users of a destroyed object…");
+        assert!(p.retain_in_use(a), "…unless taken over from a holder");
+        assert_eq!(p.release(a), None, "one holder left");
         assert_eq!(p.release(a), Some("a"));
         assert_eq!(p.get_in_use(a), None);
     }

@@ -143,3 +143,28 @@ async fn misused_queries_are_reported() {
     assert!(!f.ctx.query_is_valid(occlusion));
     assert!(f.ctx.query_result_async(occlusion).await.is_err());
 }
+
+// Awaiting a query that the next frame runs again ends in an error instead
+// of waiting on ever-newer runs.
+#[wasm_bindgen_test]
+async fn awaiting_a_query_run_again_fails_instead_of_hanging() {
+    let f = fixture();
+    let fb = depth_framebuffer(&f);
+    let program = red(&f);
+    let state = depth_tested(&f);
+    let q = f.ctx.create_query(QueryKind::AnySamplesPassed).unwrap();
+    let frame = || {
+        let mut pass = Pass::new(fb);
+        pass.set_clear(&ClearMask::color_depth());
+        push_quad(&f, &mut pass, program, state, 1);
+        pass.set_last_draw_query(q);
+        f.ctx.render(&pass);
+    };
+    frame();
+    let wait = f.ctx.query_result_async(q);
+    frame(); // same task: the first run's result can't be in yet
+    let err = wait.await.unwrap_err();
+    assert!(err.contains("run again"), "{err}");
+    // Waiting on the latest run works.
+    assert_eq!(f.ctx.query_result_async(q).await.unwrap(), 1.0);
+}

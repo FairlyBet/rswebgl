@@ -105,7 +105,8 @@ impl Context {
             height,
         };
         self.bind_read_source(fb, attachment, r)?;
-        let len = r.width as usize * r.height as usize * format.pixel_size();
+        self.check_read_format(fb, attachment, format)?;
+        let len = read_len(r, format)?;
         let buf = ArrayBuffer::new(len as u32);
         let (f, t) = format.gl();
         self.gl()
@@ -169,13 +170,7 @@ impl Context {
         };
         // Issued here, not on first poll: an `async fn` would start late.
         let started = self.start_readback(fb, attachment, r, format);
-        let ctx = self.clone();
-        async move {
-            let pending = started?;
-            let result = pending.finish(ctx.gl()).await;
-            pending.delete(ctx.gl());
-            result
-        }
+        async move { started?.finish().await }
     }
 
     // Binds `fb` for reading attachment `attachment`, after checking the
@@ -230,6 +225,41 @@ impl Context {
         Ok(())
     }
 
+    // WebGL reports a wrong format or a multisampled source as a GL error, not
+    // an exception, and the read would "succeed" with zeros: check up front.
+    fn check_read_format(
+        &self,
+        fb: FramebufferId,
+        attachment: u32,
+        format: ReadFormat,
+    ) -> Result<(), Error> {
+        // The canvas is a normalized RGBA8 target (an antialiased one is
+        // resolved by the browser for the read).
+        let (internal, samples) = if fb.is_null() {
+            (0x8058, 0)
+        } else {
+            let res = self.res();
+            let f = res
+                .framebuffers
+                .get(fb.0)
+                .ok_or("read: framebuffer is destroyed")?;
+            f.color_format(&res, attachment)
+                .ok_or("read: the attachment is destroyed")?
+        };
+        if samples > 0 {
+            return Err(err!(
+                "read: color attachment {attachment} is multisampled ({samples}×); resolve it \n                 into a single-sampled target first (Pass::set_resolve or blit_framebuffer)"
+            ));
+        }
+        let wanted = read_format_for(internal);
+        if format != wanted {
+            return Err(err!(
+                "read: color attachment {attachment} (format {internal:#x}) reads as {wanted:?}, \n                 not {format:?}"
+            ));
+        }
+        Ok(())
+    }
+
     fn start_readback(
         &self,
         fb: FramebufferId,
@@ -238,7 +268,8 @@ impl Context {
         format: ReadFormat,
     ) -> Result<PendingRead, Error> {
         self.bind_read_source(fb, attachment, r)?;
-        let len = r.width as usize * r.height as usize * format.pixel_size();
+        self.check_read_format(fb, attachment, format)?;
+        let len = read_len(r, format)?;
         let gl = self.gl();
         let buffer = gl.create_buffer().ok_or("read: createBuffer failed")?;
         gl.bind_buffer(Gl::PIXEL_PACK_BUFFER, Some(&buffer));
@@ -257,21 +288,75 @@ impl Context {
         // Submit the fence now; otherwise it may sit in the command queue and
         // never signal.
         gl.flush();
-        Ok(PendingRead { buffer, sync, len })
+        Ok(PendingRead::new(self, buffer, sync, len))
     }
 }
 
-// A read in flight: the GPU-side copy and the fence behind it.
+// Bytes for `r` in `format`, or an error past what a read can hold.
+fn read_len(r: Region, format: ReadFormat) -> Result<usize, Error> {
+    (r.width as usize)
+        .checked_mul(r.height as usize)
+        .and_then(|n| n.checked_mul(format.pixel_size()))
+        .filter(|&n| n <= i32::MAX as usize)
+        .ok_or_else(|| {
+            err!(
+                "read: {}x{} is too large to read at once",
+                r.width,
+                r.height
+            )
+        })
+}
+
+// The only format WebGL2 reads a color attachment of this sized internal
+// format as (besides the implementation's own extra format, not used here).
+fn read_format_for(internal: u32) -> ReadFormat {
+    match internal {
+        // R16F RG16F RGBA16F R32F RG32F RGBA32F R11F_G11F_B10F
+        0x822D | 0x822F | 0x881A | 0x822E | 0x8230 | 0x8814 | 0x8C3A => ReadFormat::RgbaF32,
+        // R8I R16I R32I RG8I RG16I RG32I RGBA8I RGBA16I RGBA32I
+        0x8231 | 0x8233 | 0x8235 | 0x8237 | 0x8239 | 0x823B | 0x8D8E | 0x8D88 | 0x8D82 => {
+            ReadFormat::RgbaI32
+        }
+        // R8UI R16UI R32UI RG8UI RG16UI RG32UI RGBA8UI RGBA16UI RGBA32UI RGB10_A2UI
+        0x8232 | 0x8234 | 0x8236 | 0x8238 | 0x823A | 0x823C | 0x8D7C | 0x8D76 | 0x8D70 | 0x906F => {
+            ReadFormat::RgbaU32
+        }
+        _ => ReadFormat::Rgba8,
+    }
+}
+
+// A read in flight: the GPU-side copy and the fence behind it. Dropping it —
+// done or not, e.g. a Rust caller giving up on the future — deletes both,
+// unless they belong to a context lost since (gone with it).
 struct PendingRead {
+    ctx: Context,
+    epoch: u32,
     buffer: WebGlBuffer,
     sync: WebGlSync,
     len: usize,
 }
 
 impl PendingRead {
-    async fn finish(&self, gl: &Gl) -> Result<Vec<u8>, Error> {
+    fn new(ctx: &Context, buffer: WebGlBuffer, sync: WebGlSync, len: usize) -> Self {
+        Self {
+            ctx: ctx.clone(),
+            epoch: ctx.core.epoch.get(),
+            buffer,
+            sync,
+            len,
+        }
+    }
+
+    // Whether the objects still belong to a live context: not lost now, and
+    // not lost and restored since the read started.
+    fn alive(&self) -> bool {
+        !self.ctx.gl().is_context_lost() && self.ctx.core.epoch.get() == self.epoch
+    }
+
+    async fn finish(self) -> Result<Vec<u8>, Error> {
+        let gl = self.ctx.gl().clone();
         loop {
-            if gl.is_context_lost() {
+            if !self.alive() {
                 return Err("read: the WebGL context was lost".into());
             }
             match gl.client_wait_sync_with_u32(&self.sync, 0, 0) {
@@ -286,10 +371,15 @@ impl PendingRead {
         gl.bind_buffer(Gl::COPY_READ_BUFFER, None);
         Ok(out)
     }
+}
 
-    fn delete(self, gl: &Gl) {
-        gl.delete_sync(Some(&self.sync));
-        gl.delete_buffer(Some(&self.buffer));
+impl Drop for PendingRead {
+    fn drop(&mut self) {
+        if self.alive() {
+            let gl = self.ctx.gl();
+            gl.delete_sync(Some(&self.sync));
+            gl.delete_buffer(Some(&self.buffer));
+        }
     }
 }
 
@@ -356,13 +446,7 @@ impl Context {
         len: u32,
     ) -> impl Future<Output = Result<Vec<u8>, Error>> + 'static {
         let started = self.start_buffer_readback(buffer, offset, len);
-        let ctx = self.clone();
-        async move {
-            let pending = started?;
-            let result = pending.finish(ctx.gl()).await;
-            pending.delete(ctx.gl());
-            result
-        }
+        async move { started?.finish().await }
     }
 
     fn readable_buffer(
@@ -414,10 +498,6 @@ impl Context {
             return Err("read: fenceSync failed".into());
         };
         gl.flush();
-        Ok(PendingRead {
-            buffer: scratch,
-            sync,
-            len: len as usize,
-        })
+        Ok(PendingRead::new(self, scratch, sync, len as usize))
     }
 }
