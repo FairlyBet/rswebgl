@@ -126,6 +126,16 @@ impl<T> Pool<T> {
         }
     }
 
+    /// Like `get`, but also reaches an object destroyed while still in use —
+    /// for the users that keep it alive (a parameter group reading its
+    /// layout after the app destroyed the layout).
+    pub fn get_in_use(&self, h: Handle) -> Option<&T> {
+        match &self.slot(h)?.state {
+            State::Live(v) | State::Doomed(v) => Some(v),
+            State::Free => None,
+        }
+    }
+
     pub fn contains(&self, h: Handle) -> bool {
         self.get(h).is_some()
     }
@@ -255,6 +265,18 @@ mod tests {
         assert_eq!(p.get(a), None);
         assert_eq!(p.destroy(a), Destroyed::Invalid);
         assert_eq!(p.len(), 1);
+    }
+
+    #[test]
+    fn users_still_reach_a_destroyed_object_they_hold() {
+        let mut p = Pool::new();
+        let a = p.insert("a").unwrap();
+        assert!(p.retain(a));
+        assert_eq!(p.destroy(a), Destroyed::Deferred);
+        assert_eq!(p.get(a), None, "gone for everyone else");
+        assert_eq!(p.get_in_use(a), Some(&"a"), "the holder still reads it");
+        assert_eq!(p.release(a), Some("a"));
+        assert_eq!(p.get_in_use(a), None);
     }
 
     #[test]

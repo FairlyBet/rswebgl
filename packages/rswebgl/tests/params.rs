@@ -108,6 +108,33 @@ fn group_writes_after_building_are_seen() {
     assert_eq!(read_quads(&f.gl), [BLACK, GREEN, BLACK]);
 }
 
+// A copy starts with the source's values and then goes its own way; it keeps
+// working after the source is destroyed.
+#[wasm_bindgen_test]
+fn a_copied_group_is_independent() {
+    let f = fixture();
+    let program = f.ctx.create_program(VERT, COLOR_FRAG).unwrap();
+    let layout = color_layout(&f);
+    let red = color_group(&f, layout, RED);
+    let copy = f.ctx.copy_param_group(red).unwrap();
+    let blue = f.ctx.copy_param_group(red).unwrap();
+    set_color(&f, blue, BLUE);
+    f.ctx.destroy_param_group(red);
+    f.ctx.destroy_param_layout(layout);
+    let mut a = Batch::new(program, f.ctx.render_state(&RenderState::new()));
+    a.set_group(0, copy);
+    draw_quad(&mut a, &f, 0);
+    let mut b = Batch::new(program, f.ctx.render_state(&RenderState::new()));
+    b.set_group(0, blue);
+    draw_quad(&mut b, &f, 2);
+    render(&f, vec![a, b]);
+    assert_eq!(read_quads(&f.gl), [RED, BLACK, BLUE]);
+    assert!(
+        f.ctx.copy_param_group(red).is_err(),
+        "copying a destroyed group"
+    );
+}
+
 // A sampler in the batch's group and one in each draw's group get distinct
 // units (the program assigns them per sampler name).
 #[wasm_bindgen_test]

@@ -240,7 +240,7 @@ impl Context {
             return None;
         };
         let layout = param_layouts
-            .get(g.layout.0)
+            .get_in_use(g.layout.0)
             .expect("retained by the group");
         let (k, i) = decode(field);
         let count = match k {
@@ -358,6 +358,34 @@ impl Context {
             samplers: vec![SamplerId::NULL; l.textures.len()],
             blocks: vec![(UniformBufferId::NULL, None); l.blocks.len()],
         };
+        res.param_layouts.retain(layout.0);
+        match res.param_groups.insert(obj) {
+            Ok(h) => Ok(h.into()),
+            Err(e) => {
+                release_layout(res, layout);
+                Err(e.to_string().into())
+            }
+        }
+    }
+
+    /// A new group with the same layout and the same values, textures,
+    /// samplers and blocks as `group` — e.g. to vary one object's material
+    /// without touching the others that share it. Later writes to either
+    /// don't reach the other.
+    #[wasm_bindgen(js_name = copyParamGroup)]
+    pub fn copy_param_group(&self, group: ParamGroupId) -> Result<ParamGroupId, Error> {
+        let res = &mut *self.res();
+        let Some(src) = res.param_groups.get(group.0) else {
+            return Err(err!("param group {:?} is destroyed or invalid", group.0));
+        };
+        let obj = ParamGroupObj {
+            layout: src.layout,
+            words: src.words.clone(),
+            textures: src.textures.clone(),
+            samplers: src.samplers.clone(),
+            blocks: src.blocks.clone(),
+        };
+        let layout = obj.layout;
         res.param_layouts.retain(layout.0);
         match res.param_groups.insert(obj) {
             Ok(h) => Ok(h.into()),
@@ -554,7 +582,7 @@ impl Context {
             stale("param group", op, group);
             return None;
         };
-        let l = res.param_layouts.get(g.layout.0)?;
+        let l = res.param_layouts.get_in_use(g.layout.0)?;
         let f = l.field(name);
         if f.is_none() {
             console::warn_once(&format!(

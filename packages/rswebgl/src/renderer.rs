@@ -281,7 +281,7 @@ fn run_pass(
                 continue;
             };
             let layout = param_layouts
-                .get(group.layout.0)
+                .get_in_use(group.layout.0)
                 .expect("a group keeps its layout alive");
             let m = program.mapping(group.layout, layout);
             apply_group(
