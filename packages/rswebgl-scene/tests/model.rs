@@ -254,3 +254,25 @@ fn scene_setters_reject_dead_entities_and_cycles() {
     assert_eq!(s.scene.world_matrix(b).len(), 16);
     s.scene.destroy();
 }
+
+// A model hung under a group of the app's goes (GPU data and all) when the
+// group is despawned — not just when its own root is.
+#[wasm_bindgen_test]
+async fn despawning_an_ancestor_frees_the_models_under_it() {
+    let mut s = setup();
+    let model = load_model(&s.ctx, &asset_url()).await.expect("load");
+    let buffers = model.buffers().to_vec();
+    let program = s.ctx.create_program(VERT, FRAG).expect("program");
+    let root = s.scene.add_model_with_program(model, program);
+    let group = s.scene.spawn();
+    s.scene.set_parent(root, group);
+    assert!(s.scene.model_bounds(root).len() == 4);
+    s.scene.despawn(group);
+    assert!(!s.scene.is_alive(root));
+    assert!(s.scene.model_bounds(root).is_empty(), "the model is gone");
+    assert!(
+        buffers.iter().all(|&b| !s.ctx.buffer_is_valid(b)),
+        "with its GPU data"
+    );
+    s.scene.destroy();
+}

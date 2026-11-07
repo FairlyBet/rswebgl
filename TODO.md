@@ -242,3 +242,30 @@ FBO blit). Done. Deferred polish:
   them.
 - Options objects are read with `Reflect` per call (setup-time API; not for
   per-frame use).
+
+## From the async / lifetime review (deferred)
+
+Fixed in the review commits; these were found and left for later:
+
+- `ProgramObj::mappings` gets an entry per parameter layout ever drawn with
+  and is searched linearly per draw; never pruned. Shared PBR programs grow
+  with every `addModel` / despawn cycle (each model has its own layout).
+  Prune when a layout is freed, or key by layout with lazy eviction.
+- Error-path leaks reachable only on a lost context or a full pool:
+  `Baker::new` / `run`, `Environment::constant`, `SceneRenderer::new` after
+  their first allocation; a partially built `Model` when `load_model` fails
+  late. Parameter layouts / groups are CPU-only and survive a loss.
+- Every pending async read / query polls on its own 1 ms timer (clamped to
+  ~4 ms); many in flight → many timers. One poller per context.
+- `SceneRenderer::release_removed` misses a removal when the app clears the
+  world's trackers before rendering and adds one mesh as it removes another
+  (the `Scene` order is right; affects Rust users driving the world).
+- `texture_generate_mipmaps` doesn't check the format can have mipmaps
+  generated (compressed, or float without the extension → GL error, black
+  with a mipmap filter).
+- `decode_data_uri` doesn't percent-decode non-base64 data URIs.
+- Images decode through `HtmlImageElement`; `createImageBitmap` with
+  `premultiplyAlpha: "none"` / `colorSpaceConversion: "none"` would decode
+  off the main thread and avoid a premultiply round trip on low alpha.
+- Timer queries: disjoint handling is now context-wide but untested by
+  pixels (headless Chrome never reports a disjoint).

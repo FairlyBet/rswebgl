@@ -163,12 +163,20 @@ struct Baker<'a> {
 
 impl<'a> Baker<'a> {
     fn new(ctx: &'a Context, size: i32) -> Result<Self, Error> {
-        let program = |mode: &str| {
+        // Linked before use: a bake program that fails to link would make every
+        // draw skip and leave the cubes black while the bake "succeeds".
+        let program = |mode: &str| -> Result<ProgramId, Error> {
             let head = format!("#version 300 es\n#define {mode}\n");
-            ctx.create_program(
+            let p = ctx.create_program(
                 &format!("{head}{FULLSCREEN_VERT}"),
                 &format!("{head}{BAKE_FRAG}"),
-            )
+            )?;
+            ctx.program_active_uniform_names(p); // waits for the link
+            if !ctx.program_is_valid(p) {
+                ctx.destroy_program(p);
+                return Err(format!("environment: the {mode} bake shader failed to link").into());
+            }
+            Ok(p)
         };
         let layout = ctx.create_param_layout(
             &ParamLayoutBuilder::new()

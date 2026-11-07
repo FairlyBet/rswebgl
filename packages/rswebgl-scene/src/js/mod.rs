@@ -43,7 +43,7 @@ use rswebgl_gltf::Model;
 use wasm_bindgen::prelude::*;
 
 use crate::culling::Bounds;
-use crate::hierarchy::{TransformSystem, despawn_recursive, set_parent};
+use crate::hierarchy::{TransformSystem, descendants, despawn_recursive, set_parent};
 use crate::model::{Name, find_by_name, spawn_model};
 use crate::pbr::PbrShaders;
 use crate::pick::{Hit, pick};
@@ -128,11 +128,17 @@ impl Scene {
     /// despawned by its root, frees its GPU resources and materials too).
     /// Returns how many entities went.
     pub fn despawn(&mut self, e: Entity) -> usize {
-        if let Some(model) = self.models.remove(&e) {
-            for g in model.material_groups() {
-                self.materials.remove(g);
+        // Every model root in the subtree, not just `e`: a model hung under a
+        // group goes with the group.
+        if !self.models.is_empty() {
+            for d in descendants(&self.world, e) {
+                if let Some(model) = self.models.remove(&d) {
+                    for g in model.material_groups() {
+                        self.materials.remove(g);
+                    }
+                    model.destroy(&self.ctx);
+                }
             }
-            model.destroy(&self.ctx);
         }
         despawn_recursive(&mut self.world, e)
     }
