@@ -354,9 +354,20 @@ async fn scene_shaders_and_options() {
         ),
     };
     assert!(
-        err.contains("0:2"),
+        err.contains("fragment:2:"),
         "error on line 2 of the user's code: {err}"
     );
+    // Library chunks can be included; an unknown one is an error up front.
+    let with_chunk = "#include \"color.glsl\"\nout vec4 c;\n\
+                      void main() { c = vec4(srgb_to_linear(vec3(0.5)), 1.0); }";
+    assert!(s.scene.create_program(vert, with_chunk).is_ok());
+    let missing = s
+        .scene
+        .create_program(vert, "#include \"nope.glsl\"\nout vec4 c;\nvoid main() {}")
+        .unwrap_err()
+        .message()
+        .to_string();
+    assert!(missing.contains("fragment:1: no shader chunk"), "{missing}");
 
     // A mesh of our own through setMesh's options.
     let mut vb = VaoBuilder::new(&s.ctx);

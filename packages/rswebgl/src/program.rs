@@ -11,6 +11,7 @@ use crate::feedback::{FeedbackLayout, FeedbackMode, feedback_layout};
 use crate::ids::{ParamLayoutId, ProgramId};
 use crate::limits;
 use crate::param::{ParamGroupObj, ParamLayoutObj, PlainField};
+use crate::shader_source::{ShaderSource, describe_log};
 
 const COMPLETION_STATUS_KHR: u32 = 0x91B1;
 
@@ -292,19 +293,23 @@ pub(crate) struct ProgramObj {
     // Captured outputs, if linked with feedback varyings (filled in on link).
     feedback_mode: Option<FeedbackMode>,
     pub(crate) feedback: Option<FeedbackLayout>,
+    // Source-string names per stage (vertex, fragment), for error logs; empty
+    // for plain sources.
+    files: [Vec<String>; 2],
 }
 
 impl ProgramObj {
     fn new(
         gl: &Gl,
-        vert_src: &str,
-        frag_src: &str,
+        vert_src: &ShaderSource,
+        frag_src: &ShaderSource,
         parallel: bool,
         validate: Validation,
         feedback: Option<(&[String], FeedbackMode)>,
     ) -> Result<ProgramObj, Error> {
-        let vert = create_shader(gl, Gl::VERTEX_SHADER, vert_src)?;
-        let frag = create_shader(gl, Gl::FRAGMENT_SHADER, frag_src)?;
+        let files = [vert_src.files.clone(), frag_src.files.clone()];
+        let vert = create_shader(gl, Gl::VERTEX_SHADER, &vert_src.code)?;
+        let frag = create_shader(gl, Gl::FRAGMENT_SHADER, &frag_src.code)?;
 
         let raw = gl.create_program().ok_or("createProgram failed")?;
         gl.attach_shader(&raw, &vert);
@@ -328,6 +333,7 @@ impl ProgramObj {
             reported_unset: Vec::new(),
             feedback_mode: feedback.map(|(_, m)| m),
             feedback: None,
+            files,
         };
 
         // Without parallel compile the first status query blocks on the link
@@ -382,10 +388,15 @@ impl ProgramObj {
                 .get_program_info_log(&self.raw)
                 .unwrap_or_else(|| "unknown error".into());
             let mut msg = format!("program link failed: {}", prog_log.trim());
-            for (stage, shader) in [("vertex", &self.vert), ("fragment", &self.frag)] {
+            let stages = [
+                ("vertex", &self.vert, &self.files[0]),
+                ("fragment", &self.frag, &self.files[1]),
+            ];
+            for (stage, shader, files) in stages {
                 let log = shader
                     .as_ref()
                     .and_then(|s| gl.get_shader_info_log(s))
+                    .map(|log| describe_log(&log, files))
                     .unwrap_or_default();
                 if !log.trim().is_empty() {
                     msg.push_str(&format!("\n{stage} shader: {}", log.trim()));
@@ -587,7 +598,11 @@ impl Context {
     /// creation doesn't block and errors are reported when the link completes.
     #[wasm_bindgen(js_name = createProgram)]
     pub fn create_program(&self, vert_src: &str, frag_src: &str) -> Result<ProgramId, Error> {
-        self.new_program(vert_src, frag_src, None)
+        self.new_program(
+            &ShaderSource::plain("vertex", vert_src),
+            &ShaderSource::plain("fragment", frag_src),
+            None,
+        )
     }
 
     /// `create_program` that also captures vertex shader outputs `varyings`
@@ -605,15 +620,29 @@ impl Context {
         if varyings.is_empty() {
             return Err("create_program_with_feedback: no varyings to capture".into());
         }
-        self.new_program(vert_src, frag_src, Some((&varyings, mode)))
+        self.new_program(
+            &ShaderSource::plain("vertex", vert_src),
+            &ShaderSource::plain("fragment", frag_src),
+            Some((&varyings, mode)),
+        )
     }
 }
 
 impl Context {
+    /// `create_program` from assembled sources (`ShaderSource::assemble`):
+    /// compile errors name the chunk and line they come from.
+    pub fn create_program_from(
+        &self,
+        vert: &ShaderSource,
+        frag: &ShaderSource,
+    ) -> Result<ProgramId, Error> {
+        self.new_program(vert, frag, None)
+    }
+
     fn new_program(
         &self,
-        vert_src: &str,
-        frag_src: &str,
+        vert_src: &ShaderSource,
+        frag_src: &ShaderSource,
         feedback: Option<(&[String], FeedbackMode)>,
     ) -> Result<ProgramId, Error> {
         self.check_alive()?;

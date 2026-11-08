@@ -9,6 +9,7 @@ use crate::shader::shader_sources;
 use rswebgl::context::Context;
 use rswebgl::error::Error;
 use rswebgl::ids::ProgramId;
+use rswebgl::shader_source::ShaderSource;
 use rswebgl_gltf::{
     ATTR_COLOR, ATTR_NORMAL, ATTR_TANGENT, ATTR_UV0, ATTR_UV1, AlphaMode, DrawItem, Material, Model,
 };
@@ -143,7 +144,7 @@ impl PbrKey {
     }
 
     /// Vertex and fragment source of this variant.
-    pub fn sources(&self) -> (String, String) {
+    pub fn sources(&self) -> Result<(ShaderSource, ShaderSource), Error> {
         shader_sources(VERT, FRAG, &self.defines())
     }
 }
@@ -169,8 +170,8 @@ impl PbrShaders {
         if let Some(&p) = self.programs.get(&key) {
             return Ok(p);
         }
-        let (vert, frag) = key.sources();
-        let p = ctx.create_program(&vert, &frag)?;
+        let (vert, frag) = key.sources()?;
+        let p = ctx.create_program_from(&vert, &frag)?;
         self.programs.insert(key, p);
         Ok(p)
     }

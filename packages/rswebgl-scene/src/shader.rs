@@ -10,8 +10,9 @@
 //! Fragment prelude: the same, plus `u_lights[]`, `u_environment`,
 //! `u_lighting`, `u_env_diffuse`, `u_env_specular`, `u_env_brdf`, and
 //! `scene_irradiance(n)`, `scene_reflection(r, roughness)`,
-//! `scene_output(linear)` (exposure, tone mapping, sRGB), `tone_map`,
-//! `to_srgb`, `env_dir`.
+//! `scene_output(linear)` (exposure, tone mapping, sRGB), `tone_map_neutral`,
+//! `linear_to_srgb`, `srgb_to_linear`, `env_dir`, `light_radiance`. Library
+//! chunks (`CHUNKS`) can be `#include`d.
 //!
 //! ```glsl
 //! // vertex
@@ -34,25 +35,54 @@
 use rswebgl::context::Context;
 use rswebgl::error::Error;
 use rswebgl::ids::ProgramId;
+use rswebgl::shader_source::ShaderSource;
 
 /// The vertex-stage prelude (`shaders/scene.vert.glsl`).
 pub const VERT_PRELUDE: &str = include_str!("../shaders/scene.vert.glsl");
 /// The fragment-stage prelude (`shaders/scene.frag.glsl`).
 pub const FRAG_PRELUDE: &str = include_str!("../shaders/scene.frag.glsl");
 
+/// The shader chunks `#include` finds (`shaders/lib/`, and the preludes).
+pub const CHUNKS: &[(&str, &str)] = &[
+    ("scene.vert.glsl", VERT_PRELUDE),
+    ("scene.frag.glsl", FRAG_PRELUDE),
+    ("common.glsl", include_str!("../shaders/lib/common.glsl")),
+    ("color.glsl", include_str!("../shaders/lib/color.glsl")),
+    ("frame.glsl", include_str!("../shaders/lib/frame.glsl")),
+    ("object.glsl", include_str!("../shaders/lib/object.glsl")),
+    ("lights.glsl", include_str!("../shaders/lib/lights.glsl")),
+    (
+        "environment.glsl",
+        include_str!("../shaders/lib/environment.glsl"),
+    ),
+    ("tonemap.glsl", include_str!("../shaders/lib/tonemap.glsl")),
+];
+
+/// The chunk named `name`, if the library has it.
+pub fn chunk(name: &str) -> Option<&'static str> {
+    CHUNKS.iter().find(|(n, _)| *n == name).map(|(_, c)| *c)
+}
+
 /// Complete sources: `#version 300 es`, `defines` (whole `#define` lines),
-/// the prelude, then your code — numbered from line 1 again, so compile
-/// errors point into your code, not the prelude.
-pub fn shader_sources(vert: &str, frag: &str, defines: &str) -> (String, String) {
-    let stage =
-        |prelude: &str, code: &str| format!("#version 300 es\n{defines}{prelude}\n#line 1\n{code}");
-    (stage(VERT_PRELUDE, vert), stage(FRAG_PRELUDE, frag))
+/// the prelude, then your code — numbered from line 1, so compile errors
+/// point into your code (or name the chunk they're in). Your code may
+/// `#include` library chunks (`CHUNKS`).
+pub fn shader_sources(
+    vert: &str,
+    frag: &str,
+    defines: &str,
+) -> Result<(ShaderSource, ShaderSource), Error> {
+    let prefix = format!("#version 300 es\n{defines}");
+    Ok((
+        ShaderSource::assemble(&prefix, &["scene.vert.glsl"], "vertex", vert, chunk)?,
+        ShaderSource::assemble(&prefix, &["scene.frag.glsl"], "fragment", frag, chunk)?,
+    ))
 }
 
 /// Compiles a scene shader (see the module docs): your vertex and fragment
 /// code without `#version` or the scene's declarations. The program is
 /// yours to destroy.
 pub fn create_scene_program(ctx: &Context, vert: &str, frag: &str) -> Result<ProgramId, Error> {
-    let (v, f) = shader_sources(vert, frag, "");
-    ctx.create_program(&v, &f)
+    let (v, f) = shader_sources(vert, frag, "")?;
+    ctx.create_program_from(&v, &f)
 }

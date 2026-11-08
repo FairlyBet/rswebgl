@@ -61,5 +61,5 @@ pub use render::{
     MeshRenderer, NORMAL_MATRIX_UNIFORM, OBJECT_SLOT, Reloading, RenderStats, SceneRenderer,
     Visible,
 };
-pub use shader::{FRAG_PRELUDE, VERT_PRELUDE, create_scene_program, shader_sources};
+pub use shader::{CHUNKS, FRAG_PRELUDE, VERT_PRELUDE, chunk, create_scene_program, shader_sources};
 pub use transform::{Parent, Transform, WorldMatrix};

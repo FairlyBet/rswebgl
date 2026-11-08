@@ -80,7 +80,6 @@ uniform float u_dispersion;
 
 out vec4 frag_color;
 
-const float PI = 3.14159265359;
 
 vec4 base_color() {
     vec4 c = u_base_color_factor;
@@ -146,25 +145,6 @@ vec3 f_schlick(vec3 f0, float v_h) {
     return f0 + (1.0 - f0) * pow(1.0 - v_h, 5.0);
 }
 
-// Distance and cone falloff of a punctual light (KHR_lights_punctual).
-float attenuation(Light light, vec3 to_light) {
-    float type = light.params.w;
-    if (type < 0.5) return 1.0; // directional
-    float d2 = max(dot(to_light, to_light), 1e-8);
-    float att = 1.0 / d2;
-    float range = light.params.x;
-    if (range > 0.0) {
-        float r = sqrt(d2) / range;
-        att *= clamp(1.0 - r * r * r * r, 0.0, 1.0);
-    }
-    if (type > 1.5) { // spot
-        float cd = dot(normalize(light.direction.xyz), -normalize(to_light));
-        float s = clamp(cd * light.params.y + light.params.z, 0.0, 1.0);
-        att *= s * s;
-    }
-    return att;
-}
-
 // Radiance arriving through the surface from the environment (before the
 // Fresnel and tint the caller applies).
 #ifdef HAS_TRANSMISSION
@@ -211,7 +191,7 @@ void main() {
 #endif
 
 #ifdef MATERIAL_UNLIT
-    frag_color = vec4(to_srgb(base.rgb), base.a);
+    frag_color = vec4(linear_to_srgb(base.rgb), base.a);
 #else
     float metallic = u_metallic_factor;
     float roughness = u_roughness_factor;
@@ -264,7 +244,7 @@ void main() {
             : light.position.xyz - v_world;
         vec3 l = normalize(to_light);
         float n_l = clamp(dot(n, l), 0.0, 1.0);
-        vec3 radiance = light.color.rgb * light.color.w * attenuation(light, to_light);
+        vec3 radiance = light.color.rgb * light.color.w * light_attenuation(light, to_light);
         vec3 h = normalize(l + v);
         float v_h = clamp(dot(v, h), 0.0, 1.0);
         if (n_l > 0.0) {
