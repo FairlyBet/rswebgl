@@ -48,7 +48,19 @@ use wasm_bindgen::prelude::*;
 
 /// Extensions this crate handles itself; a file that *requires* one of them
 /// still loads (the `gltf` crate would reject it as unsupported).
-const HANDLED_EXTENSIONS: &[&str] = &["EXT_mesh_gpu_instancing", "KHR_texture_transform"];
+/// (ior, transmission, emissive_strength and unlit are on the crate's own
+/// list; specular and volume it parses but leaves off that list.)
+const HANDLED_EXTENSIONS: &[&str] = &[
+    "EXT_mesh_gpu_instancing",
+    "KHR_texture_transform",
+    "KHR_materials_specular",
+    "KHR_materials_volume",
+    "KHR_materials_clearcoat",
+    "KHR_materials_sheen",
+    "KHR_materials_iridescence",
+    "KHR_materials_anisotropy",
+    "KHR_materials_dispersion",
+];
 
 // Optional vertex attributes a primitive can have (`DrawItem::attributes`).
 /// NORMAL at location 1.
@@ -579,4 +591,29 @@ fn build_material_groups(
         groups.push(g);
     }
     Ok((layout, groups))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Every extension we implement may be required; an unknown one still fails.
+    #[test]
+    fn required_extensions_we_implement_load() {
+        let doc = |name: &str| {
+            format!(
+                r#"{{"asset": {{"version": "2.0"}}, "extensionsUsed": ["{name}"], "extensionsRequired": ["{name}"]}}"#
+            )
+        };
+        let crate_parsed = [
+            "KHR_materials_ior",
+            "KHR_materials_transmission",
+            "KHR_materials_emissive_strength",
+            "KHR_materials_unlit",
+        ];
+        for name in HANDLED_EXTENSIONS.iter().chain(&crate_parsed) {
+            assert!(parse(doc(name).as_bytes()).is_ok(), "{name}");
+        }
+        assert!(parse(doc("KHR_draco_mesh_compression").as_bytes()).is_err());
+    }
 }
