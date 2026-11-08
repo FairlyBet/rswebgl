@@ -181,6 +181,16 @@ struct DefaultFramebufferInner {
     resize_closure: Option<Closure<dyn FnMut()>>,
 }
 
+// The observer outlives us in the browser unless disconnected: it would call
+// the closure dropped with us ("closure invoked ... after being dropped").
+impl Drop for DefaultFramebufferInner {
+    fn drop(&mut self) {
+        if let Some(observer) = self.observer.take() {
+            observer.disconnect();
+        }
+    }
+}
+
 // Resizes the drawing buffer to the canvas's CSS size × devicePixelRatio and
 // updates the viewport. Only touches the backing store when it actually changed
 // (setting width/height clears the canvas).
