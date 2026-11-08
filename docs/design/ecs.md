@@ -381,3 +381,9 @@ ctx.render(pass);
   PBR и фон собираются тем же путём.
 - По ходу: исправлена паника рендерера при отрисовке группы, чей layout
   удалён раньше неё (`Pool::get_in_use`).
+- **Текстуры материалов из JS:** `loadTexture(url, { colorSpace, wrap,
+  mipmaps, flipY })` → Promise с текстурой сцены (освобождается со сценой
+  или `destroyTexture`); `setMaterialTexture(mat, "baseColorTexture" | … ,
+  tex, { texCoord })`, `0` — убрать карту; `materialTexture(mat, map)`.
+  Появление или исчезновение карты переключает вариант шейдера у всех
+  мешей с этим материалом; клон материала копирует и карты.

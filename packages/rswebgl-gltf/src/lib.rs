@@ -31,7 +31,9 @@ mod scene;
 mod textures;
 
 pub use geometry::Triangles;
-pub use material::{AlphaMode, Material, PROPERTIES, Property, default_material};
+pub use material::{
+    AlphaMode, EXTERNAL_TEXTURE, MAP_NAMES, Material, PROPERTIES, Property, default_material,
+};
 
 use rswebgl::context::Context;
 use rswebgl::draw::DrawCommand;

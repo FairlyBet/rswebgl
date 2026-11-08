@@ -236,10 +236,11 @@ FBO blit). Done. Deferred polish:
   models that are never picked. Picking tests every triangle of the
   meshes whose box the ray hits (no BVH); fine for jewelry-sized models.
   Skinned or morphed meshes would need their deformed positions.
-- Materials: properties are numeric only — swapping a material's textures
-  from JS isn't there yet. `cloneMaterial` shares the source model's
-  textures, so a clone outlives its model only as long as nothing samples
-  them.
+- Materials: `setMaterialTexture` sets the five core maps; the extension
+  maps (clearcoat, transmission, …) aren't settable (nor read from glTF).
+  The color space of a texture set on a map isn't checked against the role
+  (sRGB for colors). `cloneMaterial` shares the source model's textures, so
+  a clone outlives its model only as long as nothing samples them.
 - Options objects are read with `Reflect` per call (setup-time API; not for
   per-frame use).
 

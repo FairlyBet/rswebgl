@@ -322,6 +322,50 @@ impl Material {
     }
 }
 
+/// The material maps by glTF name, in the order of `MAP_UNIFORMS`.
+pub const MAP_NAMES: [&str; 5] = [
+    "baseColorTexture",
+    "metallicRoughnessTexture",
+    "normalTexture",
+    "occlusionTexture",
+    "emissiveTexture",
+];
+
+/// The texture index of a map whose texture isn't one of the model's (set by
+/// the app — a scene's `setMaterialTexture`).
+pub const EXTERNAL_TEXTURE: i32 = i32::MAX;
+
+impl Material {
+    // Each map's (texture index, TEXCOORD set), in `MAP_NAMES` order.
+    fn maps_mut(&mut self) -> [(&mut i32, &mut u32); 5] {
+        [
+            (&mut self.base_color_tex, &mut self.base_color_uv),
+            (
+                &mut self.metallic_roughness_tex,
+                &mut self.metallic_roughness_uv,
+            ),
+            (&mut self.normal_tex, &mut self.normal_uv),
+            (&mut self.occlusion_tex, &mut self.occlusion_uv),
+            (&mut self.emissive_tex, &mut self.emissive_uv),
+        ]
+    }
+
+    /// Map `slot` (an index into `MAP_NAMES`): its texture index (−1 none,
+    /// `EXTERNAL_TEXTURE` for the app's) and TEXCOORD set.
+    pub fn map(&self, slot: usize) -> Option<(i32, u32)> {
+        let mut m = self.clone();
+        m.maps_mut().into_iter().nth(slot).map(|(t, uv)| (*t, *uv))
+    }
+
+    /// Sets map `slot`: `texture` as for `map`, `uv` its TEXCOORD set (0 or 1).
+    pub fn set_map(&mut self, slot: usize, texture: i32, uv: u32) {
+        if let Some((t, u)) = self.maps_mut().into_iter().nth(slot) {
+            *t = texture;
+            *u = if texture < 0 { 0 } else { uv };
+        }
+    }
+}
+
 /// Translate one glTF material's data.
 pub fn translate(mat: &gltf::Material) -> Material {
     let pbr = mat.pbr_metallic_roughness();

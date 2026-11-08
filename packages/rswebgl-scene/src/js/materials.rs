@@ -16,9 +16,12 @@
 
 use rswebgl::console;
 use rswebgl::error::Error;
-use rswebgl::ids::ParamGroupId;
+use rswebgl::ids::{ParamGroupId, SamplerId, TextureId};
+use rswebgl::texture::{
+    TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget, TextureWrap,
+};
 use rswebgl_ecs::Entity;
-use rswebgl_gltf::{Material, Model, default_material};
+use rswebgl_gltf::{EXTERNAL_TEXTURE, MAP_NAMES, MAP_UNIFORMS, Material, Model, default_material};
 use wasm_bindgen::prelude::*;
 
 use super::{Scene, options};
@@ -33,6 +36,8 @@ use crate::render::MeshRenderer;
 pub(crate) struct MaterialRecord {
     pub(crate) material: Material,
     pub(crate) cloned: bool,
+    // The texture of each map (`MAP_NAMES` order), NULL for none.
+    pub(crate) maps: [TextureId; 5],
 }
 
 #[wasm_bindgen]
@@ -133,12 +138,14 @@ impl Scene {
             .ok_or("cloneMaterial: not a material of this scene")?
             .material
             .clone();
+        let maps = self.materials[&material].maps;
         let copy = self.ctx.copy_param_group(material)?;
         self.materials.insert(
             copy,
             MaterialRecord {
                 material: data,
                 cloned: true,
+                maps,
             },
         );
         Ok(copy)
@@ -160,6 +167,161 @@ impl Scene {
             None => console::error_once(
                 "[rswebgl-scene] destroyMaterial: not a material of this scene; ignored",
             ),
+        }
+    }
+
+    /// Loads an image (PNG, JPEG, WebP, … — whatever the browser decodes)
+    /// into a texture the scene owns, for `setMaterialTexture`. Resolves with
+    /// the texture once it's decoded; rejects if the image can't be loaded
+    /// (the texture is freed then). See `TextureOptions` for color space,
+    /// wrapping and mipmaps; throws on bad options.
+    #[wasm_bindgen(js_name = loadTexture)]
+    pub fn load_texture(
+        &mut self,
+        url: &str,
+        #[wasm_bindgen(unchecked_param_type = "TextureOptions | undefined")] opts: JsValue,
+    ) -> Result<js_sys::Promise, Error> {
+        let srgb = match options::string_or(&opts, "colorSpace", "srgb")?.as_str() {
+            "srgb" => true,
+            "linear" => false,
+            other => {
+                return Err(
+                    format!("loadTexture: colorSpace \"{other}\" isn't srgb or linear").into(),
+                );
+            }
+        };
+        let wrap = match options::string_or(&opts, "wrap", "repeat")?.as_str() {
+            "repeat" => TextureWrap::Repeat,
+            "clamp" => TextureWrap::ClampToEdge,
+            "mirror" => TextureWrap::MirroredRepeat,
+            other => {
+                return Err(
+                    format!("loadTexture: wrap \"{other}\" isn't repeat, clamp or mirror").into(),
+                );
+            }
+        };
+        let mipmaps = options::bool_or(&opts, "mipmaps", true)?;
+        let flip_y = options::bool_or(&opts, "flipY", false)?;
+
+        let min = if mipmaps {
+            TextureMinFilter::LinearMipmapLinear
+        } else {
+            TextureMinFilter::Linear
+        };
+        let tex =
+            self.ctx
+                .create_texture(TextureTarget::Texture2D, min, TextureMagFilter::Linear)?;
+        self.ctx.texture_set_wrap_s(tex, wrap);
+        self.ctx.texture_set_wrap_t(tex, wrap);
+        self.textures.push(tex);
+        let format = if srgb {
+            TextureFormat::srgb8_alpha8()
+        } else {
+            TextureFormat::rgba8()
+        };
+
+        let ctx = self.ctx.clone();
+        let url = url.to_string();
+        Ok(js_sys::Promise::new(&mut |resolve, reject| {
+            let (ctx2, url2) = (ctx.clone(), url.clone());
+            let on_load = Closure::once_into_js(move |w: f64, _h: f64| {
+                if w > 0.0 {
+                    let _ = resolve.call1(&JsValue::NULL, &tex.to_raw().into());
+                } else {
+                    if ctx2.texture_is_valid(tex) {
+                        ctx2.destroy_texture(tex);
+                    }
+                    let err = js_sys::Error::new(&format!("loadTexture: can't load {url2}"));
+                    let _ = reject.call1(&JsValue::NULL, &err);
+                }
+            });
+            ctx.texture_load_image(
+                tex,
+                &url,
+                &format,
+                mipmaps,
+                flip_y,
+                on_load.unchecked_into(),
+            );
+        }))
+    }
+
+    /// Frees a texture made by `loadTexture`. Materials still using it stop
+    /// drawing (reported): set another texture, or none, first.
+    #[wasm_bindgen(js_name = destroyTexture)]
+    pub fn destroy_texture(&mut self, texture: TextureId) {
+        match self.textures.iter().position(|&t| t == texture) {
+            Some(i) => {
+                self.textures.swap_remove(i);
+                if self.ctx.texture_is_valid(texture) {
+                    self.ctx.destroy_texture(texture);
+                }
+            }
+            None => console::error_once(
+                "[rswebgl-scene] destroyTexture: not a texture loaded by this scene; ignored",
+            ),
+        }
+    }
+
+    /// Sets one of a material's maps (`baseColorTexture`,
+    /// `metallicRoughnessTexture`, `normalTexture`, `occlusionTexture`,
+    /// `emissiveTexture` — glTF names) to `texture` (any texture of this
+    /// context: `loadTexture`'s, or your own), or removes it with `0`.
+    /// Every mesh drawn with the material sees it; adding or removing a map
+    /// switches their shader variant. Colors (baseColor, emissive) want an
+    /// sRGB texture, the rest linear. Throws for an unknown material or map.
+    #[wasm_bindgen(js_name = setMaterialTexture)]
+    pub fn set_material_texture(
+        &mut self,
+        material: ParamGroupId,
+        map: &str,
+        texture: TextureId,
+        #[wasm_bindgen(unchecked_param_type = "MaterialTextureOptions | undefined")] opts: JsValue,
+    ) -> Result<(), Error> {
+        let slot = MAP_NAMES
+            .iter()
+            .position(|&n| n == map)
+            .ok_or_else(|| Error::from(format!("setMaterialTexture: no map \"{map}\"")))?;
+        let uv = options::u32_or(&opts, "texCoord", 0)?;
+        if uv > 1 {
+            return Err("setMaterialTexture: texCoord must be 0 or 1".into());
+        }
+        let record = self
+            .materials
+            .get_mut(&material)
+            .ok_or("setMaterialTexture: not a material of this scene")?;
+        let index = if texture.is_null() {
+            -1
+        } else {
+            EXTERNAL_TEXTURE
+        };
+        record.material.set_map(slot, index, uv);
+        record.maps[slot] = texture;
+        let uniform = MAP_UNIFORMS[slot];
+        self.ctx
+            .param_set_texture_by_name(material, uniform, texture);
+        // The texture's own sampling parameters (`loadTexture`'s wrap / filter).
+        self.ctx
+            .param_set_sampler_by_name(material, uniform, SamplerId::NULL);
+        if slot == 0 {
+            self.ctx.param_set_ints_by_name(
+                material,
+                "u_has_base_color_tex",
+                &[!texture.is_null() as i32],
+            );
+        }
+        self.update_variants_of(material);
+        Ok(())
+    }
+
+    /// The texture of one of a material's maps (names as for
+    /// `setMaterialTexture`), or `0` for none.
+    #[wasm_bindgen(js_name = materialTexture)]
+    pub fn material_texture(&self, material: ParamGroupId, map: &str) -> TextureId {
+        let slot = MAP_NAMES.iter().position(|&n| n == map);
+        match (slot, self.materials.get(&material)) {
+            (Some(slot), Some(r)) => r.maps[slot],
+            _ => TextureId::NULL,
         }
     }
 
@@ -185,6 +347,12 @@ impl Scene {
         record.material.set_property(name, values)?;
         record.material.write_property(&self.ctx, material, name);
         // A factor crossing zero can change the shader variant.
+        self.update_variants_of(material);
+        Ok(())
+    }
+
+    // Every mesh drawn with `material` follows its variant.
+    fn update_variants_of(&mut self, material: ParamGroupId) {
         let users: Vec<Entity> = self
             .world
             .storage::<MeshRenderer>()
@@ -199,18 +367,24 @@ impl Scene {
         for e in users {
             self.update_variant(e);
         }
-        Ok(())
     }
 
     pub(super) fn register_materials(&mut self, model: &Model) {
         let default = default_material();
         let data = model.materials().iter().chain(std::iter::once(&default));
         for (&group, material) in model.material_groups().iter().zip(data) {
+            let maps = std::array::from_fn(|slot| {
+                material
+                    .map(slot)
+                    .and_then(|(t, _)| usize::try_from(t).ok())
+                    .map_or(TextureId::NULL, |t| model.texture(t))
+            });
             self.materials.insert(
                 group,
                 MaterialRecord {
                     material: material.clone(),
                     cloned: false,
+                    maps,
                 },
             );
         }

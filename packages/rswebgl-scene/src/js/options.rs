@@ -28,6 +28,25 @@ export type CameraOptions =
   | { type: "perspective"; /** radians; default π/4 */ yfov?: number; znear?: number; zfar?: number }
   | { type: "orthographic"; /** half the view height; default 1 */ ymag?: number; znear?: number; zfar?: number };
 
+/** How `loadTexture` makes a texture. */
+export interface TextureOptions {
+  /** "srgb" (default) for colors — baseColor, emissive; "linear" for data
+   *  — normal, metallic-roughness, occlusion. */
+  colorSpace?: "srgb" | "linear";
+  /** Default "repeat". */
+  wrap?: "repeat" | "clamp" | "mirror";
+  /** Build mipmaps (trilinear filtering); default true. */
+  mipmaps?: boolean;
+  /** Flip rows on upload; default false (glTF's convention). */
+  flipY?: boolean;
+}
+
+/** How `setMaterialTexture` uses a texture. */
+export interface MaterialTextureOptions {
+  /** Which TEXCOORD set the map reads: 0 (default) or 1. */
+  texCoord?: number;
+}
+
 /** What a mesh entity draws with: renderer handles, not owned by the scene. */
 export interface MeshOptions {
   program: number;
@@ -42,6 +61,10 @@ export interface MeshOptions {
 "#;
 
 fn get(obj: &JsValue, key: &str) -> Result<Option<JsValue>, Error> {
+    // Absent options: every key takes its default.
+    if obj.is_undefined() || obj.is_null() {
+        return Ok(None);
+    }
     if !obj.is_object() {
         return Err("expected an options object".into());
     }
@@ -108,4 +131,13 @@ pub(crate) fn numbers(v: &JsValue) -> Option<Vec<f32>> {
     (0..len)
         .map(|i| Reflect::get_u32(v, i).ok()?.as_f64().map(|x| x as f32))
         .collect()
+}
+
+pub(crate) fn string_or(obj: &JsValue, key: &str, default: &str) -> Result<String, Error> {
+    match get(obj, key)? {
+        None => Ok(default.to_string()),
+        Some(v) => v
+            .as_string()
+            .ok_or_else(|| format!("\"{key}\" must be a string").into()),
+    }
 }

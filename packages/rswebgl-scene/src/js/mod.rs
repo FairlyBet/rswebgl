@@ -69,6 +69,8 @@ pub struct Scene {
     // Every material the scene knows (models' and clones), by group.
     materials: HashMap<ParamGroupId, MaterialRecord>,
     pbr: PbrShaders,
+    // Textures `loadTexture` made: freed with the scene.
+    textures: Vec<rswebgl::ids::TextureId>,
     // The canvas pass `renderFrame` reuses.
     frame_pass: Pass,
     stats: RenderStats,
@@ -109,6 +111,7 @@ impl Scene {
             models: HashMap::new(),
             materials: HashMap::new(),
             pbr: PbrShaders::new(),
+            textures: Vec::new(),
             frame_pass,
             stats: RenderStats::default(),
             last_hit: None,
@@ -511,7 +514,8 @@ impl Scene {
     }
 
     /// Frees everything the scene owns: its renderer resources, the built-in
-    /// shaders, the models added with `addModel` and the cloned materials.
+    /// shaders, the models added with `addModel`, the cloned materials and
+    /// the textures `loadTexture` made.
     /// Handles you passed in (`setMesh`) stay yours.
     pub fn destroy(self) {
         for (g, record) in &self.materials {
@@ -521,6 +525,11 @@ impl Scene {
         }
         for model in self.models.into_values() {
             model.destroy(&self.ctx);
+        }
+        for t in self.textures {
+            if self.ctx.texture_is_valid(t) {
+                self.ctx.destroy_texture(t);
+            }
         }
         self.renderer.destroy(&self.ctx);
         self.pbr.destroy(&self.ctx);

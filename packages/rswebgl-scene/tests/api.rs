@@ -12,7 +12,7 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext as Gl};
 
 use rswebgl::context::{Context, ContextOptions};
 use rswebgl::draw::{DrawCommand, DrawMode};
-use rswebgl::ids::{ParamGroupId, VertexArrayId};
+use rswebgl::ids::{ParamGroupId, TextureId, VertexArrayId};
 use rswebgl::render_state::RenderState;
 use rswebgl::vao_builder::{AttrKind, VaoBuilder};
 use rswebgl_ecs::Entity;
@@ -410,4 +410,144 @@ async fn scene_shaders_and_options() {
     assert_eq!(m[12], -1.0);
     assert_eq!(s.scene.world_position(band), [-1.0, 0.0, 0.0]);
     s.scene.destroy();
+}
+
+// A 1×1 RGBA PNG of one color (stored deflate).
+fn png(rgba: [u8; 4]) -> Vec<u8> {
+    fn crc32(data: &[u8]) -> u32 {
+        let mut c = 0xffff_ffffu32;
+        for &b in data {
+            c ^= b as u32;
+            for _ in 0..8 {
+                c = if c & 1 != 0 {
+                    0xedb8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
+            }
+        }
+        !c
+    }
+    fn chunk(out: &mut Vec<u8>, kind: &[u8], data: &[u8]) {
+        out.extend((data.len() as u32).to_be_bytes());
+        let start = out.len();
+        out.extend(kind);
+        out.extend(data);
+        let crc = crc32(&out[start..]);
+        out.extend(crc.to_be_bytes());
+    }
+    let raw = [0, rgba[0], rgba[1], rgba[2], rgba[3]];
+    let (mut a, mut b) = (1u32, 0u32);
+    for &x in &raw {
+        a = (a + x as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    let mut zlib = vec![0x78, 0x01, 1, raw.len() as u8, 0, !(raw.len() as u8), 0xff];
+    zlib.extend(raw);
+    zlib.extend(((b << 16) | a).to_be_bytes());
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunk(&mut out, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    chunk(&mut out, b"IDAT", &zlib);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+fn png_url(rgba: [u8; 4]) -> String {
+    format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png(rgba))
+    )
+}
+
+async fn await_texture(p: js_sys::Promise) -> Result<TextureId, JsValue> {
+    wasm_bindgen_futures::JsFuture::from(p)
+        .await
+        .map(|v| TextureId::from_raw(v.as_f64().unwrap() as u32))
+}
+
+#[wasm_bindgen_test]
+async fn material_textures_from_js() {
+    let mut s = setup().await;
+    s.frame();
+    let stone = s.scene.find_material(s.root, "Stone");
+    let variants = s.scene.shader_variant_count();
+
+    // A red base color map on white Stone: both stones turn red.
+    let p = s
+        .scene
+        .load_texture(&png_url([255, 0, 0, 255]), json(r#"{ "mipmaps": false }"#))
+        .unwrap();
+    let red = await_texture(p).await.expect("loaded");
+    s.scene
+        .set_material_texture(stone, "baseColorTexture", red, JsValue::UNDEFINED)
+        .unwrap();
+    assert_eq!(s.frame(), [YELLOW, RED, RED]);
+    assert_eq!(s.scene.material_texture(stone, "baseColorTexture"), red);
+    assert_eq!(
+        s.scene.shader_variant_count(),
+        variants + 1,
+        "a map: a variant"
+    );
+
+    // A clone keeps the map; changing the clone's leaves the original.
+    let blue = await_texture(
+        s.scene
+            .load_texture(&png_url([0, 0, 255, 255]), JsValue::UNDEFINED)
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    let copy = s.scene.clone_material(stone).unwrap();
+    assert_eq!(s.scene.material_texture(copy, "baseColorTexture"), red);
+    s.scene
+        .set_material_texture(copy, "baseColorTexture", blue, JsValue::UNDEFINED)
+        .unwrap();
+    s.scene
+        .set_material(s.scene.find_by_name(s.root, "stone_b"), copy);
+    assert_eq!(s.frame(), [YELLOW, RED, BLUE]);
+
+    // Removing a map goes back to the factor (and the variant without it).
+    s.scene
+        .set_material_texture(
+            stone,
+            "baseColorTexture",
+            TextureId::NULL,
+            JsValue::UNDEFINED,
+        )
+        .unwrap();
+    assert_eq!(s.frame(), [YELLOW, WHITE, BLUE]);
+    assert_eq!(
+        s.scene.material_texture(stone, "baseColorTexture"),
+        TextureId::NULL
+    );
+
+    // Errors: unknown map, bad options, an image that doesn't load.
+    assert!(
+        s.scene
+            .set_material_texture(stone, "nope", red, JsValue::UNDEFINED)
+            .is_err()
+    );
+    assert!(
+        s.scene
+            .set_material_texture(stone, "normalTexture", red, json(r#"{ "texCoord": 2 }"#))
+            .is_err()
+    );
+    assert!(
+        s.scene
+            .load_texture("x.png", json(r#"{ "wrap": "tile" }"#))
+            .is_err()
+    );
+    let bad = s
+        .scene
+        .load_texture("data:image/png;base64,AAAA", JsValue::UNDEFINED)
+        .unwrap();
+    assert!(await_texture(bad).await.is_err(), "rejects");
+
+    s.scene.destroy_texture(blue);
+    assert!(!s.ctx.texture_is_valid(blue));
+    s.scene.destroy();
+    assert!(
+        !s.ctx.texture_is_valid(red),
+        "the scene's textures go with it"
+    );
 }
