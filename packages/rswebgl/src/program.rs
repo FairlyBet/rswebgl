@@ -173,10 +173,19 @@ fn reflect(gl: &Gl, raw: &WebGlProgram) -> Reflection {
                 words += w;
             }
             Some(GlUniform::Sampler) => {
+                // Left unbound (an array, or no unit left): parked on the
+                // last unit, nameless so nothing binds it, instead of GL's
+                // default 0 — two sampler types on one unit fail every draw.
+                let parked = ReflSampler {
+                    name: "".into(),
+                    unit: limits::max_combined_texture_units().saturating_sub(1),
+                    loc: loc.clone(),
+                };
                 if info.size() > 1 {
                     console::warn_once(&format!(
                         "[rswebgl] sampler arrays aren't supported yet: \"{name}\""
                     ));
+                    samplers.push(parked);
                     continue;
                 }
                 let unit = samplers.len() as u32;
@@ -185,6 +194,7 @@ fn reflect(gl: &Gl, raw: &WebGlProgram) -> Reflection {
                         "[rswebgl] sampler \"{name}\": all {} texture units are in use",
                         limits::max_combined_texture_units()
                     ));
+                    samplers.push(parked);
                     continue;
                 }
                 samplers.push(ReflSampler {
@@ -584,7 +594,12 @@ impl ProgramObj {
             .uniforms
             .iter()
             .map(|u| u.name.to_string())
-            .chain(r.samplers.iter().map(|s| s.name.to_string()))
+            .chain(
+                r.samplers
+                    .iter()
+                    .filter(|s| !s.name.is_empty())
+                    .map(|s| s.name.to_string()),
+            )
             .collect();
         names.sort();
         names

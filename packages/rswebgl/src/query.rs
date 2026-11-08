@@ -51,7 +51,7 @@ impl QueryKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum QueryState {
+pub(crate) enum QueryState {
     // Never run.
     Unused,
     Pending,
@@ -248,7 +248,7 @@ impl Context {
 
 impl Context {
     // The query's state (polled) and run number.
-    fn poll_query(&self, q: QueryId) -> Option<(QueryState, u32)> {
+    pub(crate) fn poll_query(&self, q: QueryId) -> Option<(QueryState, u32)> {
         let mut res = self.res();
         if res.queries.get(q.0).is_none() {
             stale("query", "query_result", q);

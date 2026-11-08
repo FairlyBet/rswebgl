@@ -311,6 +311,12 @@ pub struct RenderState {
 
 #[wasm_bindgen]
 impl RenderState {
+    /// Whether some color attachment has its own blend or mask
+    /// (`set_target_blend`).
+    pub(crate) fn has_target_overrides(&self) -> bool {
+        !self.targets.is_empty()
+    }
+
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self::default()

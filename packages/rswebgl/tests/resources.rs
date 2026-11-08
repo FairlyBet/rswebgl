@@ -216,3 +216,39 @@ fn mipmaps_only_for_formats_that_can_have_them() {
     assert!(errors[0].contains("no storage"), "{errors:?}");
     assert_eq!(gl_error, WebGl2RenderingContext::NO_ERROR);
 }
+
+// A 2D array's layers don't bound its mip levels (a 3D texture's depth
+// does): a 64×64 array of 512 layers takes 7 levels, not 10.
+#[wasm_bindgen_test]
+fn array_mip_levels_follow_width_and_height_only() {
+    let f = fixture();
+    let make = |levels: i32| {
+        let t = f
+            .ctx
+            .create_texture(
+                TextureTarget::Texture2DArray,
+                TextureMinFilter::Nearest,
+                TextureMagFilter::Nearest,
+            )
+            .unwrap();
+        let errors = capture_console("error", || {
+            f.ctx
+                .texture_storage_3d(t, levels, &TextureFormat::rgba8(), 64, 64, 512)
+        });
+        (t, errors)
+    };
+    let (ok, errors) = make(7);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(f.gl.get_error(), WebGl2RenderingContext::NO_ERROR);
+    let (_, errors) = make(10);
+    assert!(
+        errors.iter().any(|e| e.contains("mip levels")),
+        "{errors:?}"
+    );
+    assert_eq!(
+        f.gl.get_error(),
+        WebGl2RenderingContext::NO_ERROR,
+        "rejected before GL"
+    );
+    f.ctx.destroy_texture(ok);
+}

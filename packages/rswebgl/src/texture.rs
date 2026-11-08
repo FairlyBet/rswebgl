@@ -330,6 +330,15 @@ impl TextureObj {
     // Checks a texStorage request against the implementation limits for this
     // target (`depth` is 1 for 2D / cube). Reports and returns false if it
     // can't be allocated, so the caller skips the GL call.
+    // Mip levels a size allows: a 3D texture's depth halves with the rest;
+    // an array's layer count doesn't.
+    fn max_levels(&self, width: i32, height: i32, depth: i32) -> i32 {
+        match self.target {
+            TextureTarget::Texture3D => mip_levels(width.max(depth), height),
+            _ => mip_levels(width, height),
+        }
+    }
+
     fn storage_fits(&self, levels: i32, width: i32, height: i32, depth: i32) -> bool {
         let (max_wh, max_d, what) = match self.target {
             TextureTarget::Texture2D => (limits::max_texture_size(), 1, "MAX_TEXTURE_SIZE"),
@@ -356,11 +365,11 @@ impl TextureObj {
             Some(format!(
                 "size {width}x{height}x{depth} exceeds {what} ({max_wh}x{max_wh}x{max_d})"
             ))
-        } else if levels < 1 || levels > mip_levels(width.max(depth), height) {
+        } else if levels < 1 || levels > self.max_levels(width, height, depth) {
             Some(format!(
                 "{levels} mip levels is out of range for {width}x{height}x{depth} \
                  (1..={})",
-                mip_levels(width.max(depth), height)
+                self.max_levels(width, height, depth)
             ))
         } else {
             None

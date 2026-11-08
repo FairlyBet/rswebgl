@@ -25,6 +25,9 @@ struct Slot {
     query: QueryId,
     // Attached to a pass and not yet collected.
     awaiting: bool,
+    // The query's run count when attached: a result counts only if a pass
+    // ran it since (one never rendered still holds its old result).
+    run: u32,
 }
 
 struct Timer {
@@ -75,15 +78,32 @@ impl GpuProfiler {
 
     /// Collects the results that have arrived. Call once a frame.
     pub fn update(&mut self) {
+        if self.generation != self.ctx.generation() {
+            // Restored after a loss: the old queries went with it.
+            self.timers.clear();
+            self.generation = self.ctx.generation();
+            self.available = self.ctx.can_time_gpu();
+            return;
+        }
         let ctx = &self.ctx;
         for timer in &mut self.timers {
             for slot in &mut timer.slots {
-                if !slot.awaiting || ctx.query_pending(slot.query) {
+                if !slot.awaiting {
+                    continue;
+                }
+                let Some((state, run)) = ctx.poll_query(slot.query) else {
+                    slot.awaiting = false;
+                    continue;
+                };
+                if state == crate::query::QueryState::Pending {
                     continue;
                 }
                 slot.awaiting = false;
+                if run == slot.run {
+                    continue; // attached but never rendered: an old result
+                }
                 // None: disturbed (disjoint) — dropped.
-                if let Some(ns) = ctx.query_result(slot.query) {
+                if let crate::query::QueryState::Ready(ns) = state {
                     let ms = ns / 1.0e6;
                     timer.last = ms;
                     timer.average = Some(match timer.average {
@@ -153,6 +173,7 @@ impl GpuProfiler {
         // reuse: free slots only.
         if let Some(slot) = timer.slots.iter_mut().find(|s| !s.awaiting) {
             slot.awaiting = true;
+            slot.run = self.ctx.poll_query(slot.query).map_or(0, |(_, r)| r);
             return Some(slot.query);
         }
         if timer.slots.len() >= RING_MAX {
@@ -162,6 +183,7 @@ impl GpuProfiler {
         timer.slots.push(Slot {
             query,
             awaiting: true,
+            run: 0,
         });
         Some(query)
     }

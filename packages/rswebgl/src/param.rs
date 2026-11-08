@@ -180,11 +180,12 @@ impl ParamLayoutObj {
 
     fn field_name(&self, field: ParamField) -> &str {
         let (kind, i) = decode(field);
-        match kind {
-            KIND_PLAIN => &self.plain[i].name,
-            KIND_TEXTURE => &self.textures[i],
-            _ => &self.blocks[i],
-        }
+        let name = match kind {
+            KIND_PLAIN => self.plain.get(i).map(|p| &*p.name),
+            KIND_TEXTURE => self.textures.get(i).map(|t| &**t),
+            _ => self.blocks.get(i).map(|b| &**b),
+        };
+        name.unwrap_or("")
     }
 }
 

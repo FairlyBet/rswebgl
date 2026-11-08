@@ -88,6 +88,16 @@ attached. Left:
   `simulate_context_restore`, used by `tests/context_loss.rs` and the cube
   example (press L).
 
+## From the review (deferred)
+
+- `remap_group_handles` repoints textures and samplers after a reload, not
+  uniform buffers: a group holding an app's own UBO needs it set again after a
+  restore (the scene recreates its own).
+- Auto-resize sizes from the CSS box × devicePixelRatio when the observer
+  fires: a DPR change alone (zoom, moving the window to another screen)
+  doesn't fire it, and a browser-clamped drawing buffer isn't noticed.
+- `bind_read_source` (readback) rebinds READ_FRAMEBUFFER behind the cache.
+
 ## Context loss
 
 Handled (`src/context_loss.rs`): a loss clears the resource pools (every handle

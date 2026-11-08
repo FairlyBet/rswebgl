@@ -40,6 +40,13 @@ pub(crate) fn blit(
         Gl::BACK
     });
     gl.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, dst);
+    // blitFramebuffer obeys the scissor test: a draw's leftover scissor
+    // would clip the copy. Off for it, back as it was (the state cache
+    // stays right).
+    let scissored = gl.is_enabled(Gl::SCISSOR_TEST);
+    if scissored {
+        gl.disable(Gl::SCISSOR_TEST);
+    }
     gl.blit_framebuffer(
         s.x,
         s.y,
@@ -52,6 +59,22 @@ pub(crate) fn blit(
         mask,
         filter,
     );
+    if scissored {
+        gl.enable(Gl::SCISSOR_TEST);
+    }
+}
+
+/// Whether the canvas's drawing buffer is multisampled (antialias): a blit
+/// can't write into it then (GL ES 3.0: DRAW with SAMPLE_BUFFERS > 0).
+pub(crate) fn canvas_multisampled(gl: &Gl) -> bool {
+    let attrs = js_sys::Reflect::get(gl.as_ref(), &"getContextAttributes".into())
+        .ok()
+        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+        .and_then(|f| f.call0(gl.as_ref()).ok());
+    attrs
+        .and_then(|a| js_sys::Reflect::get(&a, &"antialias".into()).ok())
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 #[wasm_bindgen]
@@ -104,6 +127,32 @@ impl Context {
         {
             return console::error(&format!(
                 "[rswebgl] {OP}: source has no color attachment 0; ignored"
+            ));
+        }
+        let samples = |fb: FramebufferId| {
+            res.framebuffers
+                .get(fb.0)
+                .and_then(|f| f.color_format(&res, 0))
+                .map_or(0, |(_, n)| n)
+        };
+        if !dst.is_null() && samples(dst) > 0 {
+            return console::error(&format!(
+                "[rswebgl] {OP}: the destination is multisampled (only reading from one \
+                 resolves); ignored"
+            ));
+        }
+        if dst.is_null() && canvas_multisampled(gl) {
+            return console::error(&format!(
+                "[rswebgl] {OP}: the canvas is multisampled (ContextOptions.antialias), \
+                 a blit can't write into it; ignored"
+            ));
+        }
+        if !src.is_null()
+            && samples(src) > 0
+            && (src_rect.width != dst_rect.width || src_rect.height != dst_rect.height)
+        {
+            return console::error(&format!(
+                "[rswebgl] {OP}: a multisampled source copies 1:1 only (no scaling); ignored"
             ));
         }
         self.gl_state().forget_target();

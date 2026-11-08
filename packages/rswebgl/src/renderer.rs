@@ -204,7 +204,13 @@ fn run_pass(
     // put them back. If the state is unknown, open all and let the next draw
     // apply its state in full.
     if pass.clear != ClearMask::none() {
-        let cur = st.render_state.and_then(|id| render_states.get(id.0));
+        // A state with per-target overrides (blend, color masks) counts as
+        // unknown: the clear opens everything and the next draw re-applies it
+        // whole (a global colorMask would undo its per-target masks).
+        let cur = st
+            .render_state
+            .and_then(|id| render_states.get(id.0))
+            .filter(|rs| !rs.has_target_overrides());
         let opened = open_for_clear(gl, pass.clear, cur);
         match target {
             Some(f) => f.clear(gl, pass.clear, st.reverse_z),
@@ -347,6 +353,11 @@ fn run_pass(
         };
         match dst_obj {
             Err(()) => stale("framebuffer", "render (resolve target)", dst),
+            Ok(None) if copy::canvas_multisampled(gl) => console::error_once(
+                "[rswebgl] resolve into the canvas: it is multisampled itself \
+                 (ContextOptions.antialias = true), a blit can't write into it; \
+                 create the context with antialias off; skipped",
+            ),
             Ok(d) if size(d) != size(target) => console::error_once(&format!(
                 "[rswebgl] resolve: target is {:?} but the resolve target is {:?}; \
                  sizes must match, skipped",
@@ -637,6 +648,11 @@ fn apply_group(
         };
         let tex = group.textures[i];
         if tex.is_null() {
+            // Unset: sample nothing rather than whatever an earlier draw left
+            // on this unit (perhaps a texture the target is drawing into).
+            if bindings.unbind_unit(gl, unit) {
+                stats.textures += 1;
+            }
             continue;
         }
         match textures.get(tex.0) {
@@ -782,6 +798,28 @@ impl GlBindings {
             self.units.resize(idx + 1, TextureId::NULL);
         }
         self.units[idx] = id;
+        true
+    }
+
+    // Binds nothing to every target of `unit`; true if it did anything.
+    fn unbind_unit(&mut self, gl: &WebGl2RenderingContext, unit: u32) -> bool {
+        let idx = unit as usize;
+        if self.units.get(idx).is_none_or(|t| t.is_null()) {
+            return false;
+        }
+        if self.active_unit != Some(unit) {
+            gl.active_texture(WebGl2RenderingContext::TEXTURE0 + unit);
+            self.active_unit = Some(unit);
+        }
+        for target in [
+            WebGl2RenderingContext::TEXTURE_2D,
+            WebGl2RenderingContext::TEXTURE_CUBE_MAP,
+            WebGl2RenderingContext::TEXTURE_2D_ARRAY,
+            WebGl2RenderingContext::TEXTURE_3D,
+        ] {
+            gl.bind_texture(target, None);
+        }
+        self.units[idx] = TextureId::NULL;
         true
     }
 
