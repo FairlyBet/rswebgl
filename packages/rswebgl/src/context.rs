@@ -237,6 +237,8 @@ pub(crate) struct Core {
     // Reverse-Z (`Context::set_reverse_z`): kept here to re-apply after a
     // restore, copied into the renderer's state each `render`.
     pub(crate) reverse_z: Cell<bool>,
+    // The one timer async reads, queries and shader links poll on.
+    pub(crate) poller: Rc<crate::poller::Poller>,
 }
 
 impl Drop for Core {
@@ -428,8 +430,9 @@ impl Context {
 }
 
 impl Context {
-    // `enable_extension` without the console line; true if available.
-    pub(crate) fn enable_extension_quietly(&self, ext: Extension) -> bool {
+    /// `enable_extension` without the console line (for libraries enabling
+    /// what they can use); true if available.
+    pub fn enable_extension_quietly(&self, ext: Extension) -> bool {
         if self.is_extension_enabled(ext.clone()) {
             return true;
         }
@@ -463,6 +466,7 @@ impl Context {
             epoch: Cell::new(0),
             counted_lost: Cell::new(false),
             reverse_z: Cell::new(false),
+            poller: Rc::default(),
         });
         context_loss::install(&core);
         let ctx = Context { core };

@@ -237,3 +237,39 @@ async fn sleep_ms(ms: i32) {
     });
     wasm_bindgen_futures::JsFuture::from(p).await.unwrap();
 }
+
+// Many reads in flight poll on one shared timer, not one each.
+#[wasm_bindgen_test]
+async fn reads_in_flight_share_one_timer() {
+    let f = fixture();
+    let red = solid_program(&f, "1.0, 0.0, 0.0, 1.0");
+    draw_middle(&f, CANVAS, red);
+    // Count setTimeout calls while the reads are pending.
+    let restore: js_sys::Function = js_sys::Function::new_no_args(
+        "const o = globalThis.setTimeout; globalThis.__timers = 0; \
+         globalThis.setTimeout = function (...a) { globalThis.__timers++; return o.apply(this, a); }; \
+         return () => { globalThis.setTimeout = o; };",
+    )
+    .call0(&wasm_bindgen::JsValue::NULL)
+    .unwrap()
+    .into();
+    const N: usize = 20;
+    let reads: js_sys::Array = (0..N)
+        .map(|_| {
+            f.ctx
+                .read_pixels_promise(CANVAS, 0, MID.0, MID.1, 1, 1, ReadFormat::Rgba8)
+        })
+        .collect();
+    let all = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::all(&reads)).await;
+    restore.call0(&wasm_bindgen::JsValue::NULL).unwrap();
+    let all: js_sys::Array = all.unwrap().into();
+    for bytes in all.iter() {
+        assert_eq!(js_sys::Uint8Array::new(&bytes).to_vec(), RED);
+    }
+    let timers = js_sys::Reflect::get(&js_sys::global(), &"__timers".into())
+        .unwrap()
+        .as_f64()
+        .unwrap() as usize;
+    assert!(timers < N, "{timers} timers for {N} reads");
+    assert_eq!(f.ctx.poll_timers_pending(), 0);
+}

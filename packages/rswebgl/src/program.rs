@@ -473,6 +473,11 @@ impl ProgramObj {
         self.mappings.len() - 1
     }
 
+    /// Drops the mapping for a freed `layout`, if any.
+    pub(crate) fn forget_mapping(&mut self, layout: ParamLayoutId) {
+        self.mappings.retain(|m| m.layout != layout);
+    }
+
     pub(crate) fn mapping_at(&self, i: usize) -> &Mapping {
         &self.mappings[i]
     }
@@ -698,4 +703,73 @@ fn create_shader(gl: &Gl, shader_type: u32, src: &str) -> Result<WebGlShader, Er
     gl.shader_source(&shader, src);
     gl.compile_shader(&shader);
     Ok(shader)
+}
+
+impl Context {
+    /// How many parameter layouts `program` holds a uniform mapping for (one
+    /// per layout drawn with, dropped when the layout is freed). Diagnostics.
+    #[doc(hidden)]
+    pub fn program_mapping_count(&self, program: ProgramId) -> usize {
+        self.res()
+            .programs
+            .get(program.0)
+            .map_or(0, |p| p.mappings.len())
+    }
+}
+
+impl Context {
+    /// Whether `program` is still linking in the background (parallel compile):
+    /// false once linked or failed, and for a stale handle or a lost context.
+    /// Polls without blocking.
+    pub fn program_link_pending(&self, program: ProgramId) -> bool {
+        let gl = self.gl();
+        if gl.is_context_lost() {
+            return false;
+        }
+        let mut res = self.res();
+        let Some(p) = res.programs.get_mut(program.0) else {
+            return false;
+        };
+        if p.ready {
+            return false;
+        }
+        let complete = gl
+            .get_program_parameter(&p.raw, COMPLETION_STATUS_KHR)
+            .as_bool()
+            .unwrap_or(false);
+        if complete {
+            p.ensure_linked(gl);
+        }
+        !p.ready
+    }
+
+    /// Resolves once none of `programs` is still linking (each linked,
+    /// failed — reported — or gone). Without `KHR_parallel_shader_compile`
+    /// that's at once. Polls on the context's shared timer.
+    pub fn programs_ready(&self, programs: Vec<ProgramId>) -> impl Future<Output = ()> + use<> {
+        let ctx = self.clone();
+        async move {
+            let mut left = programs;
+            loop {
+                left.retain(|&p| ctx.program_link_pending(p));
+                if left.is_empty() {
+                    return;
+                }
+                ctx.core.poller.tick().await;
+            }
+        }
+    }
+}
+
+#[wasm_bindgen]
+impl Context {
+    /// `programs_ready` as a Promise (resolves with `undefined`).
+    #[wasm_bindgen(js_name = programsReady)]
+    pub fn programs_ready_js(&self, programs: &[u32]) -> js_sys::Promise {
+        let ready = self.programs_ready(programs.iter().map(|&p| ProgramId::from_raw(p)).collect());
+        wasm_bindgen_futures::future_to_promise(async move {
+            ready.await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
 }

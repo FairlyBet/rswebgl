@@ -346,3 +346,39 @@ fn a_draw_with_a_destroyed_group_or_texture_is_skipped() {
     assert_eq!(read_quads(&f.gl)[2], BLACK);
     assert_eq!(f.ctx.frame_stats().skipped, 1);
 }
+
+// A program keeps a mapping per layout it was drawn with; freeing the layout
+// drops it — whether the layout or its last group goes first.
+#[wasm_bindgen_test]
+fn freed_layouts_leave_no_mappings() {
+    let f = fixture();
+    let program = f.ctx.create_program(VERT, COLOR_FRAG).unwrap();
+    let draw_with = |g: ParamGroupId| {
+        let mut batch = Batch::new(program, f.ctx.render_state(&RenderState::new()));
+        batch.set_group(1, g);
+        draw_quad(&mut batch, &f, 0);
+        render(&f, vec![batch]);
+    };
+    let base = {
+        let layout = color_layout(&f);
+        let g = color_group(&f, layout, RED);
+        draw_with(g);
+        let n = f.ctx.program_mapping_count(program);
+        // Layout first: kept alive by the group, freed with it.
+        f.ctx.destroy_param_layout(layout);
+        assert_eq!(f.ctx.program_mapping_count(program), n);
+        f.ctx.destroy_param_group(g);
+        assert_eq!(f.ctx.program_mapping_count(program), n - 1);
+        n - 1
+    };
+    for _ in 0..5 {
+        let layout = color_layout(&f);
+        let g = color_group(&f, layout, GREEN);
+        draw_with(g);
+        assert_eq!(f.ctx.program_mapping_count(program), base + 1);
+        // Group first, then the layout.
+        f.ctx.destroy_param_group(g);
+        f.ctx.destroy_param_layout(layout);
+    }
+    assert_eq!(f.ctx.program_mapping_count(program), base);
+}

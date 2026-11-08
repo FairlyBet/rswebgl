@@ -1013,9 +1013,10 @@ impl Context {
     /// an image larger than the GPU allows isn't uploaded (reported, `(0, 0)`).
     /// Pixels upload as stored — no flip unless `flip_y`, no premultiplying,
     /// no browser color-space conversion (glTF's convention). `on_load` always
-    /// comes exactly once, never before this returns. The image is requested
-    /// with `crossOrigin = "anonymous"` so the result is CORS-clean and usable
-    /// as a texture.
+    /// comes exactly once, never before this returns. The image is fetched in
+    /// CORS mode (like `crossOrigin = "anonymous"`) and decoded off the main
+    /// thread with `createImageBitmap` where there is one (an `<img>`
+    /// otherwise), so the result is CORS-clean and usable as a texture.
     #[wasm_bindgen(js_name = textureLoadImage)]
     pub fn texture_load_image(
         &self,
@@ -1026,6 +1027,19 @@ impl Context {
         flip_y: bool,
         on_load: js_sys::Function,
     ) {
+        if let Some(decode) = bitmap_decoder() {
+            let source = BitmapSource::Url(url.to_string());
+            self.load_bitmap(
+                tex,
+                decode,
+                source,
+                format.clone(),
+                generate_mipmaps,
+                flip_y,
+                on_load,
+            );
+            return;
+        }
         let img = match HtmlImageElement::new() {
             Ok(img) => img,
             Err(_) => {
@@ -1083,6 +1097,19 @@ impl Context {
                 return;
             }
         };
+        if let Some(decode) = bitmap_decoder() {
+            let source = BitmapSource::Blob(blob);
+            self.load_bitmap(
+                tex,
+                decode,
+                source,
+                format.clone(),
+                generate_mipmaps,
+                flip_y,
+                on_load,
+            );
+            return;
+        }
         let url = match Url::create_object_url_with_blob(&blob) {
             Ok(u) => u,
             Err(e) => {
@@ -1249,6 +1276,11 @@ impl Context {
 
     #[wasm_bindgen(js_name = textureGenerateMipmaps)]
     pub fn texture_generate_mipmaps(&self, tex: TextureId) {
+        let internal = self.res().textures.get(tex.0).map(|t| t.internal.get());
+        if let Some(problem) = internal.and_then(|i| self.mipmap_problem(i)) {
+            console::error(&format!("[rswebgl] texture_generate_mipmaps: {problem}"));
+            return;
+        }
         self.with_texture(tex, "texture_generate_mipmaps", |gl, t, _| {
             gl.generate_mipmap(t)
         });
@@ -1256,6 +1288,177 @@ impl Context {
 }
 
 impl Context {
+    /// Why GL can't generate mipmaps for a texture of sized format
+    /// `internal`, if it can't: the format must be color-renderable and
+    /// filterable — not compressed, integer, depth, or a float format the
+    /// device can't render to (or, for 32F, filter).
+    pub(crate) fn mipmap_problem(&self, internal: u32) -> Option<String> {
+        match internal {
+            0 => Some("the texture has no storage yet".into()),
+            // R8 RG8 RGB8 RGBA8 SRGB8_ALPHA8 RGB565 RGBA4 RGB5_A1 RGB10_A2
+            0x8229 | 0x822B | 0x8051 | 0x8058 | 0x8C43 | 0x8D62 | 0x8056 | 0x8057 | 0x8059 => None,
+            _ if float_targets::float_need(internal).is_some() => {
+                if let Some(p) = self.float_target_problem(internal) {
+                    Some(p)
+                } else if float_targets::is_float32(internal) && !self.can_filter_float32() {
+                    Some(
+                        "32-bit float textures can't be filtered on this device \
+                         (OES_texture_float_linear); use a 16F format"
+                            .into(),
+                    )
+                } else {
+                    None
+                }
+            }
+            _ => Some(format!(
+                "format 0x{internal:04X} can't have mipmaps generated (compressed, integer, \
+                 depth, or not color-renderable); upload each level instead"
+            )),
+        }
+    }
+}
+
+// What a bitmap load decodes: fetched from a URL, or bytes already in hand.
+enum BitmapSource {
+    Url(String),
+    Blob(Blob),
+}
+
+// `createImageBitmap` on this global (window or worker), if there is one.
+fn bitmap_decoder() -> Option<js_sys::Function> {
+    js_sys::Reflect::get(&js_sys::global(), &"createImageBitmap".into())
+        .ok()
+        .and_then(|f| f.dyn_into().ok())
+}
+
+// Awaits `promise`-returning `f.call(this, args…)`.
+async fn call_async(
+    this: &JsValue,
+    f: &js_sys::Function,
+    args: &js_sys::Array,
+) -> Result<JsValue, JsValue> {
+    let promise: js_sys::Promise = f.apply(this, args)?.dyn_into()?;
+    wasm_bindgen_futures::JsFuture::from(promise).await
+}
+
+// Fetches `url` (CORS, like an `<img crossOrigin="anonymous">`) as a Blob.
+async fn fetch_blob(url: &str) -> Result<JsValue, JsValue> {
+    let global = js_sys::global();
+    let fetch: js_sys::Function = js_sys::Reflect::get(&global, &"fetch".into())?.dyn_into()?;
+    let opts = js_sys::Object::new();
+    js_sys::Reflect::set(&opts, &"mode".into(), &"cors".into())?;
+    let response = call_async(&global, &fetch, &js_sys::Array::of2(&url.into(), &opts)).await?;
+    let ok = js_sys::Reflect::get(&response, &"ok".into())?.is_truthy();
+    if !ok {
+        let status = js_sys::Reflect::get(&response, &"status".into())?;
+        return Err(format!("HTTP {}", status.as_f64().unwrap_or(0.0)).into());
+    }
+    let blob: js_sys::Function = js_sys::Reflect::get(&response, &"blob".into())?.dyn_into()?;
+    call_async(&response, &blob, &js_sys::Array::new()).await
+}
+
+// Decodes `blob` off the main thread, as stored: no premultiplying, no
+// color-space conversion (WebGL ignores its unpack flags for bitmaps, so
+// these and the flip are decode options).
+async fn decode_bitmap(
+    decode: &js_sys::Function,
+    blob: &JsValue,
+    flip_y: bool,
+) -> Result<ImageBitmap, JsValue> {
+    let opts = js_sys::Object::new();
+    js_sys::Reflect::set(&opts, &"premultiplyAlpha".into(), &"none".into())?;
+    js_sys::Reflect::set(&opts, &"colorSpaceConversion".into(), &"none".into())?;
+    let orientation = if flip_y { "flipY" } else { "from-image" };
+    js_sys::Reflect::set(&opts, &"imageOrientation".into(), &orientation.into())?;
+    let args = js_sys::Array::of2(blob, &opts);
+    call_async(&js_sys::global(), decode, &args)
+        .await?
+        .dyn_into()
+}
+
+impl Context {
+    /// `texture_load_image` / `texture_load_bytes` through `createImageBitmap`:
+    /// the decode runs off the main thread (an `<img>` decodes on it, at first
+    /// upload), and works in workers too. Same contract as the image path.
+    #[allow(clippy::too_many_arguments)]
+    fn load_bitmap(
+        &self,
+        tex: TextureId,
+        decode: js_sys::Function,
+        source: BitmapSource,
+        format: TextureFormat,
+        generate_mipmaps: bool,
+        flip_y: bool,
+        on_load: js_sys::Function,
+    ) {
+        let ctx = self.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let (what, blob) = match source {
+                BitmapSource::Url(url) => {
+                    let blob = fetch_blob(&url).await;
+                    (url, blob)
+                }
+                BitmapSource::Blob(blob) => ("in-memory image".to_string(), Ok(blob.into())),
+            };
+            let bitmap = match blob {
+                Ok(blob) => decode_bitmap(&decode, &blob, flip_y).await,
+                Err(e) => Err(e),
+            };
+            let (w, h) = match bitmap {
+                // Destroyed (or lost) meanwhile: nothing to fill or report.
+                Ok(bitmap) if !ctx.texture_is_valid(tex) => {
+                    bitmap.close();
+                    (0, 0)
+                }
+                Ok(bitmap) => {
+                    let size = ctx.fill_from_bitmap(tex, &bitmap, &format, generate_mipmaps);
+                    bitmap.close();
+                    size
+                }
+                Err(_) if !ctx.texture_is_valid(tex) => (0, 0),
+                Err(e) => {
+                    let why = e.as_string().unwrap_or_else(|| format!("{e:?}"));
+                    console::error(&format!("[rswebgl] image failed to load: {what} ({why})"));
+                    (0, 0)
+                }
+            };
+            let _ = on_load.call2(&JsValue::NULL, &(w as f64).into(), &(h as f64).into());
+        });
+    }
+
+    // Sizes storage to `bitmap`, fills level 0 and the mipmaps; the size, or
+    // (0, 0) when it can't be allocated (already reported).
+    fn fill_from_bitmap(
+        &self,
+        tex: TextureId,
+        bitmap: &ImageBitmap,
+        format: &TextureFormat,
+        generate_mipmaps: bool,
+    ) -> (i32, i32) {
+        let (w, h) = (bitmap.width() as i32, bitmap.height() as i32);
+        let levels = if generate_mipmaps {
+            mip_levels(w, h)
+        } else {
+            1
+        };
+        if w == 0 || h == 0 || !self.allocate_2d(tex, levels, format, w, h) {
+            return (0, 0);
+        }
+        self.texture_sub_image_2d_from_bitmap(
+            tex,
+            0,
+            0,
+            0,
+            bitmap,
+            format,
+            &PixelUnpack::default(),
+        );
+        if generate_mipmaps {
+            self.texture_generate_mipmaps(tex);
+        }
+        (w, h)
+    }
+
     /// Shared decode machinery for `texture_load_image`/`texture_load_bytes`.
     /// One closure handles both `onload` and `onerror`: on success it sizes
     /// immutable storage to the image, fills level 0, optionally builds mipmaps;

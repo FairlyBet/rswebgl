@@ -44,6 +44,7 @@ pub mod limits;
 pub mod param;
 pub mod pass;
 pub mod pixel_unpack;
+mod poller;
 pub mod program;
 pub mod query;
 pub mod readback;

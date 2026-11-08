@@ -36,7 +36,9 @@ buffers, renderbuffer size and samples. Left:
 The registry (`src/extension.rs`) knows every extension *by name* — but that's
 just `getExtension`; the user has to remember what to enable and why. Only
 `KHR_parallel_shader_compile` is wired into logic (Program's `parallel` flag →
-`COMPLETION_STATUS_KHR` in `is_ready`). These deserve the same first-class
+`COMPLETION_STATUS_KHR` in `is_ready`, `program_link_pending`,
+`programs_ready`; the scene enables it and leaves meshes whose shader is
+still linking out of the frame instead of stalling — `Scene.whenReady`). These deserve the same first-class
 treatment instead of "enable it yourself":
 
 ### Float render targets — done (`src/float_targets.rs`)
@@ -174,8 +176,8 @@ FBO blit). Done. Deferred polish:
 - Pass resolve copies color attachment 0 only; MRT or depth resolves go
   through `blit_framebuffer` by hand. `invalidateSubFramebuffer` and
   `copyTexSubImage3D` (into a layer of an array / 3D texture) aren't done.
-- Async reads poll their fence on a 1 ms timer. Polling once per frame from
-  `render` would save timer wake-ups if many reads are in flight.
+- Async reads, queries and parallel shader links poll on one shared timer
+  per context (`poller.rs`), not one each.
 
 ## JS API
 
@@ -252,25 +254,18 @@ FBO blit). Done. Deferred polish:
 
 Fixed in the review commits; these were found and left for later:
 
-- `ProgramObj::mappings` gets an entry per parameter layout ever drawn with
-  and is searched linearly per draw; never pruned. Shared PBR programs grow
-  with every `addModel` / despawn cycle (each model has its own layout).
-  Prune when a layout is freed, or key by layout with lazy eviction.
 - Error-path leaks reachable only on a lost context or a full pool:
   `Baker::new` / `run`, `Environment::constant`, `SceneRenderer::new` after
   their first allocation; a partially built `Model` when `load_model` fails
   late. Parameter layouts / groups are CPU-only and survive a loss.
-- Every pending async read / query polls on its own 1 ms timer (clamped to
-  ~4 ms); many in flight → many timers. One poller per context.
 - `SceneRenderer::release_removed` misses a removal when the app clears the
   world's trackers before rendering and adds one mesh as it removes another
   (the `Scene` order is right; affects Rust users driving the world).
-- `texture_generate_mipmaps` doesn't check the format can have mipmaps
-  generated (compressed, or float without the extension → GL error, black
-  with a mipmap filter).
 - `decode_data_uri` doesn't percent-decode non-base64 data URIs.
-- Images decode through `HtmlImageElement`; `createImageBitmap` with
-  `premultiplyAlpha: "none"` / `colorSpaceConversion: "none"` would decode
-  off the main thread and avoid a premultiply round trip on low alpha.
+- Image loads decode with `createImageBitmap` (off the main thread, no
+  premultiply / color conversion, flip as a decode option); browsers whose
+  `createImageBitmap` ignores those options (old Safari / Firefox) would
+  premultiply or convert. No detection beyond "is there a
+  `createImageBitmap`" (else an `<img>`).
 - Timer queries: disjoint handling is now context-wide but untested by
   pixels (headless Chrome never reports a disjoint).

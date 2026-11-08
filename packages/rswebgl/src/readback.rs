@@ -15,11 +15,9 @@
 // kinds, all with 4-byte components — so pack alignment never comes into it.
 
 use std::future::Future;
-use std::time::Duration;
 
 use js_sys::{ArrayBuffer, Float32Array, Int32Array, Uint8Array, Uint32Array};
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::JsFuture;
 use web_sys::{WebGl2RenderingContext as Gl, WebGlBuffer, WebGlSync};
 
 use crate::buffer::BufferKind;
@@ -362,7 +360,7 @@ impl PendingRead {
             match gl.client_wait_sync_with_u32(&self.sync, 0, 0) {
                 Gl::ALREADY_SIGNALED | Gl::CONDITION_SATISFIED => break,
                 Gl::WAIT_FAILED => return Err("read: waiting on the fence failed".into()),
-                _ => sleep(Duration::from_millis(1)).await,
+                _ => self.ctx.core.poller.tick().await,
             }
         }
         let mut out = vec![0u8; self.len];
@@ -381,27 +379,6 @@ impl Drop for PendingRead {
             gl.delete_buffer(Some(&self.buffer));
         }
     }
-}
-
-// Yields to the event loop for about `d`. A timer rather than
-// requestAnimationFrame: it keeps polling in background tabs and workers,
-// and the wait is usually a frame or two.
-pub(crate) async fn sleep(d: Duration) {
-    let p = js_sys::Promise::new(&mut |resolve, _| {
-        let global = js_sys::global();
-        let set_timeout = js_sys::Reflect::get(&global, &"setTimeout".into())
-            .ok()
-            .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
-        match set_timeout {
-            Some(f) => {
-                let _ = f.call2(&global, &resolve, &(d.as_millis() as f64).into());
-            }
-            None => {
-                let _ = resolve.call0(&JsValue::NULL);
-            }
-        }
-    });
-    let _ = JsFuture::from(p).await;
 }
 
 // ---------------------------------------------------------------------------

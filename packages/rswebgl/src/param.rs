@@ -215,7 +215,17 @@ impl ParamGroupObj {
 // Releases a group's use of its layout (deleting a layout destroyed meanwhile
 // is a no-op beyond dropping it: layouts hold no GL objects).
 fn release_layout(res: &mut Resources, layout: ParamLayoutId) {
-    let _ = res.param_layouts.release(layout.0);
+    if res.param_layouts.release(layout.0).is_some() {
+        forget_layout(res, layout);
+    }
+}
+
+// A freed layout's mappings are dropped from every program: they'd never match
+// again (handles are generational) but would grow each program's list forever.
+fn forget_layout(res: &mut Resources, layout: ParamLayoutId) {
+    for program in res.programs.values_mut() {
+        program.forget_mapping(layout);
+    }
 }
 
 impl Context {
@@ -316,9 +326,11 @@ impl Context {
     /// destroyed; no new groups can be created from it.
     #[wasm_bindgen(js_name = destroyParamLayout)]
     pub fn destroy_param_layout(&self, layout: ParamLayoutId) {
-        let destroyed = self.res().param_layouts.destroy(layout.0);
-        if let Destroyed::Invalid = destroyed {
-            stale("param layout", "destroy_param_layout", layout);
+        let mut res = self.res();
+        match res.param_layouts.destroy(layout.0) {
+            Destroyed::Now(_) => forget_layout(&mut res, layout),
+            Destroyed::Deferred => {}
+            Destroyed::Invalid => stale("param layout", "destroy_param_layout", layout),
         }
     }
 

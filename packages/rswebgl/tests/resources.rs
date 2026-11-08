@@ -166,3 +166,53 @@ fn destroyed_program_in_a_built_pass_is_skipped() {
     );
     assert_eq!(read_quads(&f.gl), [BLACK, BLACK, RED]);
 }
+
+// Mipmap generation is refused, with a reason, for formats GL can't generate
+// them for — instead of a GL error and a texture that samples black.
+#[wasm_bindgen_test]
+fn mipmaps_only_for_formats_that_can_have_them() {
+    let f = fixture();
+    let make = |format: &TextureFormat| {
+        let t = f
+            .ctx
+            .create_texture(
+                TextureTarget::Texture2D,
+                TextureMinFilter::Nearest,
+                TextureMagFilter::Nearest,
+            )
+            .unwrap();
+        f.ctx.texture_storage_2d(t, 2, format, 2, 2);
+        t
+    };
+    let generate = |t: TextureId| {
+        let errors = capture_console("error", || f.ctx.texture_generate_mipmaps(t));
+        (errors, f.gl.get_error())
+    };
+    while f.gl.get_error() != WebGl2RenderingContext::NO_ERROR {}
+
+    let (errors, gl_error) = generate(make(&TextureFormat::rgba8()));
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(gl_error, WebGl2RenderingContext::NO_ERROR);
+
+    let rgba8ui = TextureFormat {
+        internal: 0x8D7C, // RGBA8UI (i32)
+        format: 0x8D99,   // RGBA_INTEGER
+        data_type: WebGl2RenderingContext::UNSIGNED_BYTE,
+    };
+    let (errors, gl_error) = generate(make(&rgba8ui));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("can't have mipmaps"), "{errors:?}");
+    assert_eq!(gl_error, WebGl2RenderingContext::NO_ERROR);
+
+    let unallocated = f
+        .ctx
+        .create_texture(
+            TextureTarget::Texture2D,
+            TextureMinFilter::Nearest,
+            TextureMagFilter::Nearest,
+        )
+        .unwrap();
+    let (errors, gl_error) = generate(unallocated);
+    assert!(errors[0].contains("no storage"), "{errors:?}");
+    assert_eq!(gl_error, WebGl2RenderingContext::NO_ERROR);
+}

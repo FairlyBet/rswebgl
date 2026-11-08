@@ -12,8 +12,6 @@
 // timer whose measurement the GPU disturbed (`GPU_DISJOINT_EXT`: a power-state
 // change, another app) has no result.
 
-use std::time::Duration;
-
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext as Gl, WebGlQuery};
 
@@ -24,7 +22,6 @@ use crate::context::{Context, stale};
 use crate::error::Error;
 use crate::extension::Extension;
 use crate::ids::QueryId;
-use crate::readback::sleep;
 
 const GPU_DISJOINT_EXT: u32 = 0x8FBB;
 
@@ -295,7 +292,7 @@ impl Context {
                         return Err("query: the GPU timer was disturbed (disjoint)".into());
                     }
                     QueryState::Ready(v) => return Ok(v),
-                    QueryState::Pending => sleep(Duration::from_millis(1)).await,
+                    QueryState::Pending => ctx.core.poller.tick().await,
                 }
             }
         }
