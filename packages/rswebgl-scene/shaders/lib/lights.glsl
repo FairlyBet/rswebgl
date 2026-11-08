@@ -17,7 +17,8 @@ layout(std140) uniform Lighting {
                         //   0: it leaves linear radiance (HDR target);
                         // y tone mapper (tone_map modes), z 1 with a
                         // scene copy for transmission, w its last mip
-    vec4 u_shading;     // x specular antialiasing variance, y its threshold
+    vec4 u_shading;     // x specular antialiasing variance, y its threshold,
+                        // z depth-peeling mode, w 1 under reverse-Z
 };
 
 // Direction from a surface point toward light `light` (unnormalized for

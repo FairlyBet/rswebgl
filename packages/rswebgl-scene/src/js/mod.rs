@@ -107,6 +107,9 @@ pub struct Scene {
     frame_pass: Pass,
     // Its second pass with HDR output: what draws after the opaque scene.
     late_pass: Pass,
+    // Transmissive meshes when depth-peeled (`setTransmissionLayers`).
+    glass_pass: Pass,
+    transmission_layers: usize,
     stats: RenderStats,
     // PBR variant switches waiting for the new program to link: the mesh
     // keeps drawing with its old one meanwhile.
@@ -166,6 +169,8 @@ impl Scene {
             dither: true,
             frame_pass,
             late_pass: Pass::to_default(),
+            glass_pass: Pass::to_default(),
+            transmission_layers: 0,
             stats: RenderStats::default(),
             pending_variants: Vec::new(),
         })
@@ -550,15 +555,26 @@ impl Scene {
             // them to see through; then transmissive and transparent meshes.
             self.renderer
                 .set_scene_color(&self.ctx, self.hdr.as_ref().and_then(|o| o.scene_color()));
-            let drawn = self.render_passes(camera, &mut pass, Some(&mut late));
+            let mut glass = std::mem::replace(&mut self.glass_pass, Pass::to_default());
+            glass.clear_draws();
+            let peeling = self.transmission_layers > 0;
+            let drawn = self.render_passes(
+                camera,
+                &mut pass,
+                Some(&mut late),
+                peeling.then_some(&mut glass),
+            );
             pass.sort();
             self.time(&mut pass, "opaque");
             self.ctx.render(&pass);
-            if self.stats.transmissive > 0
+            if glass.draw_count() > 0 {
+                self.peel_glass(&mut glass, &mut late);
+            } else if self.stats.transmissive > 0
                 && let Some(out) = &self.hdr
             {
                 out.grab(&self.ctx);
             }
+            self.glass_pass = glass;
             late.sort();
             self.time(&mut late, "late");
             self.ctx.render(&late);
@@ -592,7 +608,7 @@ impl Scene {
     /// the next `render` call: each call rewrites the scene's instance data
     /// (the matrices its batched draws read).
     pub fn render(&mut self, camera: Entity, pass: &mut Pass) -> usize {
-        self.render_passes(camera, pass, None)
+        self.render_passes(camera, pass, None, None)
     }
 
     /// Reverse-Z on or off (`EXT_clip_control`): depth precision spread
@@ -688,6 +704,71 @@ impl Scene {
             }
         }
         out
+    }
+
+    /// Transmissive layers seen through each other (depth peeling, with HDR
+    /// output): 0 (the default) shows glass behind glass as the opaque scene
+    /// behind it, cheaply; 2–4 peels that many layers, each refracting the
+    /// ones behind it, for a geometry pass and a scene copy per layer. Deeper
+    /// layers than that aren't drawn; peeled glass isn't multisampled.
+    #[wasm_bindgen(js_name = setTransmissionLayers)]
+    pub fn set_transmission_layers(&mut self, layers: u32) {
+        self.transmission_layers = layers.min(4) as usize;
+    }
+
+    #[wasm_bindgen(js_name = transmissionLayers)]
+    pub fn transmission_layers(&self) -> u32 {
+        self.transmission_layers as u32
+    }
+
+    // Depth peeling (Everitt 2001), after the opaque pass: peel the
+    // transmissive surfaces front to back into layer depths, shade the
+    // layers back to front into the resolved scene — each refracting a copy
+    // of everything behind it — and point `late` (transparent meshes) at
+    // the result with the nearest layer's depth.
+    fn peel_glass(&mut self, glass: &mut Pass, late: &mut Pass) {
+        let layers = self.transmission_layers;
+        let Some(out) = self.hdr.as_mut() else {
+            return;
+        };
+        if let Err(e) = out.ensure_peel(&self.ctx, layers) {
+            console::error_once(&format!("[rswebgl-scene] depth peeling: {e}"));
+            return;
+        }
+        out.keep_opaque_depth(&self.ctx);
+        glass.sort();
+        glass.set_clear(&rswebgl::framebuffer::ClearMask::none());
+        glass.clear_resolve();
+        glass.set_invalidate(&rswebgl::framebuffer::InvalidateMask::none());
+        let out = self.hdr.as_ref().expect("checked");
+        // Front to back: layer k is the nearest surface beyond layer k − 1.
+        for k in 0..layers {
+            let Some((fb, previous)) = out.peel_layer(&self.ctx, k) else {
+                return;
+            };
+            self.renderer
+                .set_peel(&self.ctx, if k == 0 { 0 } else { 1 }, previous);
+            glass.set_target(fb);
+            self.ctx.render(glass);
+        }
+        // Back to front, each over a copy of what is behind it.
+        let Some((glass_fb, transparent_fb)) = out.peel_color_targets() else {
+            return;
+        };
+        for k in (0..layers).rev() {
+            out.grab(&self.ctx);
+            self.renderer.set_peel(&self.ctx, 2, out.layer_depth(k));
+            glass.set_target(glass_fb);
+            if let Some(p) = &mut self.profiler {
+                p.time(glass, "glass");
+            }
+            self.ctx.render(glass);
+        }
+        self.renderer
+            .set_peel(&self.ctx, 0, rswebgl::ids::TextureId::NULL);
+        late.set_target(transparent_fb);
+        late.clear_resolve();
+        late.set_invalidate(&rswebgl::framebuffer::InvalidateMask::none());
     }
 
     // Times `pass` under `label` when profiling.
@@ -834,7 +915,13 @@ impl Scene {
 impl Scene {
     // A frame's draws: into `pass`, or with transmissive and transparent
     // meshes into `late`.
-    fn render_passes(&mut self, camera: Entity, pass: &mut Pass, late: Option<&mut Pass>) -> usize {
+    fn render_passes(
+        &mut self,
+        camera: Entity,
+        pass: &mut Pass,
+        late: Option<&mut Pass>,
+        glass: Option<&mut Pass>,
+    ) -> usize {
         if !self.sync_context() {
             return 0; // lost: nothing to draw with
         }
@@ -844,7 +931,7 @@ impl Scene {
         self.transforms.update(&mut self.world);
         self.stats = self
             .renderer
-            .render_split(&self.world, &self.ctx, camera, pass, late);
+            .render_split(&self.world, &self.ctx, camera, pass, late, glass);
         self.world.clear_trackers();
         self.stats.drawn
     }

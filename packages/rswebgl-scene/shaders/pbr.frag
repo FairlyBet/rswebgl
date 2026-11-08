@@ -282,6 +282,7 @@ ShadingFrame shading_frame() {
 }
 
 void main() {
+    peel_discard();
     vec4 base = base_color();
 #ifdef ALPHAMODE_MASK
     if (base.a < u_alpha_cutoff) discard;

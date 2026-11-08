@@ -44,8 +44,18 @@ fn context() -> (Context, Gl) {
     (ctx, gl)
 }
 
+// Split by shading model: each half stays well inside the runner's timeout.
 #[wasm_bindgen_test]
-fn every_feature_compiles_and_links() {
+fn every_openpbr_feature_compiles_and_links() {
+    every_feature_compiles_and_links(ShadingModel::OpenPbr);
+}
+
+#[wasm_bindgen_test]
+fn every_gltf_feature_compiles_and_links() {
+    every_feature_compiles_and_links(ShadingModel::Gltf);
+}
+
+fn every_feature_compiles_and_links(model: ShadingModel) {
     let (ctx, _) = context();
     let mut shaders = PbrShaders::new();
     // Bits (see pbr.rs): 0..5 attributes, 5..7 alpha, 7 unlit, 8..12
@@ -73,11 +83,17 @@ fn every_feature_compiles_and_links() {
         attrs | deform,
         attrs | maps | layers | deform | 1 << 56,
     ]);
-    for model in [ShadingModel::OpenPbr, ShadingModel::Gltf] {
+    {
         shaders.set_model(model);
-        for &bits in &keys {
-            let key = PbrKey::from_bits(bits).fit_texture_units();
-            let p = shaders.program(&ctx, key).expect("program");
+        // All first (they compile in parallel), then each checked.
+        let programs: Vec<_> = keys
+            .iter()
+            .map(|&bits| {
+                let key = PbrKey::from_bits(bits).fit_texture_units();
+                (bits, key, shaders.program(&ctx, key).expect("program"))
+            })
+            .collect();
+        for (bits, key, p) in programs {
             // Waits for the link; then validity is known.
             ctx.program_active_uniform_names(p);
             assert!(

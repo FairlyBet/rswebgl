@@ -327,6 +327,8 @@ $("resolution").addEventListener("change", () => {
 });
 // Variance; the threshold follows it from Filament's 0.2 up to 0.5.
 slider("spec-aa", (v) => v.toFixed(2), (v) => scene.setSpecularAntialiasing(v, Math.max(0.2, Math.min(0.5, v))));
+// Glass behind glass: depth-peeled transmission layers.
+$("glass-layers").addEventListener("change", () => scene.setTransmissionLayers(Number($("glass-layers").value)));
 $("dither").addEventListener("change", () => scene.setDither($("dither").checked));
 $("reverse-z").addEventListener("change", () => {
   $("reverse-z").checked = scene.setReverseZ($("reverse-z").checked);

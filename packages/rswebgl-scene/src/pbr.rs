@@ -83,8 +83,8 @@ const FEATURES: [(u64, &str); 16] = [
 // The layer a map belongs to (0: always used): an extension's maps only
 // count while its layer is on, so a texture without its factor costs nothing.
 // Samplers every scene shader binds: environment diffuse, specular, the BRDF
-// table, the scene copy.
-const FRAME_SAMPLERS: u32 = 4;
+// table, the scene copy, the peeled depth.
+const FRAME_SAMPLERS: u32 = 5;
 
 // Maps left out first when a variant would need more texture units than
 // the device has: the subtlest effects first, the base color last.

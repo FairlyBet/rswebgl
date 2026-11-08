@@ -32,6 +32,22 @@ vec3 scene_reflection(vec3 r, float roughness) {
 // last mip). Needs frame.glsl.
 uniform sampler2D u_scene_color;
 
+// Depth peeling (the frame sets it; u_shading.z the mode, w 1 under
+// reverse-Z): mode 1 keeps only what lies beyond the layer in u_peel_depth
+// (peeling the next one), mode 2 only what lies on it (shading that layer).
+uniform highp sampler2D u_peel_depth;
+
+void peel_discard() {
+    float mode = u_shading.z;
+    if (mode < 0.5) return;
+    float layer = texelFetch(u_peel_depth, ivec2(gl_FragCoord.xy), 0).r;
+    // > 0: farther than the layer. Depth textures are 24-bit without
+    // reverse-Z: a step there is 2^-24.
+    float beyond = u_shading.w > 0.5 ? layer - gl_FragCoord.z : gl_FragCoord.z - layer;
+    const float EPS = 4e-7;
+    if (mode < 1.5 ? beyond <= EPS : abs(beyond) > EPS) discard;
+}
+
 bool scene_color_available() {
     return u_output.z > 0.5;
 }

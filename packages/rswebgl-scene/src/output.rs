@@ -91,6 +91,36 @@ pub struct HdrOutput {
     f_dither: ParamField,
     state: StateId,
     generation: u32,
+    // Depth peeling's targets, made on first use (`peel`).
+    peel: Option<PeelTargets>,
+}
+
+/// Depth peeling (Everitt 2001): the opaque scene's depth, single-sampled,
+/// then per layer a depth texture holding the k-th nearest transmissive
+/// surface (or the opaque one where there is none). Transmissive layers are
+/// shaded back to front into the resolved color, each seeing everything
+/// behind it; transparent meshes then draw over the nearest layer.
+struct PeelTargets {
+    layers: Vec<(TextureId, FramebufferId)>,
+    opaque_depth: TextureId,
+    opaque_fb: FramebufferId,
+    // The resolved color alone (layers shade into it), and with the
+    // nearest layer's depth (transparent meshes test against it).
+    glass_fb: FramebufferId,
+    transparent_fb: FramebufferId,
+}
+
+impl PeelTargets {
+    fn free(self, ctx: &Context) {
+        for (t, fb) in self.layers {
+            ctx.destroy_framebuffer(fb);
+            ctx.destroy_texture(t);
+        }
+        for fb in [self.opaque_fb, self.glass_fb, self.transparent_fb] {
+            ctx.destroy_framebuffer(fb);
+        }
+        ctx.destroy_texture(self.opaque_depth);
+    }
 }
 
 impl HdrOutput {
@@ -140,6 +170,7 @@ impl HdrOutput {
             f_dither: ctx.param_field(layout, "u_dither")?,
             state: ctx.render_state(&state),
             generation: ctx.generation(),
+            peel: None,
         })
     }
 
@@ -241,6 +272,107 @@ impl HdrOutput {
             TextureMagFilter::Linear,
         );
         ctx.texture_generate_mipmaps(self.grab);
+    }
+
+    // The depth format of the target (what depth blits copy between).
+    fn depth_format(&self) -> TextureFormat {
+        if self.reverse_z {
+            TextureFormat::depth32f()
+        } else {
+            TextureFormat::depth24()
+        }
+    }
+
+    /// Makes (or keeps) `layers` peeling targets at the current size.
+    pub fn ensure_peel(&mut self, ctx: &Context, layers: usize) -> Result<(), Error> {
+        if self.peel.as_ref().is_some_and(|p| p.layers.len() == layers) {
+            return Ok(());
+        }
+        if let Some(peel) = self.peel.take() {
+            peel.free(ctx);
+        }
+        let (w, h) = self.size;
+        let format = self.depth_format();
+        let depth = |ctx: &Context| -> Result<(TextureId, FramebufferId), Error> {
+            let t = ctx.create_texture(
+                TextureTarget::Texture2D,
+                TextureMinFilter::Nearest,
+                TextureMagFilter::Nearest,
+            )?;
+            ctx.texture_storage_2d(t, 1, &format, w, h);
+            let fb = ctx.create_framebuffer(w, h)?;
+            ctx.framebuffer_attach_depth_texture(fb, t, 0);
+            Ok((t, fb))
+        };
+        let (opaque_depth, opaque_fb) = depth(ctx)?;
+        let mut layers = Vec::with_capacity(layers);
+        for _ in 0..layers.capacity() {
+            layers.push(depth(ctx)?);
+        }
+        let glass_fb = ctx.create_framebuffer(w, h)?;
+        ctx.framebuffer_attach_color_texture_2d(glass_fb, 0, self.color, 0);
+        let transparent_fb = ctx.create_framebuffer(w, h)?;
+        ctx.framebuffer_attach_color_texture_2d(transparent_fb, 0, self.color, 0);
+        ctx.framebuffer_attach_depth_texture(transparent_fb, layers[0].0, 0);
+        self.peel = Some(PeelTargets {
+            layers,
+            opaque_depth,
+            opaque_fb,
+            glass_fb,
+            transparent_fb,
+        });
+        Ok(())
+    }
+
+    /// Copies the opaque pass's depth (resolved from the multisampled
+    /// target) for peeling. After the opaque pass, before `peel_layer`.
+    pub fn keep_opaque_depth(&self, ctx: &Context) {
+        if let Some(p) = &self.peel {
+            let (w, h) = self.size;
+            let r = Viewport::new(0, 0, w, h);
+            ctx.blit_framebuffer(
+                self.fb,
+                &r,
+                p.opaque_fb,
+                &r,
+                &ClearMask::depth(),
+                TextureMagFilter::Nearest,
+            );
+        }
+    }
+
+    /// Readies layer `k`'s depth target, starting from the opaque depth,
+    /// and returns it with the previous layer's depth texture (NULL for
+    /// the first): what the peel pass discards against.
+    pub fn peel_layer(&self, ctx: &Context, k: usize) -> Option<(FramebufferId, TextureId)> {
+        let p = self.peel.as_ref()?;
+        let (_, fb) = *p.layers.get(k)?;
+        let (w, h) = self.size;
+        let r = Viewport::new(0, 0, w, h);
+        ctx.blit_framebuffer(
+            p.opaque_fb,
+            &r,
+            fb,
+            &r,
+            &ClearMask::depth(),
+            TextureMagFilter::Nearest,
+        );
+        let previous = k.checked_sub(1).map_or(TextureId::NULL, |j| p.layers[j].0);
+        Some((fb, previous))
+    }
+
+    /// Layer `k`'s depth texture (what its shading pass matches).
+    pub fn layer_depth(&self, k: usize) -> TextureId {
+        self.peel
+            .as_ref()
+            .and_then(|p| p.layers.get(k))
+            .map_or(TextureId::NULL, |l| l.0)
+    }
+
+    /// Where peeled layers shade (the resolved color, no depth), and where
+    /// transparent meshes draw after them (with the nearest layer's depth).
+    pub fn peel_color_targets(&self) -> Option<(FramebufferId, FramebufferId)> {
+        self.peel.as_ref().map(|p| (p.glass_fb, p.transparent_fb))
     }
 
     /// Draws the target to the canvas.
@@ -348,6 +480,9 @@ impl HdrOutput {
     }
 
     fn free_target(&mut self, ctx: &Context) {
+        if let Some(peel) = self.peel.take() {
+            peel.free(ctx);
+        }
         if self.fb != self.resolve_fb && !self.fb.is_null() {
             ctx.destroy_framebuffer(self.fb);
         }

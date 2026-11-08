@@ -24,7 +24,7 @@ use crate::camera::Camera;
 use crate::culling::{Bounds, Frustum};
 use crate::environment::{Environment, FULLSCREEN_VERT, brdf_lut_texture};
 use crate::gpu_pick::{GpuPicker, PickView};
-use crate::instances::{Batches, Instances, ProgramKind};
+use crate::instances::{Batches, Dest, Instances, ProgramKind};
 use crate::light::Light;
 use crate::model::{Morph, Skin};
 use crate::output::ToneMapping;
@@ -198,6 +198,8 @@ pub struct SceneRenderer {
     exposure: f32,
     // Specular antialiasing (variance, threshold).
     specular_aa: (f32, f32),
+    // Depth-peeling mode of the passes being rendered (`set_peel`).
+    peel: u32,
     // The white constant environment, used while no other is set.
     default_env: Environment,
     env: Option<Environment>,
@@ -278,6 +280,7 @@ impl SceneRenderer {
                 .texture("u_env_brdf")
                 .texture("u_scene_color")
                 .texture(INSTANCES_TEXTURE)
+                .texture("u_peel_depth")
                 .uniform("u_background_blur", UniformType::F32),
         )?;
         let frame_group = ctx.create_param_group(frame_layout)?;
@@ -300,6 +303,7 @@ impl SceneRenderer {
         ctx.param_set_texture_by_name(frame_group, "u_env_brdf", brdf_lut);
         // Until a frame grabs the scene: any valid texture (not sampled).
         ctx.param_set_texture_by_name(frame_group, "u_scene_color", brdf_lut);
+        ctx.param_set_texture_by_name(frame_group, "u_peel_depth", brdf_lut);
         let mut skybox_state = RenderState::new();
         skybox_state.depth_mask = false;
         let renderer = Self {
@@ -309,6 +313,7 @@ impl SceneRenderer {
             env_intensity: Vec3::splat(DEFAULT_ENV_INTENSITY),
             exposure: 1.0,
             specular_aa: (0.15, 0.2),
+            peel: 0,
             default_env: Environment::constant(ctx, Vec3::ONE)?,
             env: None,
             env_rotation: 0.0,
@@ -502,6 +507,29 @@ impl SceneRenderer {
         self.exposure
     }
 
+    /// Depth peeling for the passes rendered next: mode 0 off, 1 keeps
+    /// only fragments beyond the layer in `depth` (peels the next layer), 2
+    /// only those on it (shades it). Written at once (between renders of
+    /// already built passes).
+    pub fn set_peel(&mut self, ctx: &Context, mode: u32, depth: TextureId) {
+        self.peel = mode;
+        let reverse = if ctx.reverse_z() { 1.0 } else { 0.0 };
+        let (v, t) = self.specular_aa;
+        ctx.ubo_set_vec4(self.lighting_ubo, "u_shading", v, t, mode as f32, reverse);
+        if let Some(cached) = self.lighting.last_mut() {
+            *cached = Vec4::new(v, t, mode as f32, reverse);
+        }
+        // Off: back to a texture that lives as long as the renderer (a layer's
+        // goes with its target, and a destroyed one would leave whatever
+        // that unit last held bound).
+        let depth = if depth.is_null() {
+            self.brdf_lut
+        } else {
+            depth
+        };
+        ctx.param_set_texture_by_name(self.frame_group, "u_peel_depth", depth);
+    }
+
     /// Geometric specular antialiasing (Kaplanyan, Tokuyoshi): where the
     /// normal turns within a pixel, roughness grows by up to `threshold` (in
     /// α²), `variance` scaling how fast. Higher calms the sparkle of sharp
@@ -528,7 +556,7 @@ impl SceneRenderer {
         camera: Entity,
         pass: &mut Pass,
     ) -> RenderStats {
-        self.render_split(world, ctx, camera, pass, None)
+        self.render_split(world, ctx, camera, pass, None, None)
     }
 
     /// `render`, with transmissive and transparent meshes into `late`: drawn
@@ -541,6 +569,7 @@ impl SceneRenderer {
         camera: Entity,
         opaque: &mut Pass,
         mut late: Option<&mut Pass>,
+        mut glass: Option<&mut Pass>,
     ) -> RenderStats {
         self.stats = RenderStats::default();
         self.release_removed(world, ctx);
@@ -594,13 +623,19 @@ impl SceneRenderer {
             if mesh.transmissive {
                 self.stats.transmissive += 1;
             }
-            let to_late = late.is_some() && (mesh.transparent || mesh.transmissive);
+            let dest = if glass.is_some() && mesh.transmissive && !mesh.transparent {
+                Dest::Glass
+            } else if late.is_some() && (mesh.transparent || mesh.transmissive) {
+                Dest::Late
+            } else {
+                Dest::Opaque
+            };
             let kind = self.program_kind(ctx, mesh.program);
             // Opaque meshes of a shader that reads its instance draw
             // together: one instanced draw per program, state, vertex array,
             // material and command.
             if kind == ProgramKind::Batched && !mesh.transparent {
-                self.batches.add(to_late, mesh, &m);
+                self.batches.add(dest, mesh, &m);
                 continue;
             }
 
@@ -618,8 +653,9 @@ impl SceneRenderer {
             groups[FRAME_SLOT] = self.frame_group;
             groups[MATERIAL_SLOT] = mesh.material;
             groups[OBJECT_SLOT] = group;
-            let pass: &mut Pass = match &mut late {
-                Some(late) if to_late => late,
+            let pass: &mut Pass = match (dest, &mut late, &mut glass) {
+                (Dest::Glass, _, Some(glass)) => glass,
+                (Dest::Late, Some(late), _) => late,
                 _ => &mut *opaque,
             };
             if mesh.transparent {
@@ -661,8 +697,9 @@ impl SceneRenderer {
             groups[OBJECT_SLOT] = group;
             let mut command = batch.mesh.command;
             command.instance_count = batch.matrices.len() as i32;
-            let pass: &mut Pass = match &mut late {
-                Some(late) if batch.late => late,
+            let pass: &mut Pass = match (batch.dest, &mut late, &mut glass) {
+                (Dest::Glass, _, Some(glass)) => glass,
+                (Dest::Late, Some(late), _) => late,
                 _ => &mut *opaque,
             };
             let mesh = &batch.mesh;
@@ -852,7 +889,13 @@ impl SceneRenderer {
             if self.scene_color.is_some() { 1.0 } else { 0.0 },
             self.scene_color.map_or(0.0, |(_, mip)| mip as f32),
         ));
-        data.push(Vec4::new(self.specular_aa.0, self.specular_aa.1, 0.0, 0.0));
+        let reverse = if ctx.reverse_z() { 1.0 } else { 0.0 };
+        data.push(Vec4::new(
+            self.specular_aa.0,
+            self.specular_aa.1,
+            self.peel as f32,
+            reverse,
+        ));
         if data == self.lighting {
             return;
         }

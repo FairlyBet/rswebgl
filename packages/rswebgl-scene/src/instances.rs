@@ -36,13 +36,23 @@ pub(crate) enum ProgramKind {
 /// Meshes with the same program, state, vertex array, material and command,
 /// gathered over a frame.
 pub(crate) struct Batch {
-    /// Into the late pass (transmissive).
-    pub late: bool,
+    /// Which pass: `Dest`.
+    pub dest: Dest,
     pub mesh: MeshRenderer,
     pub matrices: Vec<Mat4>,
 }
 
-type BatchKey = (bool, ProgramId, u32, u32, u32);
+/// The pass a draw goes into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Dest {
+    Opaque,
+    /// After the opaque scene: transparent, or transmissive without peeling.
+    Late,
+    /// Transmissive, depth-peeled.
+    Glass,
+}
+
+type BatchKey = (Dest, ProgramId, u32, u32, u32);
 
 /// This frame's batches; their allocations are kept across frames.
 #[derive(Default)]
@@ -54,9 +64,9 @@ pub(crate) struct Batches {
 }
 
 impl Batches {
-    pub fn add(&mut self, late: bool, mesh: &MeshRenderer, m: &Mat4) {
+    pub fn add(&mut self, dest: Dest, mesh: &MeshRenderer, m: &Mat4) {
         let key = (
-            late,
+            dest,
             mesh.program,
             mesh.state.to_raw(),
             mesh.vao.to_raw(),
@@ -71,13 +81,13 @@ impl Batches {
         }
         let i = self.used;
         if let Some(b) = self.list.get_mut(i) {
-            b.late = late;
+            b.dest = dest;
             b.mesh = *mesh;
             b.matrices.clear();
             b.matrices.push(*m);
         } else {
             self.list.push(Batch {
-                late,
+                dest,
                 mesh: *mesh,
                 matrices: vec![*m],
             });

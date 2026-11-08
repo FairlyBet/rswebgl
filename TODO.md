@@ -262,8 +262,11 @@ FBO blit). Done. Deferred polish:
   maps, reported). The coat's normal map goes through the base's tangent
   frame (fine unless its UV set is oriented differently). Transmission sees a half-size copy of the
   opaque scene (HDR output) — one layer: glass behind glass shows the
-  environment's / the opaque scene, not the other glass (depth peeling,
-  2–4 layers, is the planned upgrade; dual peeling needs EXT_float_blend).
+  environment's / the opaque scene, not the other glass — unless depth
+  peeling is on (`setTransmissionLayers(2..4)`: layers peeled front to
+  back, shaded back to front over a copy of what is behind each; peeled
+  glass isn't multisampled, deeper layers aren't drawn; dual peeling would
+  halve the geometry passes but needs EXT_float_blend).
   One refraction (entry) for volumes; no internal reflections — a dedicated
   gem shader (ray-marching the stone's own geometry) is the jewelry-grade
   follow-up. glTF sheen's image-based light uses the GGX-prefiltered map at
