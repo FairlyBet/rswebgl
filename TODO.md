@@ -136,7 +136,8 @@ texture) into VAOs/textures/draw-list with spec-correct render state. Deferred:
   `KHR_texture_transform` isn't applied. Extension textures (clearcoat, sheen,
   transmission, …) aren't read yet (E5c).
 - **KTX2/Basis, Draco, meshopt** compression — needs decoders; not wired.
-- **Sparse accessors** — not handled (rare).
+- **Sparse accessors** — read through the `gltf` crate (with or without a
+  base view), tested by reading the uploaded buffer back.
 - **Materials → shaders** live in `rswebgl-scene` (`PbrShaders`, E5a): the
   loader fills material groups (factors + all five maps with their samplers);
   the scene picks a shader variant per primitive and material. Missing:
@@ -208,13 +209,17 @@ FBO blit). Done. Deferred polish:
   rotation) aren't read — such nodes are drawn once, with a warning.
 - Vertex attributes are dequantized to f32 on upload; keeping normalized
   u8/u16 (`KHR_mesh_quantization`) would cut memory on mobile.
-- Not handled yet: skins, morph targets, animations, cameras, lights — scene
-  concerns, for the ECS.
+- Not handled yet: skins, morph targets, animations. Cameras and
+  `KHR_lights_punctual` lights become `Camera` / `Light` entities
+  (`Scene.cameras` / `lights`); a glTF camera's aspect yields to the canvas.
 
 ## Scene (`packages/rswebgl-scene`)
 
-- World-space AABBs are recomputed for culling every frame; cache them per
-  `WorldMatrix` change if culling shows up in profiles (thousands of objects).
+- World-space AABBs are recomputed for culling every frame. Measured (native,
+  release): 100k entities cost 1.5 ms for box transform + frustum test, 0.8 ms
+  of it the transform a cache would save — ~0.15 ms per 10k in wasm, less
+  than the cache's own tick checks would leave. Not worth it; past ~10k
+  objects the costs are draw calls (instancing) and a flat cull loop (a BVH).
 - Many copies of one mesh → one instanced draw instead of a draw per entity.
 - Transparent draws sort per object (bounds center), not per triangle:
   intersecting or concave blended meshes can still show order errors.
@@ -227,7 +232,7 @@ FBO blit). Done. Deferred polish:
   component storage when a viewer needs bulk reads.
 - PBR (E5a): lights are capped at 8 per frame (all lights reach every draw;
   no per-object light lists); spot lights untested by pixels; no shadows.
-  `KHR_lights_punctual` lights in a glTF file aren't spawned yet.
+  A glTF file's lights count toward the 8.
 - IBL (E5b): the bake is synchronous (a few dozen draws at load: a stall of
   a frame or two on mobile); no progressive / async bake. `.hdr` only — no
   EXR, no KTX2 prebaked cubes. One environment per scene. The specular cube
@@ -281,7 +286,3 @@ Fixed in the review commits; these were found and left for later:
   `createImageBitmap`" (else an `<img>`).
 - Timer queries: disjoint handling is now context-wide but untested by
   pixels (headless Chrome never reports a disjoint).
-- `DefaultFramebuffer`'s ResizeObserver keeps calling its closure after the
-  context is dropped (seen when a page's script throws after creating one):
-  "closure invoked recursively or after being dropped". Disconnect it on
-  drop.

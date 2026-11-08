@@ -181,6 +181,52 @@ pub struct SceneNode {
     /// Local transform, column-major.
     pub matrix: [f32; 16],
     pub name: Option<String>,
+    /// The node's camera (glTF `cameras`), looking down its local −Z.
+    pub camera: Option<NodeCamera>,
+    /// The node's light (`KHR_lights_punctual`), shining down its local −Z.
+    pub light: Option<NodeLight>,
+}
+
+/// A glTF camera, as the file has it (angles in radians, lengths in meters).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NodeCamera {
+    /// `zfar` None: an infinite far plane. `aspect_ratio` is the author's
+    /// hint; a viewer usually follows its canvas instead.
+    Perspective {
+        yfov: f32,
+        aspect_ratio: Option<f32>,
+        znear: f32,
+        zfar: Option<f32>,
+    },
+    /// `xmag`, `ymag`: half the view volume's width and height.
+    Orthographic {
+        xmag: f32,
+        ymag: f32,
+        znear: f32,
+        zfar: f32,
+    },
+}
+
+/// A `KHR_lights_punctual` light. `intensity` is lux for a directional light,
+/// candela otherwise; `range` None means no cutoff.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NodeLight {
+    pub kind: NodeLightKind,
+    /// Linear RGB.
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub range: Option<f32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NodeLightKind {
+    Directional,
+    Point,
+    /// Cone angles in radians from the axis.
+    Spot {
+        inner_cone_angle: f32,
+        outer_cone_angle: f32,
+    },
 }
 
 /// A translated glTF asset: a flat draw list plus the GPU resources behind it.
@@ -610,6 +656,7 @@ mod tests {
             "KHR_materials_transmission",
             "KHR_materials_emissive_strength",
             "KHR_materials_unlit",
+            "KHR_lights_punctual",
         ];
         for name in HANDLED_EXTENSIONS.iter().chain(&crate_parsed) {
             assert!(parse(doc(name).as_bytes()).is_ok(), "{name}");

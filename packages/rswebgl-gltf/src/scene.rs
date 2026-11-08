@@ -17,7 +17,7 @@ use rswebgl::context::Context;
 
 use crate::geometry::GeometryCache;
 use crate::material::{self, Material};
-use crate::{DrawItem, SceneNode};
+use crate::{DrawItem, NodeCamera, NodeLight, NodeLightKind, SceneNode};
 
 /// Growing axis-aligned bounds in world space.
 struct Aabb {
@@ -101,6 +101,8 @@ fn walk(
         parent,
         matrix: local.to_cols_array(),
         name: node.name().map(str::to_owned),
+        camera: node.camera().map(|c| node_camera(&c)),
+        light: node.light().map(|l| node_light(&l)),
     });
 
     if let Some(mesh) = node.mesh() {
@@ -228,4 +230,43 @@ fn gpu_instances(
             })
             .collect(),
     )
+}
+
+fn node_camera(camera: &gltf::Camera) -> NodeCamera {
+    match camera.projection() {
+        gltf::camera::Projection::Perspective(p) => NodeCamera::Perspective {
+            yfov: p.yfov(),
+            aspect_ratio: p.aspect_ratio(),
+            znear: p.znear(),
+            zfar: p.zfar(),
+        },
+        gltf::camera::Projection::Orthographic(o) => NodeCamera::Orthographic {
+            xmag: o.xmag(),
+            ymag: o.ymag(),
+            znear: o.znear(),
+            zfar: o.zfar(),
+        },
+    }
+}
+
+// The crate's accessors fill the spec's defaults (intensity 1, white, cone
+// 0..π/4); validation guarantees `type` (and `spot` for spot lights).
+fn node_light(light: &gltf::khr_lights_punctual::Light) -> NodeLight {
+    use gltf::khr_lights_punctual::Kind;
+    NodeLight {
+        kind: match light.kind() {
+            Kind::Directional => NodeLightKind::Directional,
+            Kind::Point => NodeLightKind::Point,
+            Kind::Spot {
+                inner_cone_angle,
+                outer_cone_angle,
+            } => NodeLightKind::Spot {
+                inner_cone_angle,
+                outer_cone_angle,
+            },
+        },
+        color: light.color(),
+        intensity: light.intensity(),
+        range: light.range(),
+    }
 }

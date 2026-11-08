@@ -364,6 +364,27 @@ impl Scene {
         find_by_name(&self.world, root, name).unwrap_or(Entity::NULL)
     }
 
+    /// The camera entities at or under `root` — a model's glTF cameras,
+    /// parents before children. Render through one with `renderFrame(camera)`.
+    pub fn cameras(&self, root: Entity) -> Vec<u32> {
+        self.entities_with::<crate::camera::Camera>(root)
+    }
+
+    /// The light entities at or under `root` — a model's
+    /// `KHR_lights_punctual` lights, which light the scene once it is added.
+    /// Turn one off with `setVisible(e, false)` or `removeLight`.
+    pub fn lights(&self, root: Entity) -> Vec<u32> {
+        self.entities_with::<crate::light::Light>(root)
+    }
+
+    fn entities_with<C: 'static>(&self, root: Entity) -> Vec<u32> {
+        descendants(&self.world, root)
+            .into_iter()
+            .filter(|&e| self.world.get::<C>(e).is_some())
+            .map(Entity::to_raw)
+            .collect()
+    }
+
     // --- meshes ---------------------------------------------------------------
 
     /// Makes `e` draw `draw` with your own renderer handles (see

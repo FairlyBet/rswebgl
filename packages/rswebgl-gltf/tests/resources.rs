@@ -322,3 +322,58 @@ async fn a_context_lost_during_load_is_an_error() {
     let err = load.await.err().expect("an error");
     assert!(err.contains("lost"), "{err}");
 }
+
+// A sparse accessor with no bufferView: zeros underneath, three vertices
+// substituted (glTF 2.0 §3.6.2.3); the uploaded positions must be them.
+fn sparse_url() -> String {
+    let mut bin = Vec::new();
+    for i in [0u16, 1, 2, 0] {
+        bin.extend_from_slice(&i.to_le_bytes()); // sparse indices (+pad): 0..8
+    }
+    for v in [-1.0f32, -2.0, 0.0, 3.0, -2.0, 0.0, 0.0, 4.0, 0.5] {
+        bin.extend_from_slice(&v.to_le_bytes()); // sparse values: 8..44
+    }
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let json = format!(
+        r#"{{
+  "asset": {{ "version": "2.0" }},
+  "buffers": [{{ "byteLength": {len}, "uri": "data:application/octet-stream;base64,{bin}" }}],
+  "bufferViews": [
+    {{ "buffer": 0, "byteOffset": 0, "byteLength": 6 }},
+    {{ "buffer": 0, "byteOffset": 8, "byteLength": 36 }}
+  ],
+  "accessors": [
+    {{ "componentType": 5126, "count": 4, "type": "VEC3",
+       "min": [-1, -2, 0], "max": [3, 4, 0.5],
+       "sparse": {{ "count": 3,
+         "indices": {{ "bufferView": 0, "componentType": 5123 }},
+         "values": {{ "bufferView": 1 }} }} }}
+  ],
+  "meshes": [{{ "primitives": [{{ "attributes": {{ "POSITION": 0 }} }}] }}],
+  "nodes": [{{ "mesh": 0 }}],
+  "scenes": [{{ "nodes": [0] }}],
+  "scene": 0
+}}"#,
+        len = bin.len(),
+        bin = b64(&bin),
+    );
+    format!("data:model/gltf+json;base64,{}", b64(json.as_bytes()))
+}
+
+#[wasm_bindgen_test]
+async fn sparse_accessors_without_a_view_load() {
+    let ctx = context();
+    let model = load_model(&ctx, &sparse_url()).await.expect("load");
+    assert_eq!(model.draw_item_count(), 1);
+    assert_eq!(model.items()[0].draw_command().count, 4);
+    // Vertices 0..3 are the sparse values, vertex 3 the zero base.
+    let bytes = ctx.buffer_read(model.buffers()[0], 0, 48).expect("read");
+    let floats: Vec<f32> = bytes
+        .chunks(4)
+        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .collect();
+    assert_eq!(
+        floats,
+        [-1.0, -2.0, 0.0, 3.0, -2.0, 0.0, 0.0, 4.0, 0.5, 0.0, 0.0, 0.0]
+    );
+}

@@ -3,7 +3,7 @@ use glam::Mat4;
 /// How a [`Camera`] projects; depth maps to GL's `[-1, 1]` clip range.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Projection {
-    /// `fov_y` in radians.
+    /// `fov_y` in radians; `far` may be `f32::INFINITY` (no far plane).
     Perspective { fov_y: f32, near: f32, far: f32 },
     /// `half_height` of the view volume in world units; the width follows
     /// from the aspect.
@@ -72,6 +72,17 @@ impl Camera {
         // A zero or negative aspect (a 0×0 canvas) would make NaNs.
         let aspect = if self.aspect > 0.0 { self.aspect } else { 1.0 };
         match self.projection {
+            Projection::Perspective { fov_y, near, far } if far.is_infinite() => {
+                // perspective_rh_gl's limit as far → ∞ (glTF's infinite
+                // projection): z_clip = −z − 2n, w = −z.
+                let f = 1.0 / (fov_y * 0.5).tan();
+                Mat4::from_cols(
+                    glam::Vec4::new(f / aspect, 0.0, 0.0, 0.0),
+                    glam::Vec4::new(0.0, f, 0.0, 0.0),
+                    glam::Vec4::new(0.0, 0.0, -1.0, -1.0),
+                    glam::Vec4::new(0.0, 0.0, -2.0 * near, 0.0),
+                )
+            }
             Projection::Perspective { fov_y, near, far } => {
                 Mat4::perspective_rh_gl(fov_y, aspect, near, far)
             }
@@ -84,5 +95,24 @@ impl Camera {
                 Mat4::orthographic_rh_gl(-hw, hw, -half_height, half_height, near, far)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::culling::Frustum;
+    use glam::Vec3;
+
+    // The infinite projection is perspective_rh_gl's limit, and its frustum
+    // keeps everything however far.
+    #[test]
+    fn an_infinite_far_plane_is_the_limit() {
+        let inf = Camera::perspective(0.8, 1.5, 0.1, f32::INFINITY).projection_matrix();
+        let far = Camera::perspective(0.8, 1.5, 0.1, 1.0e7).projection_matrix();
+        assert!(inf.abs_diff_eq(far, 1e-5), "{inf} vs {far}");
+        let frustum = Frustum::from_view_proj(&inf);
+        assert!(frustum.intersects(Vec3::new(0.0, 0.0, -1.0e9), Vec3::ONE));
+        assert!(!frustum.intersects(Vec3::new(0.0, 0.0, 5.0), Vec3::ONE));
     }
 }

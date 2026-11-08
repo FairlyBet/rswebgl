@@ -26,6 +26,8 @@ const MODELS = [
   ["ChronographWatch", "Chronograph watch — metals, glass"],
   ["SunglassesKhronos", "Sunglasses — iridescence, transmission"],
   ["ToyCar", "Toy car — clearcoat, sheen, transmission"],
+  ["LightsPunctualLamp", "Lamp — lights from the file"],
+  ["PlaysetLightTest", "Playset — lights from the file"],
   ["CompareSheen", "Compare: sheen"],
   ["CompareClearcoat", "Compare: clearcoat"],
   ["CompareTransmission", "Compare: transmission"],
@@ -187,6 +189,7 @@ async function load(/** @type {string} */ url, /** @type {string} */ label) {
     resetView();
     setCameraLens();
     inspect(0, "");
+    listCameras();
     status(`Compiling shaders for ${label}…`);
     await scene.whenReady();
     if (ticket === loading) {
@@ -202,6 +205,16 @@ function resetView() {
   orbit.pitch = 0.25;
   orbit.distance = (orbit.radius / Math.sin(((orbit.fov / 2) * Math.PI) / 180)) * 1.15;
 }
+
+// The model's own cameras (glTF `cameras`) as alternatives to the orbit.
+const viewSelect = $("view-camera");
+function listCameras() {
+  viewSelect.length = 1;
+  scene.cameras(root).forEach((/** @type {number} */ e, /** @type {number} */ i) => {
+    viewSelect.add(new Option(scene.name(e) ?? `Camera ${i + 1}`, String(e)));
+  });
+}
+const viewCamera = () => Number(viewSelect.value) || camera;
 
 const modelSelect = $("model");
 for (const [name, label] of MODELS) modelSelect.add(new Option(label, name));
@@ -363,7 +376,7 @@ async function pickAt(/** @type {PointerEvent} */ e) {
   const rect = canvas.getBoundingClientRect();
   const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
   const y = 1 - ((e.clientY - rect.top) / rect.height) * 2;
-  const hit = await scene.pick(camera, x, y);
+  const hit = await scene.pick(viewCamera(), x, y);
   if (!hit) return inspect(0, "");
   inspect(hit.entity, scene.name(scene.parent(hit.entity)) ?? `entity ${hit.entity}`);
 }
@@ -442,7 +455,7 @@ function frame(/** @type {number} */ now) {
   resize();
   placeCamera();
   const t0 = performance.now();
-  scene.renderFrame(camera);
+  scene.renderFrame(viewCamera());
   cpuTimes.push(performance.now() - t0);
   if (cpuTimes.length > 60) cpuTimes.shift();
 
@@ -459,7 +472,7 @@ function frame(/** @type {number} */ now) {
     $("info").textContent =
       `\n${canvas.width}×${canvas.height}  ${scene.isHdr() ? "HDR" : "direct"}  ${scene.shadingModel()}\n` +
       `drawn ${scene.drawn()}  culled ${scene.culled()}  pending ${scene.pending()}\n` +
-      `variants ${scene.shaderVariantCount()}  entities ${scene.entityCount()}`;
+      `variants ${scene.shaderVariantCount()}  entities ${scene.entityCount()}  file lights ${root ? scene.lights(root).length : 0}`;
     // Frame times, 60 fps line at the middle.
     const g = graph;
     g.clearRect(0, 0, 180, 36);

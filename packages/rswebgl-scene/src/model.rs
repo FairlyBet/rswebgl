@@ -6,9 +6,11 @@ use std::collections::HashMap;
 use glam::{Mat4, Vec3};
 use rswebgl::ids::ProgramId;
 use rswebgl_ecs::{Entity, World};
-use rswebgl_gltf::{DrawItem, Model};
+use rswebgl_gltf::{DrawItem, Model, NodeCamera, NodeLight, NodeLightKind};
 
+use crate::camera::Camera;
 use crate::culling::Bounds;
+use crate::light::Light;
 use crate::render::MeshRenderer;
 use crate::transform::{Parent, Transform};
 
@@ -38,6 +40,9 @@ pub struct Name(pub String);
 ///   `EXT_mesh_gpu_instancing` transform as its `Transform` (identity
 ///   without it), and a `Primitive`. A primitive `program_for` returns None
 ///   for is left out.
+/// - a node with a glTF camera or a `KHR_lights_punctual` light also gets a
+///   `Camera` (aspect from the file, or 1; `Scene.renderFrame` follows the
+///   canvas) or a `Light`, which then lights the scene like any other.
 ///
 /// The entities refer to the model's GPU resources; the model still owns
 /// them. Move or hide parts by their node entities (`find_by_name`).
@@ -66,6 +71,12 @@ pub fn spawn_model(
         world.insert(e, Parent(parent));
         if let Some(name) = &node.name {
             world.insert(e, Name(name.clone()));
+        }
+        if let Some(camera) = &node.camera {
+            world.insert(e, camera_from(camera));
+        }
+        if let Some(light) = &node.light {
+            world.insert(e, light_from(light));
         }
         by_index.insert(node.index, e);
     }
@@ -134,4 +145,47 @@ fn is_under(world: &World, mut e: Entity, root: Entity) -> bool {
         }
     }
     false
+}
+
+// A glTF camera as a scene camera: the file's aspect until the renderer
+// sets the canvas's; a missing zfar is an infinite far plane.
+fn camera_from(camera: &NodeCamera) -> Camera {
+    match *camera {
+        NodeCamera::Perspective {
+            yfov,
+            aspect_ratio,
+            znear,
+            zfar,
+        } => Camera::perspective(
+            yfov,
+            aspect_ratio.unwrap_or(1.0),
+            znear,
+            zfar.unwrap_or(f32::INFINITY),
+        ),
+        NodeCamera::Orthographic {
+            xmag,
+            ymag,
+            znear,
+            zfar,
+        } => Camera::orthographic(ymag, xmag / ymag, znear, zfar),
+    }
+}
+
+fn light_from(light: &NodeLight) -> Light {
+    let color = Vec3::from(light.color);
+    let range = light.range.unwrap_or(0.0);
+    match light.kind {
+        NodeLightKind::Directional => Light::directional(color, light.intensity),
+        NodeLightKind::Point => Light::point(color, light.intensity, range),
+        NodeLightKind::Spot {
+            inner_cone_angle,
+            outer_cone_angle,
+        } => Light::spot(
+            color,
+            light.intensity,
+            range,
+            inner_cone_angle,
+            outer_cone_angle,
+        ),
+    }
 }
