@@ -88,6 +88,19 @@ attached. Left:
   `simulate_context_restore`, used by `tests/context_loss.rs` and the cube
   example (press L).
 
+## TAA
+
+- `setTaa(true)` (HDR output, instead of MSAA): Bevy's resolve ported
+  (`shaders/taa.frag`), Halton jitter, map LOD bias −1. Motion comes from
+  reprojecting depth through the camera's motion: exact for a moving camera;
+  animated, skinned or moved objects rely on the variance clip (some
+  softness or trails on fast ones). Next: per-object motion vectors (a
+  velocity target written by the PBR shader from this and last frame's
+  instance / joint matrices), then TAAU (render below the output size) and
+  a sharpening pass (RCAS).
+- Transparent and peeled glass draw into the history like the rest:
+  fine while still; no reactive mask yet.
+
 ## From the review (deferred)
 
 - `remap_group_handles` repoints textures and samplers after a reload, not

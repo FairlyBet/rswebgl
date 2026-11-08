@@ -101,6 +101,11 @@ pub struct Scene {
     hdr_wanted: bool,
     hdr: Option<crate::output::HdrOutput>,
     samples: i32,
+    // Temporal antialiasing: on, the frame count (jitter phase) and the
+    // last frame's unjittered view-projection and camera.
+    taa: bool,
+    taa_frame: u32,
+    taa_previous: Option<(Entity, Mat4)>,
     tone_mapping: crate::output::ToneMapping,
     dither: bool,
     // The canvas pass `renderFrame` reuses.
@@ -165,6 +170,9 @@ impl Scene {
             hdr_wanted: crate::output::HdrOutput::supported(ctx),
             hdr: None,
             samples: 4,
+            taa: false,
+            taa_frame: 0,
+            taa_previous: None,
             tone_mapping: crate::output::ToneMapping::Neutral,
             dither: true,
             frame_pass,
@@ -547,6 +555,28 @@ impl Scene {
         pass.clear_draws();
         late.clear_draws();
         let hdr = self.prepare_output(&mut pass, &mut late, w, h);
+        // TAA: this frame's subpixel offset (Bevy's Halton (2, 3) − 0.5
+        // sequence, in pixels) and a sharper LOD for the maps.
+        let taa = hdr && self.hdr.as_ref().is_some_and(|o| o.taa());
+        if taa {
+            const HALTON: [(f32, f32); 8] = [
+                (0.0, 0.0),
+                (0.0, -0.16666666),
+                (-0.25, 0.16666669),
+                (0.25, -0.3888889),
+                (-0.375, -0.055555552),
+                (0.125, 0.2777778),
+                (-0.125, -0.2777778),
+                (0.375, 0.055555582),
+            ];
+            let (jx, jy) = HALTON[self.taa_frame as usize % HALTON.len()];
+            self.taa_frame = self.taa_frame.wrapping_add(1);
+            let ndc = glam::Vec2::new(2.0 * jx / w.max(1) as f32, 2.0 * jy / h.max(1) as f32);
+            self.renderer.set_jitter(ndc, -1.0);
+        } else {
+            self.renderer.set_jitter(glam::Vec2::ZERO, 0.0);
+            self.taa_previous = None;
+        }
         if let Some(p) = &mut self.profiler {
             p.update();
         }
@@ -581,6 +611,9 @@ impl Scene {
             late.sort();
             self.time(&mut late, "late");
             self.ctx.render(&late);
+            if taa {
+                self.resolve_taa(camera);
+            }
             if let Some(out) = &self.hdr {
                 out.present(
                     &self.ctx,
@@ -779,6 +812,25 @@ impl Scene {
         late.set_target(transparent_fb);
         late.clear_resolve();
         late.set_invalidate(&rswebgl::framebuffer::InvalidateMask::none());
+    }
+
+    // TAA after the scene's passes: reprojects the history through the
+    // camera's motion since the last frame (starting over for a new camera
+    // or a first frame).
+    fn resolve_taa(&mut self, camera: Entity) {
+        let now = self.renderer.last_view_proj();
+        let Some(out) = self.hdr.as_mut() else {
+            return;
+        };
+        let reproject = match self.taa_previous {
+            Some((cam, previous)) if cam == camera => previous * now.inverse(),
+            _ => {
+                out.reset_taa();
+                Mat4::IDENTITY
+            }
+        };
+        out.taa_resolve(&self.ctx, &reproject);
+        self.taa_previous = Some((camera, now));
     }
 
     // Times `pass` under `label` when profiling.

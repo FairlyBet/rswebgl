@@ -200,6 +200,11 @@ pub struct SceneRenderer {
     specular_aa: (f32, f32),
     // Depth-peeling mode of the passes being rendered (`set_peel`).
     peel: u32,
+    // TAA: the projection's subpixel offset (NDC), the texture LOD bias, and
+    // the last frame's view-projection without the offset.
+    jitter: Vec2,
+    mip_bias: f32,
+    last_view_proj: Mat4,
     // The white constant environment, used while no other is set.
     default_env: Environment,
     env: Option<Environment>,
@@ -315,6 +320,9 @@ impl SceneRenderer {
             exposure: 1.0,
             specular_aa: (0.15, 0.2),
             peel: 0,
+            jitter: Vec2::ZERO,
+            mip_bias: 0.0,
+            last_view_proj: Mat4::IDENTITY,
             default_env: Environment::constant(ctx, Vec3::ONE)?,
             env: None,
             env_rotation: 0.0,
@@ -507,6 +515,18 @@ impl SceneRenderer {
 
     pub fn exposure(&self) -> f32 {
         self.exposure
+    }
+
+    /// TAA's subpixel offset of the next frames' projection, in NDC (0: none),
+    /// and the LOD bias of material maps.
+    pub fn set_jitter(&mut self, jitter: Vec2, mip_bias: f32) {
+        self.jitter = jitter;
+        self.mip_bias = mip_bias;
+    }
+
+    /// The view-projection of the last frame drawn, without the jitter.
+    pub fn last_view_proj(&self) -> Mat4 {
+        self.last_view_proj
     }
 
     /// Depth peeling for the passes rendered next: mode 0 off, 1 keeps
@@ -909,7 +929,8 @@ impl SceneRenderer {
                 count += 1;
             }
         }
-        data.push(self.env_intensity.extend(0.0));
+        // w: the material maps' LOD bias (TAA sharpens them back).
+        data.push(self.env_intensity.extend(self.mip_bias));
         let last_mip = (self.environment().specular_mips() - 1) as f32;
         data.push(Vec4::new(
             count as f32,
@@ -947,7 +968,7 @@ impl SceneRenderer {
             data[count * 4 + 2],
             data[count * 4 + 3],
         ];
-        ctx.ubo_set_vec4(ubo, "u_environment", env.x, env.y, env.z, 0.0);
+        ctx.ubo_set_vec4(ubo, "u_environment", env.x, env.y, env.z, env.w);
         ctx.ubo_set_vec4(ubo, "u_lighting", params.x, params.y, params.z, params.w);
         ctx.ubo_set_vec4(ubo, "u_output", output.x, output.y, output.z, output.w);
         ctx.ubo_set_vec4(ubo, "u_shading", shading.x, shading.y, shading.z, shading.w);
@@ -956,7 +977,12 @@ impl SceneRenderer {
 
     // Camera matrices into the frame block; the view and view-projection for
     // sorting and culling.
-    fn write_frame(&self, world: &World, ctx: &Context, camera: Entity) -> Option<(Mat4, Mat4)> {
+    fn write_frame(
+        &mut self,
+        world: &World,
+        ctx: &Context,
+        camera: Entity,
+    ) -> Option<(Mat4, Mat4)> {
         let (Some(cam), Some(cam_world)) = (
             world.get::<Camera>(camera),
             world.get::<WorldMatrix>(camera),
@@ -970,10 +996,23 @@ impl SceneRenderer {
         let view = cam_world.0.inverse();
         let proj = cam.projection_for(ctx.reverse_z());
         let view_proj = proj * view;
+        self.last_view_proj = view_proj;
+        // TAA's subpixel jitter: clip xy moved by jitter·w (any projection).
+        let jitter = Mat4::from_cols(
+            Vec4::X,
+            Vec4::Y,
+            Vec4::Z,
+            Vec4::new(self.jitter.x, self.jitter.y, 0.0, 1.0),
+        );
+        let drawn_proj = jitter * proj;
         let eye = cam_world.0.w_axis;
         ctx.ubo_set_mat(self.frame_ubo, "u_view", &view.to_cols_array());
-        ctx.ubo_set_mat(self.frame_ubo, "u_proj", &proj.to_cols_array());
-        ctx.ubo_set_mat(self.frame_ubo, "u_view_proj", &view_proj.to_cols_array());
+        ctx.ubo_set_mat(self.frame_ubo, "u_proj", &drawn_proj.to_cols_array());
+        ctx.ubo_set_mat(
+            self.frame_ubo,
+            "u_view_proj",
+            &(drawn_proj * view).to_cols_array(),
+        );
         ctx.ubo_set_vec4(self.frame_ubo, "u_camera_pos", eye.x, eye.y, eye.z, 1.0);
         Some((view, view_proj))
     }

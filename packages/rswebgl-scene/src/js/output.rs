@@ -46,6 +46,30 @@ impl Scene {
         Ok(())
     }
 
+    /// Temporal antialiasing instead of multisampling (with HDR output):
+    /// the camera jitters by a subpixel each frame (Halton 2, 3) and frames
+    /// accumulate into a history reprojected through the camera's motion and
+    /// clipped to each pixel's neighborhood (ported from Bevy). Smooths
+    /// edges, thin geometry and shading aliasing MSAA leaves; moving objects
+    /// lean on the clip (no per-object motion vectors yet). Returns whether
+    /// it is on (needs HDR output).
+    #[wasm_bindgen(js_name = setTaa)]
+    pub fn set_taa(&mut self, on: bool) -> bool {
+        if self.taa != on {
+            self.taa = on;
+            self.taa_previous = None;
+            if let Some(out) = self.hdr.take() {
+                out.destroy(&self.ctx); // remade at the next frame
+            }
+        }
+        self.taa && self.hdr_wanted
+    }
+
+    #[wasm_bindgen(js_name = isTaa)]
+    pub fn is_taa(&self) -> bool {
+        self.taa && self.hdr_wanted
+    }
+
     /// Antialiasing samples per pixel of the HDR target (default 4; 0 or 1
     /// for none; lowered to what the device allows). Set the canvas's own
     /// `antialias: false` with HDR on: it isn't used.
@@ -82,7 +106,7 @@ impl Scene {
             out.destroy(&self.ctx);
         }
         if self.hdr_wanted && self.hdr.is_none() {
-            match HdrOutput::new(&self.ctx, self.samples) {
+            match HdrOutput::new(&self.ctx, self.samples, self.taa) {
                 Ok(out) => self.hdr = Some(out),
                 Err(e) => self.give_up_hdr(&e),
             }

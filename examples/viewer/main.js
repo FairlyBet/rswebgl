@@ -320,7 +320,16 @@ slider("exposure", (v) => `${v >= 0 ? "+" : ""}${v.toFixed(1)} EV`, (v) => scene
 $("hdr").addEventListener("change", () => {
   $("hdr").checked = scene.setHdr($("hdr").checked);
 });
-$("samples").addEventListener("change", () => scene.setSamples(Number($("samples").value)));
+// MSAA samples, or temporal antialiasing instead.
+$("samples").addEventListener("change", () => {
+  const v = $("samples").value;
+  if (v === "taa") {
+    if (!scene.setTaa(true)) status("TAA needs HDR output", true);
+  } else {
+    scene.setTaa(false);
+    scene.setSamples(Number(v));
+  }
+});
 $("resolution").addEventListener("change", () => {
   resolution = $("resolution").value;
   resize();

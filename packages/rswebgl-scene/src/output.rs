@@ -35,6 +35,24 @@ use crate::environment::FULLSCREEN_VERT;
 use crate::shader::chunk;
 
 const PRESENT_FRAG: &str = include_str!("../shaders/present.frag");
+const TAA_FRAG: &str = include_str!("../shaders/taa.frag");
+
+/// Temporal antialiasing (ported from Bevy, see taa.frag): the scene renders
+/// jittered without MSAA, its depth into a texture; each frame resolves
+/// into the next of two history textures, which the display shows.
+struct Taa {
+    program: ProgramId,
+    layout: ParamLayoutId,
+    group: ParamGroupId,
+    f_reproject: ParamField,
+    f_taa: ParamField,
+    // Sized with the target: (texture, framebuffer) each.
+    history: [(TextureId, FramebufferId); 2],
+    depth: TextureId,
+    // The history the last resolve wrote; whether the next starts over.
+    current: usize,
+    reset: bool,
+}
 
 /// How linear radiance is squeezed into the display's range.
 #[wasm_bindgen]
@@ -93,6 +111,8 @@ pub struct HdrOutput {
     generation: u32,
     // Depth peeling's targets, made on first use (`peel`).
     peel: Option<PeelTargets>,
+    // Temporal antialiasing, when on (instead of multisampling).
+    taa: Option<Taa>,
 }
 
 /// Depth peeling (Everitt 2001): the opaque scene's depth, single-sampled,
@@ -135,7 +155,7 @@ impl HdrOutput {
 
     /// `samples` per pixel for antialiasing (0 or 1 for none; lowered to what
     /// the device allows).
-    pub fn new(ctx: &Context, samples: i32) -> Result<Self, Error> {
+    pub fn new(ctx: &Context, samples: i32, taa: bool) -> Result<Self, Error> {
         if !Self::supported(ctx) {
             return Err("HDR output: this device can't render to half-float targets".into());
         }
@@ -146,11 +166,37 @@ impl HdrOutput {
         let layout = ctx.create_param_layout(
             &ParamLayoutBuilder::new()
                 .texture("u_hdr")
+                .texture("u_coverage")
                 .uniform("u_exposure", UniformType::F32)
                 .uniform("u_tone_mapping", UniformType::I32)
                 .uniform("u_dither", UniformType::F32),
         )?;
         let group = ctx.create_param_group(layout)?;
+        let taa = if taa {
+            let frag = ShaderSource::plain("taa.frag", &format!("{prefix}{TAA_FRAG}"));
+            let program = ctx.create_program_from(&vert, &frag)?;
+            let layout = ctx.create_param_layout(
+                &ParamLayoutBuilder::new()
+                    .texture("u_current")
+                    .texture("u_history")
+                    .texture("u_depth")
+                    .uniform("u_reproject", UniformType::Mat4)
+                    .uniform("u_taa", UniformType::Vec4),
+            )?;
+            Some(Taa {
+                program,
+                layout,
+                group: ctx.create_param_group(layout)?,
+                f_reproject: ctx.param_field(layout, "u_reproject")?,
+                f_taa: ctx.param_field(layout, "u_taa")?,
+                history: [(TextureId::NULL, FramebufferId::NULL); 2],
+                depth: TextureId::NULL,
+                current: 0,
+                reset: true,
+            })
+        } else {
+            None
+        };
         let mut state = RenderState::new();
         state.depth_test = false;
         state.depth_mask = false;
@@ -175,6 +221,7 @@ impl HdrOutput {
             state: ctx.render_state(&state),
             generation: ctx.generation(),
             peel: None,
+            taa,
         })
     }
 
@@ -187,6 +234,59 @@ impl HdrOutput {
     /// the scene; NULL before the first frame.
     pub fn color_texture(&self) -> TextureId {
         self.color
+    }
+
+    /// Whether temporal antialiasing is on.
+    pub fn taa(&self) -> bool {
+        self.taa.is_some()
+    }
+
+    /// Starts the TAA history over (a camera cut: nothing to reuse).
+    pub fn reset_taa(&mut self) {
+        if let Some(taa) = &mut self.taa {
+            taa.reset = true;
+        }
+    }
+
+    /// Resolves this frame into the TAA history: the resolved color, the
+    /// last history reprojected by `reproject` (clip now, unjittered → clip
+    /// last frame) and clipped. After the scene's passes, before `present`.
+    pub fn taa_resolve(&mut self, ctx: &Context, reproject: &glam::Mat4) {
+        let (w, h) = self.size;
+        let reverse = self.reverse_z;
+        let color = self.color;
+        let Some(taa) = &mut self.taa else {
+            return;
+        };
+        let next = 1 - taa.current;
+        let (out_tex, out_fb) = taa.history[next];
+        let _ = out_tex;
+        ctx.param_set_texture_by_name(taa.group, "u_current", color);
+        ctx.param_set_texture_by_name(taa.group, "u_history", taa.history[taa.current].0);
+        ctx.param_set_texture_by_name(taa.group, "u_depth", taa.depth);
+        ctx.param_set_floats(taa.group, taa.f_reproject, &reproject.to_cols_array());
+        let flags = [
+            if taa.reset { 1.0 } else { 0.0 },
+            if reverse { 1.0 } else { 0.0 },
+            0.0,
+            0.0,
+        ];
+        ctx.param_set_floats(taa.group, taa.f_taa, &flags);
+        let mut pass = Pass::new(out_fb);
+        pass.set_viewport(&Viewport::new(0, 0, w, h));
+        let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
+        groups[0] = taa.group;
+        pass.push_groups_with_key(
+            0,
+            taa.program,
+            self.state,
+            VertexArrayId::NULL,
+            groups,
+            &DrawCommand::arrays(DrawMode::Triangles, 0, 3),
+        );
+        ctx.render(&pass);
+        taa.current = next;
+        taa.reset = false;
     }
 
     /// Samples per pixel actually used (0: no multisampling).
@@ -403,7 +503,14 @@ impl HdrOutput {
         dither: bool,
         profiler: Option<&mut GpuProfiler>,
     ) {
-        ctx.param_set_texture_by_name(self.group, "u_hdr", self.color);
+        // With TAA the display shows the history (the coverage stays this
+        // frame's).
+        let shown = match &self.taa {
+            Some(taa) if !taa.history[taa.current].0.is_null() => taa.history[taa.current].0,
+            _ => self.color,
+        };
+        ctx.param_set_texture_by_name(self.group, "u_hdr", shown);
+        ctx.param_set_texture_by_name(self.group, "u_coverage", self.color);
         ctx.param_set_f32(self.group, self.f_exposure, exposure);
         ctx.param_set_i32(self.group, self.f_tone_mapping, tone_mapping as i32);
         ctx.param_set_f32(self.group, self.f_dither, if dither { 1.0 } else { 0.0 });
@@ -467,7 +574,7 @@ impl HdrOutput {
 
         // Multisampled if the device takes it for this format; else straight
         // into the texture.
-        while self.samples > 1 {
+        while self.samples > 1 && self.taa.is_none() {
             let fb = ctx.create_framebuffer(w, h)?;
             let color_rb = ctx.create_renderbuffer_multisample(
                 RenderbufferFormat::Rgba16f,
@@ -488,9 +595,42 @@ impl HdrOutput {
             self.samples /= 2;
         }
         self.samples = 0;
-        let depth_rb = ctx.create_renderbuffer(depth, w, h)?;
-        ctx.framebuffer_attach_depth_renderbuffer(resolve_fb, depth_rb);
-        self.depth_rb = depth_rb;
+        if let Some(taa) = &mut self.taa {
+            let tex = |format: &TextureFormat, filter| -> Result<TextureId, Error> {
+                let t = ctx.create_texture(
+                    TextureTarget::Texture2D,
+                    filter,
+                    TextureMagFilter::Nearest,
+                )?;
+                ctx.texture_storage_2d(t, 1, format, w, h);
+                Ok(t)
+            };
+            let depth_format = if reverse_z {
+                TextureFormat::depth32f()
+            } else {
+                TextureFormat::depth24()
+            };
+            taa.depth = tex(&depth_format, TextureMinFilter::Nearest)?;
+            ctx.framebuffer_attach_depth_texture(resolve_fb, taa.depth, 0);
+            for h_slot in &mut taa.history {
+                let t = ctx.create_texture(
+                    TextureTarget::Texture2D,
+                    TextureMinFilter::Linear,
+                    TextureMagFilter::Linear,
+                )?;
+                ctx.texture_storage_2d(t, 1, &TextureFormat::rgba16f(), w, h);
+                ctx.texture_set_wrap_s(t, TextureWrap::ClampToEdge);
+                ctx.texture_set_wrap_t(t, TextureWrap::ClampToEdge);
+                let fb = ctx.create_framebuffer(w, h)?;
+                ctx.framebuffer_attach_color_texture_2d(fb, 0, t, 0);
+                *h_slot = (t, fb);
+            }
+            taa.reset = true;
+        } else {
+            let depth_rb = ctx.create_renderbuffer(depth, w, h)?;
+            ctx.framebuffer_attach_depth_renderbuffer(resolve_fb, depth_rb);
+            self.depth_rb = depth_rb;
+        }
         self.fb = resolve_fb;
         if !ctx.is_framebuffer_complete(resolve_fb) {
             return Err("HDR output: the half-float target is incomplete on this device".into());
@@ -499,6 +639,22 @@ impl HdrOutput {
     }
 
     fn free_target(&mut self, ctx: &Context) {
+        if let Some(taa) = &mut self.taa {
+            for (t, fb) in std::mem::replace(
+                &mut taa.history,
+                [(TextureId::NULL, FramebufferId::NULL); 2],
+            ) {
+                if !fb.is_null() {
+                    ctx.destroy_framebuffer(fb);
+                }
+                if !t.is_null() {
+                    ctx.destroy_texture(t);
+                }
+            }
+            if !taa.depth.is_null() {
+                ctx.destroy_texture(std::mem::replace(&mut taa.depth, TextureId::NULL));
+            }
+        }
         if let Some(peel) = self.peel.take() {
             peel.free(ctx);
         }
@@ -535,6 +691,13 @@ impl HdrOutput {
     pub fn destroy(mut self, ctx: &Context) {
         ctx.destroy_param_group(self.group);
         ctx.destroy_param_layout(self.layout);
+        if let Some(taa) = &self.taa {
+            ctx.destroy_param_group(taa.group);
+            ctx.destroy_param_layout(taa.layout);
+            if self.generation == ctx.generation() {
+                ctx.destroy_program(taa.program);
+            }
+        }
         if self.generation != ctx.generation() {
             return;
         }

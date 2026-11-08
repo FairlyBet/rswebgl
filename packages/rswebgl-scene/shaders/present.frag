@@ -11,6 +11,7 @@ in vec2 v_ndc;
 out vec4 frag_color;
 
 uniform sampler2D u_hdr;
+uniform sampler2D u_coverage; // the frame's coverage (u_hdr is TAA's history then)
 uniform float u_exposure;
 uniform int u_tone_mapping;
 uniform float u_dither; // 0 off, 1 on
@@ -22,7 +23,7 @@ float ign(vec2 p) {
 
 void main() {
     vec4 hdr = texelFetch(u_hdr, ivec2(gl_FragCoord.xy), 0);
-    float a = hdr.a;
+    float a = texelFetch(u_coverage, ivec2(gl_FragCoord.xy), 0).a;
     // Shade the unpremultiplied color, then premultiply again for the
     // canvas (WebGL's default premultipliedAlpha: true).
     vec3 c = a > 0.0 ? hdr.rgb / a : vec3(0.0);

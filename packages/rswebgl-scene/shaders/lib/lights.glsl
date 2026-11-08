@@ -10,7 +10,8 @@ struct Light {
 };
 layout(std140) uniform Lighting {
     Light u_lights[MAX_LIGHTS];
-    vec4 u_environment; // rgb intensity of the environment light
+    vec4 u_environment; // rgb intensity of the environment light, w the
+                        // material maps' LOD bias (TAA)
     vec4 u_lighting;    // x light count, y exposure, z environment rotation,
                         // w last mip of the specular cube
     vec4 u_output;      // x 1: scene_output shows (exposure, tone map, sRGB),

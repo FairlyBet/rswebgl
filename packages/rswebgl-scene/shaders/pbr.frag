@@ -30,6 +30,10 @@ flat in vec3 v_model_scale;
 #include "surface_gltf.glsl"
 #include "surface_openpbr.glsl"
 
+// Material maps sampled with the frame's LOD bias (negative under TAA, which
+// would otherwise blur them on top of its own filtering).
+#define texture(s, uv) texture(s, uv, u_environment.w)
+
 in vec3 v_world;
 in vec2 v_uv0;
 in vec2 v_uv1;
