@@ -65,6 +65,9 @@ pub const OBJECT_ID_UNIFORM: &str = "u_object_id";
 ///     vec4 u_environment; // rgb intensity of the environment light
 ///     vec4 u_lighting;    // x light count, y exposure, z environment
 ///                         // rotation (radians about +Y), w last specular mip
+///     vec4 u_output;      // x shows (1) or leaves linear radiance (0), y tone
+///                         // mapper, z 1 with a scene copy, w its last mip
+///     vec4 u_shading;     // x specular AA variance, y its threshold
 /// };
 /// uniform samplerCube u_env_diffuse;  // irradiance / π
 /// uniform samplerCube u_env_specular; // prefiltered: mip = roughness × w
@@ -168,6 +171,8 @@ pub struct SceneRenderer {
     lighting: Vec<Vec4>,
     env_intensity: Vec3,
     exposure: f32,
+    // Specular antialiasing (variance, threshold).
+    specular_aa: (f32, f32),
     // The white constant environment, used while no other is set.
     default_env: Environment,
     env: Option<Environment>,
@@ -223,7 +228,8 @@ impl SceneRenderer {
                 .struct_array("u_lights", &light, MAX_LIGHTS as u32)
                 .field("u_environment", UniformType::Vec4)
                 .field("u_lighting", UniformType::Vec4)
-                .field("u_output", UniformType::Vec4),
+                .field("u_output", UniformType::Vec4)
+                .field("u_shading", UniformType::Vec4),
             BufferUsage::DynamicDraw,
         )?;
         let frame_layout = ctx.create_param_layout(
@@ -257,6 +263,7 @@ impl SceneRenderer {
             lighting: Vec::new(),
             env_intensity: Vec3::splat(DEFAULT_ENV_INTENSITY),
             exposure: 1.0,
+            specular_aa: (0.15, 0.2),
             default_env: Environment::constant(ctx, Vec3::ONE)?,
             env: None,
             env_rotation: 0.0,
@@ -438,6 +445,19 @@ impl SceneRenderer {
 
     pub fn exposure(&self) -> f32 {
         self.exposure
+    }
+
+    /// Geometric specular antialiasing (Kaplanyan, Tokuyoshi): where the
+    /// normal turns within a pixel, roughness grows by up to `threshold` (in
+    /// α²), `variance` scaling how fast. Higher calms the sparkle of sharp
+    /// highlights on curved, smooth surfaces and softens highlights more;
+    /// variance 0 turns it off. Default (0.15, 0.2), Filament's.
+    pub fn set_specular_antialiasing(&mut self, variance: f32, threshold: f32) {
+        self.specular_aa = (variance.max(0.0), threshold.clamp(0.0, 1.0));
+    }
+
+    pub fn specular_antialiasing(&self) -> (f32, f32) {
+        self.specular_aa
     }
 
     /// Appends the visible `MeshRenderer`s, as seen from `camera`, to `pass`.
@@ -644,6 +664,7 @@ impl SceneRenderer {
             if self.scene_color.is_some() { 1.0 } else { 0.0 },
             self.scene_color.map_or(0.0, |(_, mip)| mip as f32),
         ));
+        data.push(Vec4::new(self.specular_aa.0, self.specular_aa.1, 0.0, 0.0));
         if data == self.lighting {
             return;
         }
@@ -655,10 +676,16 @@ impl SceneRenderer {
                 ctx.ubo_set_vec4(ubo, &path, v.x, v.y, v.z, v.w);
             }
         }
-        let [env, params, output] = [data[count * 4], data[count * 4 + 1], data[count * 4 + 2]];
+        let [env, params, output, shading] = [
+            data[count * 4],
+            data[count * 4 + 1],
+            data[count * 4 + 2],
+            data[count * 4 + 3],
+        ];
         ctx.ubo_set_vec4(ubo, "u_environment", env.x, env.y, env.z, 0.0);
         ctx.ubo_set_vec4(ubo, "u_lighting", params.x, params.y, params.z, params.w);
         ctx.ubo_set_vec4(ubo, "u_output", output.x, output.y, output.z, output.w);
+        ctx.ubo_set_vec4(ubo, "u_shading", shading.x, shading.y, shading.z, shading.w);
         self.lighting = data;
     }
 

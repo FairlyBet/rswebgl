@@ -112,6 +112,23 @@ impl Scene {
         self.renderer.set_exposure(exposure);
     }
 
+    /// Geometric specular antialiasing: where the normal turns within a
+    /// pixel, roughness grows (by up to `threshold` in α², `variance`
+    /// scaling how fast), so sharp highlights on curved smooth surfaces
+    /// don't sparkle. Higher is calmer and softer; variance 0 turns it off.
+    /// Default (0.15, 0.2), as Filament.
+    #[wasm_bindgen(js_name = setSpecularAntialiasing)]
+    pub fn set_specular_antialiasing(&mut self, variance: f32, threshold: f32) {
+        self.renderer.set_specular_antialiasing(variance, threshold);
+    }
+
+    /// `[variance, threshold]` of the specular antialiasing.
+    #[wasm_bindgen(js_name = specularAntialiasing)]
+    pub fn specular_antialiasing(&self) -> Vec<f32> {
+        let (v, t) = self.renderer.specular_antialiasing();
+        vec![v, t]
+    }
+
     // --- environment ----------------------------------------------------------
 
     /// Scales the environment's light (linear RGB). Without an environment

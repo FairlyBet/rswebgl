@@ -99,13 +99,13 @@ vec3 ggx_energy_compensation(float NdotV, float alpha, vec3 f0, vec3 f90) {
 
 // Specular antialiasing (Kaplanyan 2016; Tokuyoshi & Kaplanyan 2019, as in
 // Filament): widens perceptual roughness where the normal varies within the
-// pixel, so thin highlights don't sparkle and alias.
-float specular_aa(vec3 n, float perceptual_roughness) {
-    const float VARIANCE = 0.15;
-    const float THRESHOLD = 0.2;
+// pixel, so thin highlights don't sparkle and alias. `variance` is the
+// screen-space filter's (Filament's default 0.15; 0 turns it off),
+// `threshold` caps the added α² (0.2).
+float specular_aa(vec3 n, float perceptual_roughness, float variance, float threshold) {
     vec3 du = dFdx(n);
     vec3 dv = dFdy(n);
-    float kernel = min(2.0 * VARIANCE * (dot(du, du) + dot(dv, dv)), THRESHOLD);
+    float kernel = min(2.0 * variance * (dot(du, du) + dot(dv, dv)), threshold);
     float alpha = perceptual_roughness * perceptual_roughness;
     return sqrt(sqrt(clamp(alpha * alpha + kernel, 0.0, 1.0)));
 }

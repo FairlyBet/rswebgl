@@ -282,3 +282,103 @@ async fn ready(scene: &Scene) {
         .await
         .unwrap();
 }
+
+// A mirror quad whose vertex normals splay out by ~76°, so the normal turns
+// fast from pixel to pixel; it reflects a black sky with one bright spot
+// straight behind the camera.
+fn splayed_mirror_url() -> String {
+    let mut bin = Vec::new();
+    let k = 4.0f32;
+    let n = |x: f32, y: f32| {
+        let l = (x * x + y * y + 1.0).sqrt();
+        [x / l, y / l, 1.0 / l]
+    };
+    let mut floats = vec![
+        -0.5f32, -0.5, 0.0, 0.5, -0.5, 0.0, 0.5, 0.5, 0.0, -0.5, 0.5, 0.0,
+    ];
+    for [x, y] in [[-k, -k], [k, -k], [k, k], [-k, k]] {
+        floats.extend(n(x, y));
+    }
+    for v in floats {
+        bin.extend_from_slice(&v.to_le_bytes());
+    }
+    for i in [0u16, 1, 2, 0, 2, 3] {
+        bin.extend_from_slice(&i.to_le_bytes());
+    }
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let json = format!(
+        r#"{{
+  "asset": {{ "version": "2.0" }},
+  "buffers": [{{ "byteLength": {len}, "uri": "data:application/octet-stream;base64,{bin}" }}],
+  "bufferViews": [
+    {{ "buffer": 0, "byteOffset": 0, "byteLength": 48 }},
+    {{ "buffer": 0, "byteOffset": 48, "byteLength": 48 }},
+    {{ "buffer": 0, "byteOffset": 96, "byteLength": 12, "target": 34963 }}
+  ],
+  "accessors": [
+    {{ "bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3",
+       "min": [-0.5, -0.5, 0], "max": [0.5, 0.5, 0] }},
+    {{ "bufferView": 1, "componentType": 5126, "count": 4, "type": "VEC3" }},
+    {{ "bufferView": 2, "componentType": 5123, "count": 6, "type": "SCALAR" }}
+  ],
+  "materials": [{{ "pbrMetallicRoughness": {{ "metallicFactor": 1, "roughnessFactor": 0 }} }}],
+  "meshes": [{{ "primitives": [{{ "attributes": {{ "POSITION": 0, "NORMAL": 1 }}, "indices": 2, "material": 0 }}] }}],
+  "nodes": [{{ "mesh": 0 }}],
+  "scenes": [{{ "nodes": [0] }}],
+  "scene": 0
+}}"#,
+        len = bin.len(),
+        bin = b64(&bin),
+    );
+    format!("data:model/gltf+json;base64,{}", b64(json.as_bytes()))
+}
+
+// Specular antialiasing widens roughness where the normal turns within a
+// pixel: the bright spot's reflection spreads over more of the splayed
+// mirror with it on, and the setting reads back.
+#[wasm_bindgen_test]
+async fn specular_antialiasing_spreads_highlights_on_turning_normals() {
+    let (ctx, gl) = context();
+    let mut scene = Scene::new(&ctx).expect("scene");
+    let camera = scene.spawn();
+    scene.insert_camera(camera, Camera::orthographic(2.0, 1.0, 0.1, 100.0));
+    scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
+    scene.add_model(load_model(&ctx, &splayed_mirror_url()).await.expect("load"));
+    // Black, but a bright spot toward +Z (equirect u 0.75, v 0.5).
+    let (w, h) = (16usize, 8usize);
+    let mut sky = vec![0.0f32; w * h * 3];
+    for (x, y) in [(11, 3), (12, 3), (11, 4), (12, 4)] {
+        sky[(y * w + x) * 3..][..3].copy_from_slice(&[20.0; 3]);
+    }
+    scene
+        .set_environment_hdr(&encode_hdr(w as u32, h as u32, &sky), 64)
+        .expect("bake");
+    ready(&scene).await;
+
+    let lit = |scene: &mut Scene| -> usize {
+        let mut pass = Pass::to_default();
+        pass.set_clear(&ClearMask::color_depth());
+        scene.render(camera, &mut pass);
+        pass.sort();
+        ctx.render(&pass);
+        let mut row = vec![0u8; SIZE as usize * 4];
+        gl.read_pixels_with_opt_u8_array(
+            0,
+            SIZE / 2,
+            SIZE,
+            1,
+            Gl::RGBA,
+            Gl::UNSIGNED_BYTE,
+            Some(&mut row),
+        )
+        .unwrap();
+        row.chunks(4).filter(|p| p[0] > 24).count()
+    };
+    scene.set_specular_antialiasing(0.0, 0.0);
+    let off = lit(&mut scene);
+    scene.set_specular_antialiasing(5.0, 1.0);
+    let on = lit(&mut scene);
+    assert!(off > 0 && on > off + 2, "lit pixels: off {off}, on {on}");
+    assert_eq!(scene.specular_antialiasing(), vec![5.0, 1.0]);
+    scene.destroy();
+}
