@@ -68,7 +68,9 @@ fn every_feature_compiles_and_links(model: ShadingModel) {
     let uv1: u64 = 0x1ffff << 34;
     let layers: u64 = 0xf << 8 | 0xf << 13;
     // Each bit alone, every alpha mode, and everything at once.
-    let mut keys: Vec<u64> = (0..57).map(|b| 1u64 << b).collect();
+    // Each bit alone, except the per-map ones (17..51): every map at once,
+    // on either UV set, below covers them for a fraction of the links.
+    let mut keys: Vec<u64> = (0..17).chain(51..57).map(|b| 1u64 << b).collect();
     let deform: u64 = 0xf << 52;
     keys.extend([
         0,

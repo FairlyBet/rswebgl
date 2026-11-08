@@ -442,8 +442,11 @@ void main() {
     float c = cos(u_anisotropy_rotation);
     float sn = sin(u_anisotropy_rotation);
     dir = mat2(c, sn, -sn, c) * dir;
-    s.anisotropy_t = normalize(mat3(frame.t, frame.b, frame.n) * vec3(dir, 0.0));
-    s.anisotropy_b = cross(frame.ng, s.anisotropy_t);
+    if (dot(dir, dir) < 1e-8) dir = vec2(1.0, 0.0); // a texel encoding no direction
+    vec3 at_dir = mat3(frame.t, frame.b, frame.n) * vec3(dir, 0.0);
+    // In the shading plane (Gram-Schmidt), and across it: an orthonormal frame.
+    s.anisotropy_t = normalize(at_dir - frame.n * dot(frame.n, at_dir));
+    s.anisotropy_b = normalize(cross(frame.n, s.anisotropy_t));
     s.anisotropy = clamp(strength, 0.0, 1.0);
 #endif
     s.emission = u_emissive_factor * u_emissive_strength;

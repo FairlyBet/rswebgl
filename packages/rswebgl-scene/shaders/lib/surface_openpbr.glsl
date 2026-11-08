@@ -38,7 +38,8 @@ struct OpenPbr {
     float alpha_t;        // along the anisotropy direction
     float alpha_b;
     float roughness;      // its perceptual roughness
-    float eta;            // the dielectric's IOR after specular_weight
+    float eta;            // the dielectric's IOR after specular_weight (relative to the coat)
+    float eta_refract;    // what refraction bends by: the base's own (after specular_weight)
     float f0_dielectric;
     vec3 comp_dielectric; // multiple-scattering compensation
     vec3 fg_dielectric;   // directional albedo (compensated, untinted, film blended in)
@@ -117,6 +118,11 @@ OpenPbr openpbr_setup(Surface s, float NdotV, float coat_NdotV) {
     float xi_f = clamp(s.specular_weight * f_s, 0.0, 0.99999);
     float eps = sign(eta_s - 1.0) * sqrt(xi_f);
     o.eta = (1.0 + eps) / (1.0 - eps);
+    // Light crossing a parallel coat into the base bends as if from air
+    // (Snell's law chains): the base's IOR alone, specular_weight applied.
+    float xi_r = clamp(s.specular_weight * ior_to_f0(s.ior), 0.0, 0.99999);
+    float eps_r = sign(s.ior - 1.0) * sqrt(xi_r);
+    o.eta_refract = (1.0 + eps_r) / (1.0 - eps_r);
     o.f0_dielectric = xi_f;
     o.comp_dielectric = ggx_energy_compensation(NdotV, alpha, vec3(xi_f), vec3(1.0));
     o.fg_dielectric = ggx_dir_albedo(NdotV, alpha, vec3(xi_f), vec3(1.0)) * o.comp_dielectric;
@@ -140,9 +146,11 @@ OpenPbr openpbr_setup(Surface s, float NdotV, float coat_NdotV) {
     o.fg_metal = mix(o.fg_metal, s.specular_weight * fg_film_m * o.comp_metal, o.film);
 #endif
 
-    // Thin-walled transmission is tinted by the base color (glTF's
-    // convention, the spec's depth = 0 tint); a volume absorbs instead.
-    o.tint = s.thickness > 0.0 ? vec3(1.0) : s.base_color;
+    // Transmission is tinted by the base color, with or without a volume
+    // (glTF's KHR_materials_transmission; a volume absorbs on top). OpenPBR
+    // proper tints by transmission_color alone; glTF-made materials would
+    // lose their color under it.
+    o.tint = s.base_color;
 
     o.coat_alpha = 1.0;
     o.coat_alpha_t = 1.0;
@@ -226,11 +234,16 @@ vec3 shade_openpbr(Surface s) {
     vec3 diffuse_ibl = diffuse_albedo(s.base_color, s.diffuse_roughness, NdotV);
 #ifdef HAS_SUBSURFACE
     // MaterialX: indirect subsurface as plain irradiance × its color.
-    diffuse_ibl = mix(diffuse_ibl, s.subsurface_color, s.subsurface);
+    // base_weight scales the diffuse only (MaterialX: the subsurface BSDF
+    // has weight 1).
+    diffuse_ibl = mix(diffuse_weight * diffuse_ibl,
+                      (1.0 - s.transmission) * s.subsurface_color, s.subsurface);
+#else
+    diffuse_ibl *= diffuse_weight;
 #endif
-    vec3 under = diffuse_weight * scene_irradiance(n) * diffuse_ibl * s.ao;
+    vec3 under = scene_irradiance(n) * diffuse_ibl * s.ao;
 #ifdef HAS_TRANSMISSION
-    under += s.transmission * o.tint * env_transmission(s, o.eta, o.roughness);
+    under += s.transmission * o.tint * env_transmission(s, o.eta_refract, o.roughness);
 #endif
     dielectric += (1.0 - o.fg_dielectric) * under;
     vec3 metal = prefiltered * o.fg_metal;
@@ -290,23 +303,24 @@ vec3 shade_openpbr(Surface s) {
         // Wraps past the terminator: its own cosine, not NdotL's cut.
         vec3 sss = subsurface_scattering(n, l, s.subsurface_color, s.subsurface_mfp,
                                          s.subsurface_radius);
-        lit += (1.0 - s.metallic) * (1.0 - o.fg_dielectric) * diffuse_weight * s.subsurface * sss;
+        lit += (1.0 - s.metallic) * (1.0 - o.fg_dielectric) * (1.0 - s.transmission)
+            * s.subsurface * sss;
 #endif
 #ifdef HAS_TRANSMISSION
         // Light from behind, through the surface (as glTF's reference does).
         vec3 to_exit = light_vector(light, s.position);
 #ifdef HAS_VOLUME
-        vec3 ray = volume_ray(n, v, s.thickness, o.eta);
+        vec3 ray = volume_ray(n, v, s.thickness, o.eta_refract);
         if (light.params.w > 0.5) to_exit -= ray; // a directional light is infinitely far
 #endif
-        vec3 t_light = o.tint * punctual_transmission(n, v, normalize(to_exit), o.alpha, o.eta);
+        vec3 t_light = o.tint * punctual_transmission(n, v, normalize(to_exit), o.alpha, o.eta_refract);
 #ifdef HAS_VOLUME
         t_light = volume_attenuation(t_light, length(ray), s.attenuation_color,
                                      s.attenuation_distance);
 #endif
         lit += (1.0 - s.metallic) * (1.0 - o.fg_dielectric) * s.transmission * t_light;
 #endif
-        float c_NdotL = clamp(dot(s.n_coat, l), 1e-4, 1.0);
+        float c_NdotL = clamp(abs(dot(s.n_coat, l)), 1e-4, 1.0);
         lit *= openpbr_coat_filter(s, o, c_NdotL, c_NdotV);
 #ifdef HAS_CLEARCOAT
         if (dot(s.n_coat, l) > 0.0) {
@@ -334,7 +348,10 @@ vec3 shade_openpbr(Surface s) {
     // doesn't dim it, as in MaterialX).
     vec3 emission = s.emission;
 #ifdef HAS_CLEARCOAT
-    emission *= mix(vec3(1.0), pow(o.coat_t, vec3(1.0 / refracted_cos(c_NdotV, o.coat_eta))), s.coat);
+    float coat_out = (1.0 - o.coat_f0) * (1.0 - pow5(1.0 - c_NdotV));
+    emission *= mix(vec3(1.0),
+                    pow(o.coat_t, vec3(1.0 / refracted_cos(c_NdotV, o.coat_eta))) * coat_out,
+                    s.coat);
 #endif
     return color + emission;
 }
