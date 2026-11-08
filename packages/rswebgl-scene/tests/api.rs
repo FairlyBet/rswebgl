@@ -613,7 +613,8 @@ async fn reverse_z_draws_and_picks_the_same() {
     assert_eq!(s.scene.parent(entity), stone_b);
     let point = js_sys::Float32Array::from(get("point")).to_vec();
     assert!((point[2] - 0.5).abs() < 1e-3, "{point:?}");
-    s.scene.set_reverse_z(false);
+    // The return value is the new state, so a toggle can mirror it.
+    assert!(!s.scene.set_reverse_z(false), "off reports off");
     assert_eq!(s.frame().await, [WHITE, WHITE, [0, 0, 0, 255]], "and back");
     s.scene.destroy();
 }

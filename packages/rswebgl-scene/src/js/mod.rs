@@ -556,10 +556,12 @@ impl Scene {
     /// cameras — no z-fighting on distant surfaces. Render states and clear
     /// values keep their meaning; the scene's cameras switch projection
     /// themselves. Pays off fully with a float depth buffer (an offscreen
-    /// `Depth32f` target; the canvas's is 24-bit). False where unavailable.
+    /// `Depth32f` target; the canvas's is 24-bit). Returns whether reverse-Z
+    /// is on (like `setHdr`): false where unavailable.
     #[wasm_bindgen(js_name = setReverseZ)]
     pub fn set_reverse_z(&mut self, on: bool) -> bool {
-        self.ctx.set_reverse_z(on)
+        self.ctx.set_reverse_z(on);
+        self.ctx.reverse_z()
     }
 
     /// Resolves once every shader the scene's meshes use (and any variant
