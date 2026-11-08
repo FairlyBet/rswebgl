@@ -161,7 +161,7 @@ impl Context {
         width: i32,
         height: i32,
         format: ReadFormat,
-    ) -> impl Future<Output = Result<Vec<u8>, Error>> + 'static {
+    ) -> impl Future<Output = Result<Vec<u8>, Error>> + use<> {
         let r = Region {
             x,
             y,
@@ -444,7 +444,7 @@ impl Context {
         buffer: BufferId,
         offset: u32,
         len: u32,
-    ) -> impl Future<Output = Result<Vec<u8>, Error>> + 'static {
+    ) -> impl Future<Output = Result<Vec<u8>, Error>> + use<> {
         let started = self.start_buffer_readback(buffer, offset, len);
         async move { started?.finish().await }
     }

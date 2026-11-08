@@ -30,7 +30,6 @@ mod pack;
 mod scene;
 mod textures;
 
-pub use geometry::Triangles;
 pub use material::{
     AlphaMode, EXTERNAL_TEXTURE, MAP_NAMES, Material, PROPERTIES, Property, default_material,
 };
@@ -84,7 +83,6 @@ pub struct DrawItem {
     // The primitive's POSITION bounds, in mesh space.
     pub(crate) aabb_min: [f32; 3],
     pub(crate) aabb_max: [f32; 3],
-    pub(crate) triangles: Option<std::rc::Rc<Triangles>>,
 }
 
 #[wasm_bindgen]
@@ -151,12 +149,6 @@ impl DrawItem {
     /// uses `EXT_mesh_gpu_instancing`): `model = node_world * instance`.
     pub fn instance_cols(&self) -> [f32; 16] {
         self.instance_matrix
-    }
-
-    /// The primitive's triangles in mesh space (for picking), if it's a
-    /// `TRIANGLES` primitive. Shared between the items drawing it.
-    pub fn triangles(&self) -> Option<std::rc::Rc<Triangles>> {
-        self.triangles.clone()
     }
 
     /// The primitive's bounding box in mesh space: `(min, max)`.

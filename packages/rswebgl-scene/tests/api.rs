@@ -256,47 +256,64 @@ async fn turning_an_extension_on_switches_the_variant() {
 }
 
 #[wasm_bindgen_test]
-async fn picking_hits_triangles_and_skips_hidden_parts() {
+async fn picking_on_the_gpu_finds_the_nearest_visible_part() {
     let mut s = setup().await;
     s.frame();
-    let node_of = |s: &Setup, hit: Entity| s.scene.parent(hit);
     let band = s.scene.find_by_name(s.root, "band");
     let stone_b = s.scene.find_by_name(s.root, "stone_b");
+    let pick = |s: &mut Setup, x: f32, y: f32| {
+        let p = s.scene.pick(s.camera, x, y).expect("pick");
+        async move {
+            wasm_bindgen_futures::JsFuture::from(p)
+                .await
+                .expect("resolves")
+        }
+    };
+    let field = |hit: &JsValue, k: &str| js_sys::Reflect::get(hit, &k.into()).unwrap();
+    let node_of = |s: &Setup, hit: &JsValue| {
+        s.scene.parent(Entity::from_raw(
+            field(hit, "entity").as_f64().unwrap() as u32
+        ))
+    };
 
-    let hit = s.scene.pick(s.camera, -2.0 / 3.0, 0.0); // x = −1 in the world
-    assert_eq!(node_of(&s, hit), band);
-    let p = s.scene.pick_point();
+    // x = −1 in the world (a third of the way across the 3:1 view).
+    let hit = pick(&mut s, -2.0 / 3.0, 0.0).await;
+    assert_eq!(node_of(&s, &hit), band);
+    let point: Vec<f32> = js_sys::Float32Array::from(field(&hit, "point")).to_vec();
     assert!(
-        (p[0] + 1.0).abs() < 1e-4 && p[1].abs() < 1e-4 && p[2].abs() < 1e-4,
-        "{p:?}"
+        (point[0] + 1.0).abs() < 0.02 && point[1].abs() < 0.02 && point[2].abs() < 1e-3,
+        "{point:?}"
     );
+    let d = field(&hit, "distance").as_f64().unwrap();
     assert!(
-        (s.scene.pick_distance() - 4.9).abs() < 1e-3,
-        "near plane at z = 4.9"
+        (d - 26f64.sqrt()).abs() < 1e-2,
+        "from the eye at (0, 0, 5): {d}"
     );
 
-    let hit = s.scene.pick(s.camera, 2.0 / 3.0, 0.0);
-    assert_eq!(node_of(&s, hit), stone_b);
-    // Moved away, it isn't there to hit (picking sees the moved matrices
-    // after the next frame / updateTransforms).
-    s.scene.set_translation(stone_b, 1.0, 5.0, 0.0);
-    s.scene.update_transforms();
+    // A part in front of another wins, wherever it is in the list.
+    s.scene.set_translation(stone_b, -1.0, 0.0, 0.5);
+    let hit = pick(&mut s, -2.0 / 3.0, 0.0).await;
     assert_eq!(
-        s.scene.pick(s.camera, 2.0 / 3.0, 0.0),
-        Entity::NULL,
+        node_of(&s, &hit),
+        stone_b,
+        "nearest, picked as of now (no frame since)"
+    );
+    let d = field(&hit, "distance").as_f64().unwrap();
+    assert!((d - (1.0 + 4.5f64 * 4.5).sqrt()).abs() < 1e-2, "{d}");
+
+    // Hidden parts aren't there; empty space is null.
+    s.scene.set_visible(stone_b, false);
+    let hit = pick(&mut s, -2.0 / 3.0, 0.0).await;
+    assert_eq!(node_of(&s, &hit), band);
+    s.scene.set_visible(band, false);
+    assert!(
+        pick(&mut s, -2.0 / 3.0, 0.0).await.is_null(),
         "nothing there"
     );
-    s.scene.set_translation(stone_b, 1.0, 0.0, 0.0);
-    s.scene.update_transforms();
-    let hit = s.scene.pick(s.camera, 2.0 / 3.0, 0.0);
-    assert_eq!(node_of(&s, hit), stone_b);
-    s.scene.set_visible(stone_b, false);
-    assert_eq!(
-        s.scene.pick(s.camera, 2.0 / 3.0, 0.0),
-        Entity::NULL,
-        "hidden"
+    assert!(
+        s.scene.pick(Entity::NULL, 0.0, 0.0).is_err(),
+        "not a camera"
     );
-    assert!(s.scene.pick_point().is_empty() && s.scene.pick_distance() < 0.0);
     s.scene.destroy();
 }
 

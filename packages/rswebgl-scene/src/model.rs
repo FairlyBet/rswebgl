@@ -2,24 +2,21 @@
 //! root entity, each primitive a child entity of its node that draws.
 
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use glam::{Mat4, Vec3};
 use rswebgl::ids::ProgramId;
 use rswebgl_ecs::{Entity, World};
-use rswebgl_gltf::{DrawItem, Model, Triangles};
+use rswebgl_gltf::{DrawItem, Model};
 
 use crate::culling::Bounds;
 use crate::render::MeshRenderer;
 use crate::transform::{Parent, Transform};
 
 /// What a glTF primitive entity keeps from the loader: its vertex attributes
-/// (`ATTR_*`, to pick a PBR variant when its material changes) and its
-/// triangles in mesh space (for picking), if it's a `TRIANGLES` primitive.
-#[derive(Debug, Clone)]
+/// (`ATTR_*`), to pick a PBR variant when its material changes.
+#[derive(Debug, Clone, Copy)]
 pub struct Primitive {
     pub attributes: u32,
-    pub triangles: Option<Rc<Triangles>>,
 }
 
 /// A name to find an entity by (glTF node names, or the app's own).
@@ -99,7 +96,6 @@ pub fn spawn_model(
             e,
             Primitive {
                 attributes: item.attributes(),
-                triangles: item.triangles(),
             },
         );
     }

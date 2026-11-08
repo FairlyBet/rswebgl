@@ -132,7 +132,6 @@ fn walk(
                     attributes: geo.attributes,
                     aabb_min: geo.aabb_min,
                     aabb_max: geo.aabb_max,
-                    triangles: geo.triangles.clone(),
                 });
             }
         }

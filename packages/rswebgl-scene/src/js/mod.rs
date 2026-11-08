@@ -46,7 +46,6 @@ use crate::culling::Bounds;
 use crate::hierarchy::{TransformSystem, descendants, despawn_recursive, set_parent};
 use crate::model::{Name, find_by_name, spawn_model};
 use crate::pbr::PbrShaders;
-use crate::pick::{Hit, pick};
 use crate::render::{MeshRenderer, RenderStats, SceneRenderer, Visible};
 use crate::shader::create_scene_program;
 use crate::transform::{Parent, Transform, WorldMatrix};
@@ -74,7 +73,6 @@ pub struct Scene {
     // The canvas pass `renderFrame` reuses.
     frame_pass: Pass,
     stats: RenderStats,
-    last_hit: Option<Hit>,
 }
 
 // A rejected call on a dead entity: reported once per call site, no-op.
@@ -114,7 +112,6 @@ impl Scene {
             textures: Vec::new(),
             frame_pass,
             stats: RenderStats::default(),
-            last_hit: None,
         })
     }
 
@@ -486,31 +483,42 @@ impl Scene {
 
     // --- picking --------------------------------------------------------------
 
-    /// The nearest visible mesh entity under a screen point, as `camera`
-    /// sees it (as of the last frame), or `0`. `x`, `y` are normalized
-    /// device coordinates, −1…1 with +Y up — from a pointer event:
+    /// What's under a screen point, as `camera` sees it: a promise of
+    /// `{ entity, point, distance }` (`PickHit`), or null when nothing is.
+    /// Found on the GPU (exact for any geometry; the answer comes a frame or
+    /// so later), with the world as of now. `x`, `y` are normalized device
+    /// coordinates, −1…1 with +Y up — from a pointer event:
     /// `x = e.offsetX / canvas.clientWidth * 2 - 1`,
-    /// `y = 1 - e.offsetY / canvas.clientHeight * 2`. glTF meshes are hit by
-    /// their triangles, others by their bounds. The hit is a primitive
-    /// entity: `parent` leads to its glTF node. `pickPoint` / `pickDistance`
-    /// tell where.
-    pub fn pick(&mut self, camera: Entity, x: f32, y: f32) -> Entity {
-        self.last_hit = pick(&self.world, camera, Vec2::new(x, y));
-        self.last_hit.map_or(Entity::NULL, |h| h.entity)
-    }
-
-    /// World point of the last `pick`'s hit (3 numbers), or empty.
-    #[wasm_bindgen(js_name = pickPoint)]
-    pub fn pick_point(&self) -> Vec<f32> {
-        self.last_hit
-            .map_or_else(Vec::new, |h| h.point.to_array().to_vec())
-    }
-
-    /// World distance from the camera's near plane to the last `pick`'s hit,
-    /// or −1.
-    #[wasm_bindgen(js_name = pickDistance)]
-    pub fn pick_distance(&self) -> f32 {
-        self.last_hit.map_or(-1.0, |h| h.distance)
+    /// `y = 1 - e.offsetY / canvas.clientHeight * 2`. The entity is the mesh
+    /// entity (`parent` leads to its glTF node), `point` the world position
+    /// hit, `distance` its distance from the camera. Meshes are drawn with
+    /// their location-0 attribute as the position.
+    #[wasm_bindgen(unchecked_return_type = "Promise<PickHit | null>")]
+    pub fn pick(&mut self, camera: Entity, x: f32, y: f32) -> Result<js_sys::Promise, Error> {
+        self.transforms.update(&mut self.world);
+        let fb = self.ctx.default_framebuffer();
+        let found = self.renderer.pick(
+            &self.world,
+            &self.ctx,
+            camera,
+            Vec2::new(x, y),
+            fb.width().max(0) as u32,
+            fb.height().max(0) as u32,
+        )?;
+        Ok(wasm_bindgen_futures::future_to_promise(async move {
+            let Some(hit) = found.await? else {
+                return Ok(JsValue::NULL);
+            };
+            let out = js_sys::Object::new();
+            let set = |k: &str, v: JsValue| js_sys::Reflect::set(&out, &k.into(), &v);
+            set("entity", hit.entity.to_raw().into())?;
+            set(
+                "point",
+                js_sys::Float32Array::from(&hit.point.to_array()[..]).into(),
+            )?;
+            set("distance", hit.distance.into())?;
+            Ok(out.into())
+        }))
     }
 
     /// Frees everything the scene owns: its renderer resources, the built-in

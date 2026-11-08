@@ -65,10 +65,12 @@ scene.lookAt(key, [cx + radius, cy + radius * 1.5, cz + radius * 1.2], center);
 // Click a part: its name shows; C paints it a new color (on a copy of its
 // material, so parts sharing the original keep theirs).
 let picked = 0;
-canvas.addEventListener("click", (e) => {
+canvas.addEventListener("click", async (e) => {
   const x = (e.offsetX / canvas.clientWidth) * 2 - 1;
   const y = 1 - (e.offsetY / canvas.clientHeight) * 2;
-  picked = scene.pick(camera, x, y);
+  // Picked on the GPU: the answer comes a frame or so later.
+  const hit = await scene.pick(camera, x, y);
+  picked = hit ? hit.entity : 0;
 });
 const ownMaterial = new Map(); // picked entity → its own copy
 const recolor = () => {

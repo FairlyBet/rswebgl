@@ -231,11 +231,11 @@ FBO blit). Done. Deferred polish:
   shader (ray-marching the stone's own geometry) is the jewelry-grade
   follow-up. Punctual lights don't transmit. Not read: sheen, iridescence,
   anisotropy, diffuse transmission, KHR_materials_variants.
-- Picking keeps a CPU copy of every glTF triangle primitive's positions and
-  indices (12 B per vertex + 4 B per index): a loader option to skip it for
-  models that are never picked. Picking tests every triangle of the
-  meshes whose box the ray hits (no BVH); fine for jewelry-sized models.
-  Skinned or morphed meshes would need their deformed positions.
+- Picking is on the GPU (`gpu_pick.rs`): a 1×1 draw through a pick matrix,
+  read back async. It draws meshes by their location-0 attribute, not their
+  own shaders (a displacing or skinning vertex shader is picked at rest).
+  One pick in flight at a time is the natural use; many at once each draw
+  and read on their own. No region (box-select) picking yet.
 - Materials: `setMaterialTexture` sets the five core maps; the extension
   maps (clearcoat, transmission, …) aren't settable (nor read from glTF).
   The color space of a texture set on a map isn't checked against the role

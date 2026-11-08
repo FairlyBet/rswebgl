@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use glam::{Mat3, Mat4, Vec3, Vec4};
+use glam::{Mat3, Mat4, Vec2, Vec3, Vec4};
 use rswebgl::buffer::BufferUsage;
 use rswebgl::console;
 use rswebgl::context::Context;
@@ -22,7 +22,9 @@ use rswebgl_ecs::{Entity, Tick, World};
 use crate::camera::Camera;
 use crate::culling::{Bounds, Frustum};
 use crate::environment::{Environment, FULLSCREEN_VERT, brdf_lut_texture};
+use crate::gpu_pick::GpuPicker;
 use crate::light::Light;
+use crate::pick::Hit;
 use crate::shader::create_scene_program;
 use crate::transform::{Parent, WorldMatrix};
 
@@ -44,6 +46,9 @@ pub const FRAME_BLOCK: &str = "Frame";
 /// 3×3). A shader may declare either or neither.
 pub const MODEL_UNIFORM: &str = "u_model";
 pub const NORMAL_MATRIX_UNIFORM: &str = "u_normal_matrix";
+/// Per-object, set in group slot 2: `uniform uint u_object_id;` — the
+/// entity (its raw handle), for picking.
+pub const OBJECT_ID_UNIFORM: &str = "u_object_id";
 
 /// Name of the lights block, bound next to the frame block in slot 0:
 ///
@@ -167,7 +172,10 @@ pub struct SceneRenderer {
     object_layout: ParamLayoutId,
     f_model: ParamField,
     f_normal: ParamField,
+    f_object_id: ParamField,
     objects: HashMap<Entity, Object>,
+    // Made on the first `pick`.
+    picker: Option<GpuPicker>,
     stats: RenderStats,
 }
 
@@ -208,7 +216,8 @@ impl SceneRenderer {
         let object_layout = ctx.create_param_layout(
             &ParamLayoutBuilder::new()
                 .uniform(MODEL_UNIFORM, UniformType::Mat4)
-                .uniform(NORMAL_MATRIX_UNIFORM, UniformType::Mat3),
+                .uniform(NORMAL_MATRIX_UNIFORM, UniformType::Mat3)
+                .uniform(OBJECT_ID_UNIFORM, UniformType::U32),
         )?;
         let brdf_lut = brdf_lut_texture(ctx)?;
         ctx.param_set_texture_by_name(frame_group, "u_env_brdf", brdf_lut);
@@ -235,7 +244,9 @@ impl SceneRenderer {
             object_layout,
             f_model: ctx.param_field(object_layout, MODEL_UNIFORM)?,
             f_normal: ctx.param_field(object_layout, NORMAL_MATRIX_UNIFORM)?,
+            f_object_id: ctx.param_field(object_layout, OBJECT_ID_UNIFORM)?,
             objects: HashMap::new(),
+            picker: None,
             stats: RenderStats::default(),
         };
         renderer.bind_environment(ctx);
@@ -405,34 +416,8 @@ impl SceneRenderer {
                 center = c;
             }
 
-            let tick = worlds.changed_tick(row);
-            let group = match self.objects.get(&e).copied() {
-                Some(o) => {
-                    if o.written != tick {
-                        self.write_object(ctx, o.group, &m);
-                        self.objects.insert(e, Object { written: tick, ..o });
-                    }
-                    o.group
-                }
-                None => match ctx.create_param_group(self.object_layout) {
-                    Ok(group) => {
-                        self.write_object(ctx, group, &m);
-                        self.objects.insert(
-                            e,
-                            Object {
-                                group,
-                                written: tick,
-                            },
-                        );
-                        group
-                    }
-                    Err(err) => {
-                        console::error_once(&format!(
-                            "[rswebgl-scene] can't create an object group: {err}"
-                        ));
-                        continue;
-                    }
-                },
+            let Some(group) = self.ensure_object_group(ctx, e, &m, worlds.changed_tick(row)) else {
+                continue;
             };
 
             let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
@@ -473,6 +458,9 @@ impl SceneRenderer {
         ctx.destroy_uniform_buffer(self.frame_ubo);
         ctx.destroy_uniform_buffer(self.lighting_ubo);
         ctx.destroy_texture(self.brdf_lut);
+        if let Some(p) = self.picker {
+            p.destroy(ctx);
+        }
         self.default_env.destroy(ctx);
         if let Some(env) = self.env {
             env.destroy(ctx);
@@ -559,6 +547,47 @@ impl SceneRenderer {
         Some((view, view_proj))
     }
 
+    // `e`'s object group, created on first use and rewritten when its world
+    // matrix changed (at `tick`) since it was last written.
+    pub(crate) fn ensure_object_group(
+        &mut self,
+        ctx: &Context,
+        e: Entity,
+        m: &Mat4,
+        tick: Tick,
+    ) -> Option<ParamGroupId> {
+        match self.objects.get(&e).copied() {
+            Some(o) => {
+                if o.written != tick {
+                    self.write_object(ctx, o.group, m);
+                    self.objects.insert(e, Object { written: tick, ..o });
+                }
+                Some(o.group)
+            }
+            None => match ctx.create_param_group(self.object_layout) {
+                Ok(group) => {
+                    self.write_object(ctx, group, m);
+                    // For picking: which entity a pixel is.
+                    ctx.param_set_uints(group, self.f_object_id, &[e.to_raw()]);
+                    self.objects.insert(
+                        e,
+                        Object {
+                            group,
+                            written: tick,
+                        },
+                    );
+                    Some(group)
+                }
+                Err(err) => {
+                    console::error_once(&format!(
+                        "[rswebgl-scene] can't create an object group: {err}"
+                    ));
+                    None
+                }
+            },
+        }
+    }
+
     fn write_object(&mut self, ctx: &Context, group: ParamGroupId, m: &Mat4) {
         let upper = Mat3::from_mat4(*m);
         // A zero scale has no inverse; fall back rather than upload NaNs.
@@ -570,6 +599,68 @@ impl SceneRenderer {
         ctx.param_set_floats(group, self.f_model, &m.to_cols_array());
         ctx.param_set_floats(group, self.f_normal, &normal.to_cols_array());
         self.stats.objects_written += 1;
+    }
+
+    /// The nearest visible mesh under `ndc` (−1…1, +Y up) as `camera` sees
+    /// it on a `width`×`height` target, found on the GPU (see `gpu_pick`):
+    /// the future resolves a frame or so later. Uses the world matrices as
+    /// of the last `TransformSystem::update`. An error if the camera isn't
+    /// one or the picking objects can't be made.
+    pub fn pick(
+        &mut self,
+        world: &World,
+        ctx: &Context,
+        camera: Entity,
+        ndc: Vec2,
+        width: u32,
+        height: u32,
+    ) -> Result<impl Future<Output = Result<Option<Hit>, Error>> + use<>, Error> {
+        let (Some(cam), Some(cam_world)) = (
+            world.get::<Camera>(camera),
+            world.get::<WorldMatrix>(camera),
+        ) else {
+            return Err("pick: the camera entity needs a Camera and a WorldMatrix".into());
+        };
+        let view_proj = cam.projection_matrix() * cam_world.0.inverse();
+        let pick_view_proj =
+            GpuPicker::narrowing(ndc, width.max(1) as f32, height.max(1) as f32) * view_proj;
+        let frustum = Frustum::from_view_proj(&pick_view_proj);
+        let eye = cam_world.0.w_axis.truncate();
+
+        let mut meshes = Vec::new();
+        if let (Some(storage), Some(worlds)) = (
+            world.storage::<MeshRenderer>(),
+            world.storage::<WorldMatrix>(),
+        ) {
+            let bounds = world.storage::<Bounds>();
+            let any_hidden = world
+                .storage::<Visible>()
+                .is_some_and(|v| v.data().iter().any(|v| !v.0));
+            for (e, mesh) in storage.iter() {
+                if mesh.vao.is_null() || (any_hidden && hidden(world, e)) {
+                    continue;
+                }
+                let Some(row) = worlds.row(e) else {
+                    continue;
+                };
+                let m = worlds.data()[row as usize].0;
+                if let Some(b) = bounds.and_then(|b| b.get(e)) {
+                    let (c, h) = b.transformed(&m);
+                    if !frustum.intersects(c, h) {
+                        continue;
+                    }
+                }
+                if let Some(group) = self.ensure_object_group(ctx, e, &m, worlds.changed_tick(row))
+                {
+                    meshes.push((*mesh, group));
+                }
+            }
+        }
+        if self.picker.is_none() {
+            self.picker = Some(GpuPicker::new(ctx)?);
+        }
+        let picker = self.picker.as_ref().expect("just made");
+        Ok(picker.pick(ctx, &meshes, &pick_view_proj, &view_proj, ndc, eye))
     }
 
     // Groups of entities that no longer have a MeshRenderer. Seen through the

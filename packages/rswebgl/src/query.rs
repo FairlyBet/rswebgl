@@ -269,7 +269,7 @@ impl Context {
     pub fn query_result_async(
         &self,
         q: QueryId,
-    ) -> impl Future<Output = Result<f64, Error>> + 'static {
+    ) -> impl Future<Output = Result<f64, Error>> + use<> {
         let ctx = self.clone();
         let started = self.poll_query(q).map(|(_, run)| run);
         let epoch = self.core.epoch.get();

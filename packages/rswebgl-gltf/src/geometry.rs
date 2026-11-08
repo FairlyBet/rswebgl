@@ -17,7 +17,6 @@
 //! keep their source width (u8 / u16 / u32) — WebGL2 draws all three.
 
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use rswebgl::buffer::BufferUsage;
 use rswebgl::console;
@@ -27,14 +26,6 @@ use rswebgl::ids::{BufferId, VertexArrayId};
 use rswebgl::vao::VertexAttr;
 
 use crate::{ATTR_COLOR, ATTR_NORMAL, ATTR_TANGENT, ATTR_UV0, ATTR_UV1};
-
-/// A triangle primitive's geometry kept on the CPU (mesh space), for picking.
-#[derive(Debug, Default)]
-pub struct Triangles {
-    pub positions: Vec<[f32; 3]>,
-    /// Three per triangle; generated for non-indexed primitives.
-    pub indices: Vec<u32>,
-}
 
 /// One primitive on the GPU, plus its local-space bounds.
 #[derive(Clone)]
@@ -47,8 +38,6 @@ pub struct PrimitiveGpu {
     pub attributes: u32,
     pub aabb_min: [f32; 3],
     pub aabb_max: [f32; 3],
-    /// For `TRIANGLES` primitives; shared by every item drawing this one.
-    pub triangles: Option<Rc<Triangles>>,
 }
 
 /// GPU buffers created so far, by accessor index, and the vertex arrays built
@@ -168,10 +157,6 @@ impl GeometryCache {
         };
 
         let material = primitive.material().index().map_or(-1, |i| i as i32);
-        let triangles = (primitive.mode() == gltf::mesh::Mode::Triangles)
-            .then(|| cpu_triangles(&reader))
-            .flatten()
-            .map(Rc::new);
         Some(PrimitiveGpu {
             vao,
             draw,
@@ -179,7 +164,6 @@ impl GeometryCache {
             attributes,
             aabb_min,
             aabb_max,
-            triangles,
         })
     }
 
@@ -272,19 +256,6 @@ fn accessor_bounds(a: &gltf::Accessor) -> Option<([f32; 3], [f32; 3])> {
 }
 
 /// glTF primitive topology → our `DrawMode` (the GL enum values are identical).
-// Positions and triangle indices read back for the CPU (None without positions).
-fn cpu_triangles<'a, 's, F>(reader: &gltf::mesh::Reader<'a, 's, F>) -> Option<Triangles>
-where
-    F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>,
-{
-    let positions: Vec<[f32; 3]> = reader.read_positions()?.collect();
-    let indices: Vec<u32> = match reader.read_indices() {
-        Some(i) => i.into_u32().collect(),
-        None => (0..positions.len() as u32).collect(),
-    };
-    Some(Triangles { positions, indices })
-}
-
 fn draw_mode(mode: gltf::mesh::Mode) -> DrawMode {
     use gltf::mesh::Mode;
     match mode {

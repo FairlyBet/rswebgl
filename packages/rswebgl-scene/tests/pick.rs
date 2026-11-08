@@ -1,7 +1,7 @@
 // Host tests: `cargo test -p rswebgl-scene`.
 
 use glam::{Mat4, Vec2, Vec3};
-use rswebgl_scene::{Camera, Ray, ray_aabb, ray_triangle};
+use rswebgl_scene::{Camera, Ray, ray_aabb};
 
 fn ray(o: [f32; 3], d: [f32; 3]) -> Ray {
     Ray {
@@ -37,34 +37,6 @@ fn boxes() {
         ray_aabb(&ray([1.0, 0.0, 5.0], [0.0, 0.0, -1.0]), min, max),
         Some(4.0),
         "on a face"
-    );
-}
-
-#[test]
-fn triangles_from_both_sides() {
-    let (a, b, c) = (
-        Vec3::new(-1.0, -1.0, 0.0),
-        Vec3::new(1.0, -1.0, 0.0),
-        Vec3::new(0.0, 1.0, 0.0),
-    );
-    assert_eq!(
-        ray_triangle(&ray([0.0, 0.0, 2.0], [0.0, 0.0, -1.0]), a, b, c),
-        Some(2.0)
-    );
-    assert_eq!(
-        ray_triangle(&ray([0.0, 0.0, -3.0], [0.0, 0.0, 1.0]), a, b, c),
-        Some(3.0),
-        "back"
-    );
-    assert_eq!(
-        ray_triangle(&ray([0.9, 0.9, 2.0], [0.0, 0.0, -1.0]), a, b, c),
-        None,
-        "outside"
-    );
-    assert_eq!(
-        ray_triangle(&ray([0.0, 0.0, 2.0], [1.0, 0.0, 0.0]), a, b, c),
-        None,
-        "parallel"
     );
 }
 

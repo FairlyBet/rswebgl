@@ -47,6 +47,16 @@ export interface MaterialTextureOptions {
   texCoord?: number;
 }
 
+/** What `pick` found. */
+export interface PickHit {
+  /** The mesh entity (its `parent` is the glTF node). */
+  entity: number;
+  /** World position hit. */
+  point: Float32Array;
+  /** From the camera. */
+  distance: number;
+}
+
 /** What a mesh entity draws with: renderer handles, not owned by the scene. */
 export interface MeshOptions {
   program: number;

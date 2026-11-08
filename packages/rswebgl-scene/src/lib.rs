@@ -32,6 +32,7 @@ mod brdf_lut;
 mod camera;
 mod culling;
 mod environment;
+mod gpu_pick;
 mod hdr;
 mod hierarchy;
 mod js;
@@ -54,7 +55,7 @@ pub use js::Scene;
 pub use light::{Light, LightKind};
 pub use model::{Name, Primitive, find_by_name, spawn_model};
 pub use pbr::{PbrKey, PbrShaders};
-pub use pick::{Hit, Ray, pick, pick_ray, ray_aabb, ray_triangle};
+pub use pick::{Hit, Ray, pick_bounds, ray_aabb};
 pub use render::{
     FRAME_BLOCK, FRAME_SLOT, LIGHTING_BLOCK, MATERIAL_SLOT, MAX_LIGHTS, MODEL_UNIFORM,
     MeshRenderer, NORMAL_MATRIX_UNIFORM, OBJECT_SLOT, RenderStats, SceneRenderer, Visible,
