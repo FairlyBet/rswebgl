@@ -7,4 +7,4 @@ precision highp int;
 
 #include "common.glsl"
 #include "frame.glsl"
-#include "object.glsl"
+#include "object_instanced.glsl"

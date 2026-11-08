@@ -49,13 +49,12 @@ float ior_roughness(float roughness, float ior) {
 }
 
 // The ray through a volume of `thickness` (mesh units, scaled by the model
-// matrix per axis) along the refracted direction (Khronos
-// getVolumeTransmissionRay).
+// matrix per axis: v_model_scale, from the vertex stage) along the
+// refracted direction (Khronos getVolumeTransmissionRay).
 vec3 volume_ray(vec3 n, vec3 v, float thickness, float ior) {
     vec3 r = refract(-v, n, 1.0 / ior);
     if (dot(r, r) == 0.0) r = -v; // total internal reflection (IOR < 1)
-    vec3 scale = vec3(length(u_model[0].xyz), length(u_model[1].xyz), length(u_model[2].xyz));
-    return normalize(r) * thickness * scale;
+    return normalize(r) * thickness * v_model_scale;
 }
 
 // Beer's law over `distance` (Khronos applyVolumeAttenuation).

@@ -23,6 +23,7 @@ use crate::camera::Camera;
 use crate::culling::{Bounds, Frustum};
 use crate::environment::{Environment, FULLSCREEN_VERT, brdf_lut_texture};
 use crate::gpu_pick::{GpuPicker, PickView};
+use crate::instances::{Batches, Instances, ProgramKind};
 use crate::light::Light;
 use crate::output::ToneMapping;
 use crate::pick::Hit;
@@ -44,12 +45,22 @@ use crate::transform::{Parent, WorldMatrix};
 pub const FRAME_BLOCK: &str = "Frame";
 /// Per-object uniforms, set in group slot 2: `uniform mat4 u_model;` and
 /// `uniform mat3 u_normal_matrix;` (inverse-transpose of the model's upper
-/// 3×3). A shader may declare either or neither.
+/// 3×3). A shader may declare either or neither. Shaders on the scene
+/// prelude read them from the instance texture in the vertex stage instead
+/// (`INSTANCE_BASE_UNIFORM`), so identical meshes batch into one instanced
+/// draw; one that also reads them in its fragment stage draws each object
+/// on its own.
 pub const MODEL_UNIFORM: &str = "u_model";
 pub const NORMAL_MATRIX_UNIFORM: &str = "u_normal_matrix";
 /// Per-object, set in group slot 2: `uniform uint u_object_id;` — the
 /// entity (its raw handle), for picking.
 pub const OBJECT_ID_UNIFORM: &str = "u_object_id";
+/// Per draw, set in group slot 2 for shaders that read their object from the
+/// instance texture (the scene prelude, `object_instanced.glsl`): where this
+/// draw's instances start.
+pub const INSTANCE_BASE_UNIFORM: &str = "u_instance_base";
+/// The frame's instance texture (slot 0): three RGBA32F texels per instance.
+pub const INSTANCES_TEXTURE: &str = "u_instances";
 
 /// Name of the lights block, bound next to the frame block in slot 0:
 ///
@@ -123,8 +134,11 @@ pub struct Reloading;
 /// What the last `SceneRenderer::render` did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RenderStats {
-    /// Draws pushed into the pass.
+    /// Meshes drawn (an instanced draw counts each of its instances).
     pub drawn: usize,
+    /// Draw calls pushed into the pass: fewer than `drawn` when identical
+    /// meshes were batched.
+    pub draws: usize,
     /// Left out by frustum culling.
     pub culled: usize,
     /// Object groups whose matrices were written (moved or new objects).
@@ -134,6 +148,9 @@ pub struct RenderStats {
     /// Visible meshes left out because their shader is still compiling in
     /// the background (parallel compile); they appear once it links.
     pub pending: usize,
+    /// Meshes drawn as instances of a batch (several identical meshes in
+    /// one draw).
+    pub instanced: usize,
 }
 
 // An entity's object group and the `WorldMatrix` change tick it holds. Kept
@@ -193,6 +210,14 @@ pub struct SceneRenderer {
     f_normal: ParamField,
     f_object_id: ParamField,
     objects: HashMap<Entity, Object>,
+    f_instance_base: ParamField,
+    f_instances: ParamField,
+    // This frame's instance data and batches; the batches' pooled object
+    // groups; how each program gets its object.
+    instances: Instances,
+    batches: Batches,
+    batch_groups: Vec<ParamGroupId>,
+    program_kinds: HashMap<ProgramId, ProgramKind>,
     // Made on the first `pick`.
     picker: Option<GpuPicker>,
     // The context generation its GPU objects belong to.
@@ -240,6 +265,7 @@ impl SceneRenderer {
                 .texture("u_env_specular")
                 .texture("u_env_brdf")
                 .texture("u_scene_color")
+                .texture(INSTANCES_TEXTURE)
                 .uniform("u_background_blur", UniformType::F32),
         )?;
         let frame_group = ctx.create_param_group(frame_layout)?;
@@ -249,8 +275,11 @@ impl SceneRenderer {
             &ParamLayoutBuilder::new()
                 .uniform(MODEL_UNIFORM, UniformType::Mat4)
                 .uniform(NORMAL_MATRIX_UNIFORM, UniformType::Mat3)
-                .uniform(OBJECT_ID_UNIFORM, UniformType::U32),
+                .uniform(OBJECT_ID_UNIFORM, UniformType::U32)
+                .uniform(INSTANCE_BASE_UNIFORM, UniformType::I32),
         )?;
+        let instances = Instances::new(ctx)?;
+        ctx.param_set_texture_by_name(frame_group, INSTANCES_TEXTURE, instances.texture());
         let brdf_lut = brdf_lut_texture(ctx)?;
         ctx.param_set_texture_by_name(frame_group, "u_env_brdf", brdf_lut);
         // Until a frame grabs the scene: any valid texture (not sampled).
@@ -281,6 +310,12 @@ impl SceneRenderer {
             f_normal: ctx.param_field(object_layout, NORMAL_MATRIX_UNIFORM)?,
             f_object_id: ctx.param_field(object_layout, OBJECT_ID_UNIFORM)?,
             objects: HashMap::new(),
+            f_instance_base: ctx.param_field(object_layout, INSTANCE_BASE_UNIFORM)?,
+            f_instances: ctx.param_field(frame_layout, INSTANCES_TEXTURE)?,
+            instances,
+            batches: Batches::default(),
+            batch_groups: Vec::new(),
+            program_kinds: HashMap::new(),
             picker: None,
             generation: ctx.generation(),
             display_output: true,
@@ -462,7 +497,10 @@ impl SceneRenderer {
 
     /// Appends the visible `MeshRenderer`s, as seen from `camera`, to `pass`.
     /// Doesn't clear or sort the pass. An entity without a `WorldMatrix` yet
-    /// (run `TransformSystem::update` first) is skipped.
+    /// (run `TransformSystem::update` first) is skipped. Identical opaque
+    /// meshes of a shader that reads its instance become one instanced draw;
+    /// their matrices go to the instance texture, which the next call
+    /// rewrites — render the pass first.
     pub fn render(
         &mut self,
         world: &World,
@@ -486,6 +524,8 @@ impl SceneRenderer {
     ) -> RenderStats {
         self.stats = RenderStats::default();
         self.release_removed(world, ctx);
+        self.instances.clear();
+        self.batches.clear();
 
         let Some((view, view_proj)) = self.write_frame(world, ctx, camera) else {
             return self.stats;
@@ -531,19 +571,34 @@ impl SceneRenderer {
                 continue;
             }
 
+            if mesh.transmissive {
+                self.stats.transmissive += 1;
+            }
+            let to_late = late.is_some() && (mesh.transparent || mesh.transmissive);
+            let kind = self.program_kind(ctx, mesh.program);
+            // Opaque meshes of a shader that reads its instance draw
+            // together: one instanced draw per program, state, vertex array,
+            // material and command.
+            if kind == ProgramKind::Batched && !mesh.transparent {
+                self.batches.add(to_late, mesh, &m);
+                continue;
+            }
+
             let Some(group) = self.ensure_object_group(ctx, e, &m, worlds.changed_tick(row)) else {
                 continue;
             };
+            if kind != ProgramKind::Uniforms {
+                // One instance of its own.
+                let base = self.instances.push(&m);
+                ctx.param_set_i32(group, self.f_instance_base, base);
+            }
 
             let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
             groups[FRAME_SLOT] = self.frame_group;
             groups[MATERIAL_SLOT] = mesh.material;
             groups[OBJECT_SLOT] = group;
-            if mesh.transmissive {
-                self.stats.transmissive += 1;
-            }
             let pass: &mut Pass = match &mut late {
-                Some(late) if mesh.transparent || mesh.transmissive => late,
+                Some(late) if to_late => late,
                 _ => &mut *opaque,
             };
             if mesh.transparent {
@@ -564,8 +619,83 @@ impl SceneRenderer {
                 pass.push_groups(mesh.program, mesh.state, mesh.vao, groups, &mesh.command);
             }
             self.stats.drawn += 1;
+            self.stats.draws += 1;
+        }
+
+        // The batches: their instances after the single ones, a pooled group
+        // each for where they start.
+        let batches = std::mem::take(&mut self.batches);
+        for (i, batch) in batches.iter().enumerate() {
+            let base = self.instances.len();
+            for m in &batch.matrices {
+                self.instances.push(m);
+            }
+            let Some(group) = self.batch_group(ctx, i) else {
+                break;
+            };
+            ctx.param_set_i32(group, self.f_instance_base, base);
+            let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
+            groups[FRAME_SLOT] = self.frame_group;
+            groups[MATERIAL_SLOT] = batch.mesh.material;
+            groups[OBJECT_SLOT] = group;
+            let mut command = batch.mesh.command;
+            command.instance_count = batch.matrices.len() as i32;
+            let pass: &mut Pass = match &mut late {
+                Some(late) if batch.late => late,
+                _ => &mut *opaque,
+            };
+            let mesh = &batch.mesh;
+            pass.push_groups(mesh.program, mesh.state, mesh.vao, groups, &command);
+            self.stats.drawn += batch.matrices.len();
+            self.stats.draws += 1;
+            self.stats.instanced += batch.matrices.len();
+        }
+        self.batches = batches;
+        self.batches.clear();
+        if let Err(err) = self
+            .instances
+            .upload(ctx, self.frame_group, self.f_instances)
+        {
+            console::error_once(&format!("[rswebgl-scene] instance data: {err}"));
         }
         self.stats
+    }
+
+    // How `program` gets its object: uniforms (a shader of its own), or the
+    // instance texture — batched unless its fragment stage also reads the
+    // object uniforms. Asked once the program has linked (the frame skips
+    // it before), so the uniform list doesn't wait.
+    fn program_kind(&mut self, ctx: &Context, program: ProgramId) -> ProgramKind {
+        if let Some(&kind) = self.program_kinds.get(&program) {
+            return kind;
+        }
+        let names = ctx.program_active_uniform_names(program);
+        let has = |n: &str| names.iter().any(|x| x == n);
+        let kind = if !has(INSTANCE_BASE_UNIFORM) {
+            ProgramKind::Uniforms
+        } else if has(MODEL_UNIFORM) || has(NORMAL_MATRIX_UNIFORM) || has(OBJECT_ID_UNIFORM) {
+            ProgramKind::Single
+        } else {
+            ProgramKind::Batched
+        };
+        self.program_kinds.insert(program, kind);
+        kind
+    }
+
+    // The `i`th pooled object group for a batch (made on first need).
+    fn batch_group(&mut self, ctx: &Context, i: usize) -> Option<ParamGroupId> {
+        while self.batch_groups.len() <= i {
+            match ctx.create_param_group(self.object_layout) {
+                Ok(g) => self.batch_groups.push(g),
+                Err(err) => {
+                    console::error_once(&format!(
+                        "[rswebgl-scene] can't create a batch group: {err}"
+                    ));
+                    return None;
+                }
+            }
+        }
+        Some(self.batch_groups[i])
     }
 
     /// Rebuilds the GPU side after a context loss (`Context::generation`
@@ -602,6 +732,9 @@ impl SceneRenderer {
         for o in self.objects.into_values() {
             ctx.destroy_param_group(o.group);
         }
+        for g in self.batch_groups {
+            ctx.destroy_param_group(g);
+        }
         ctx.destroy_param_group(self.frame_group);
         ctx.destroy_param_layout(self.frame_layout);
         ctx.destroy_param_layout(self.object_layout);
@@ -611,6 +744,7 @@ impl SceneRenderer {
         ctx.destroy_uniform_buffer(self.frame_ubo);
         ctx.destroy_uniform_buffer(self.lighting_ubo);
         ctx.destroy_texture(self.brdf_lut);
+        self.instances.destroy(ctx);
         if let Some(p) = self.picker {
             p.destroy(ctx);
         }

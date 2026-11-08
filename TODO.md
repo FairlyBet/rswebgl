@@ -61,9 +61,15 @@ attached. Left:
   timer spanning several passes; `TIMESTAMP_EXT` isn't exposed by WebGL2.
 - Occlusion queries wrap one draw (`Pass::set_last_draw_query`). Not done: a
   query around several draws (a whole object of many primitives).
-- **`WEBGL_multi_draw`.** Several draws in one JS call (offset/count arrays).
-  Real perf win for many-object scenes; fits `draw.rs`/`DrawCommand` as a
-  `multi_draw_*` variant.
+- **`WEBGL_multi_draw`.** Several draws in one JS call (offset/count arrays)
+  sharing program, state, vertex array and uniforms. Looked at with the
+  scene's instancing: little left for it there — glTF primitives each have
+  their own vertex array, and draws of one array with different index
+  ranges carry different materials; the mergeable case (same mesh, same
+  material) is what instancing covers. Without base instance (only in the
+  draft `WEBGL_draw_instanced_base_vertex_base_instance`) the draws of one
+  multi-draw can't each find their instances either. Worth it for apps
+  with their own big shared vertex buffers, not soon.
 - ~~**`OES_draw_buffers_indexed`.**~~ Done: `RenderState::set_target_blend`
   (blend func / equation / color mask per MRT attachment), `can_blend_per_target`.
   A state with overrides resets and re-applies blending on every switch to or
@@ -203,10 +209,9 @@ FBO blit). Done. Deferred polish:
 
 ## glTF
 
-- `EXT_mesh_gpu_instancing` instances come out as separate draw items; one
-  `drawElementsInstanced` with a per-instance matrix attribute needs renderer
-  support (with the ECS work). Quantized instance attributes (normalized
-  rotation) aren't read — such nodes are drawn once, with a warning.
+- `EXT_mesh_gpu_instancing` instances come out as separate draw items
+  (entities); the scene batches them back into one instanced draw.
+  Quantized instance attributes (normalized rotation) aren't read — such nodes are drawn once, with a warning.
 - Vertex attributes are dequantized to f32 on upload; keeping normalized
   u8/u16 (`KHR_mesh_quantization`) would cut memory on mobile.
 - Not handled yet: skins, morph targets, animations. Cameras and
@@ -220,7 +225,11 @@ FBO blit). Done. Deferred polish:
   of it the transform a cache would save — ~0.15 ms per 10k in wasm, less
   than the cache's own tick checks would leave. Not worth it; past ~10k
   objects the costs are draw calls (instancing) and a flat cull loop (a BVH).
-- Many copies of one mesh → one instanced draw instead of a draw per entity.
+- Instancing: opaque meshes of a scene-prelude shader with the same
+  program, state, vertex array, material and command draw as one (matrices
+  in an RGBA32F instance texture, `object_instanced.glsl`). Transparent ones
+  still draw one by one (they sort per object). The texture is rewritten per
+  `render` call: two passes built before either is rendered would share it.
 - Transparent draws sort per object (bounds center), not per triangle:
   intersecting or concave blended meshes can still show order errors.
 - Front-face winding of a glTF part is fixed at load from its world matrix;

@@ -50,6 +50,10 @@ pub const CHUNKS: &[(&str, &str)] = &[
     ("color.glsl", include_str!("../shaders/lib/color.glsl")),
     ("frame.glsl", include_str!("../shaders/lib/frame.glsl")),
     ("object.glsl", include_str!("../shaders/lib/object.glsl")),
+    (
+        "object_instanced.glsl",
+        include_str!("../shaders/lib/object_instanced.glsl"),
+    ),
     ("lights.glsl", include_str!("../shaders/lib/lights.glsl")),
     (
         "environment.glsl",

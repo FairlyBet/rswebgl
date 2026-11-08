@@ -577,7 +577,9 @@ impl Scene {
     /// `renderFrame` into a pass of yours (an offscreen target, MSAA, your
     /// own draws next to the scene's): appends the visible draws without
     /// clearing or sorting the pass, and leaves the camera's aspect to you
-    /// (`setCameraAspect`). Returns the draws added.
+    /// (`setCameraAspect`). Returns the meshes added. Render the pass before
+    /// the next `render` call: each call rewrites the scene's instance data
+    /// (the matrices its batched draws read).
     pub fn render(&mut self, camera: Entity, pass: &mut Pass) -> usize {
         self.render_passes(camera, pass, None)
     }
@@ -629,9 +631,17 @@ impl Scene {
         self.stats.pending
     }
 
-    /// Draws added by the last frame.
+    /// Meshes the last frame drew.
     pub fn drawn(&self) -> usize {
         self.stats.drawn
+    }
+
+    /// Draw calls the last frame made: fewer than `drawn` when identical
+    /// meshes (same shader, geometry and material) drew as one instanced
+    /// draw.
+    #[wasm_bindgen(js_name = drawCalls)]
+    pub fn draw_calls(&self) -> usize {
+        self.stats.draws
     }
 
     /// Meshes the last frame left out by frustum culling.

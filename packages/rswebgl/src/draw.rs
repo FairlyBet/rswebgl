@@ -76,7 +76,7 @@ const ELEMENTS: u8 = 1;
 const RANGE_ELEMENTS: u8 = 2;
 
 #[wasm_bindgen]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DrawCommand {
     pub mode: DrawMode,
     pub count: i32,

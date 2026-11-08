@@ -471,7 +471,7 @@ function frame(/** @type {number} */ now) {
     $("frame").textContent = `frame ${avg.toFixed(1)} ms (worst ${worst.toFixed(0)})  cpu ${cpu.toFixed(2)} ms`;
     $("info").textContent =
       `\n${canvas.width}×${canvas.height}  ${scene.isHdr() ? "HDR" : "direct"}  ${scene.shadingModel()}\n` +
-      `drawn ${scene.drawn()}  culled ${scene.culled()}  pending ${scene.pending()}\n` +
+      `drawn ${scene.drawn()} in ${scene.drawCalls()} calls  culled ${scene.culled()}  pending ${scene.pending()}\n` +
       `variants ${scene.shaderVariantCount()}  entities ${scene.entityCount()}  file lights ${root ? scene.lights(root).length : 0}`;
     // Frame times, 60 fps line at the middle.
     const g = graph;

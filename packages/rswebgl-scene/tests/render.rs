@@ -191,12 +191,15 @@ impl Setup {
 }
 
 fn stats(drawn: usize, culled: usize, objects_written: usize) -> RenderStats {
+    // Own shaders (object uniforms): a draw per mesh.
     RenderStats {
         drawn,
+        draws: drawn,
         culled,
         objects_written,
         pending: 0,
         transmissive: 0,
+        instanced: 0,
     }
 }
 

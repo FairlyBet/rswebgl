@@ -1140,3 +1140,35 @@ async fn texture_transforms() {
     );
     s.scene.destroy();
 }
+
+// Identical meshes (the two stones: one mesh, one material) draw as one
+// instanced draw; each instance still moves, hides and takes its own
+// material on its own.
+#[wasm_bindgen_test]
+async fn identical_meshes_draw_as_one_instanced_draw() {
+    const BLACK: [u8; 4] = [0, 0, 0, 255];
+    let mut s = setup().await;
+    assert_eq!(s.frame().await, [YELLOW, WHITE, WHITE]);
+    assert_eq!((s.scene.drawn(), s.scene.draw_calls()), (3, 2));
+
+    // An instance moves on its own: stone_a in front of the band.
+    let stone_a = s.scene.find_by_name(s.root, "stone_a");
+    let stone_b = s.scene.find_by_name(s.root, "stone_b");
+    s.scene.set_translation(stone_a, -1.0, 0.0, 0.5);
+    assert_eq!(s.frame().await, [WHITE, BLACK, WHITE]);
+    // Hidden, it leaves the batch.
+    s.scene.set_visible(stone_b, false);
+    assert_eq!(s.frame().await, [WHITE, BLACK, BLACK]);
+    assert_eq!((s.scene.drawn(), s.scene.draw_calls()), (2, 2));
+    s.scene.set_visible(stone_b, true);
+    // A material of its own: a draw of its own.
+    let stone = s.scene.find_material(s.root, "Stone");
+    let red_stone = s.scene.clone_material(stone).unwrap();
+    s.scene
+        .set_material_property(red_stone, "baseColorFactor", json("[1, 0, 0, 1]"))
+        .unwrap();
+    s.scene.set_material(stone_b, red_stone);
+    assert_eq!(s.frame().await, [WHITE, BLACK, RED]);
+    assert_eq!((s.scene.drawn(), s.scene.draw_calls()), (3, 3));
+    s.scene.destroy();
+}

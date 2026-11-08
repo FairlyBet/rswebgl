@@ -33,14 +33,17 @@ out vec4 v_tangent; // world xyz, w = handedness
 #ifdef HAS_COLOR
 out vec4 v_color;
 #endif
+// The model's scale per axis (the volume's thickness is in mesh units).
+flat out vec3 v_model_scale;
 
 void main() {
-    vec4 world = u_model * vec4(a_position, 1.0);
+    mat4 model = u_model; // read once
+    vec4 world = model * vec4(a_position, 1.0);
     v_world = world.xyz;
 #ifdef HAS_NORMAL
     v_normal = u_normal_matrix * a_normal;
 #ifdef HAS_TANGENT
-    v_tangent = vec4(mat3(u_model) * a_tangent.xyz, a_tangent.w);
+    v_tangent = vec4(mat3(model) * a_tangent.xyz, a_tangent.w);
 #endif
 #endif
 #ifdef HAS_UV0
@@ -56,5 +59,6 @@ void main() {
 #ifdef HAS_COLOR
     v_color = a_color;
 #endif
+    v_model_scale = vec3(length(model[0].xyz), length(model[1].xyz), length(model[2].xyz));
     gl_Position = u_view_proj * world;
 }

@@ -35,6 +35,7 @@ mod environment;
 mod gpu_pick;
 mod hdr;
 mod hierarchy;
+mod instances;
 mod js;
 mod light;
 mod model;

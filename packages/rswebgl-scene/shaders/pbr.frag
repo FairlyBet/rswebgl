@@ -17,6 +17,10 @@
 //              HAS_DIFFUSE_ROUGHNESS HAS_SHEEN HAS_IRIDESCENCE HAS_ANISOTROPY — a layer the material doesn't use isn't
 //              compiled at all
 
+// The model's scale per axis, from the vertex stage (volume thickness is in
+// mesh units: surface.glsl).
+flat in vec3 v_model_scale;
+
 #include "brdf.glsl"
 #include "eon.glsl"
 #include "sheen.glsl"
