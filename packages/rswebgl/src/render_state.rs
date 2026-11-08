@@ -155,6 +155,64 @@ impl StencilOp {
 }
 
 // ---------------------------------------------------------------------------
+// TargetBlend — one attachment's blend state (OES_draw_buffers_indexed).
+// ---------------------------------------------------------------------------
+
+/// How one color attachment blends and which channels it writes; set on a
+/// `RenderState` with `setTargetBlend`. Starts as no blending, all channels.
+#[wasm_bindgen]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TargetBlend {
+    pub blend: bool,
+    #[wasm_bindgen(js_name = srcRgb)]
+    pub src_rgb: BlendFactor,
+    #[wasm_bindgen(js_name = dstRgb)]
+    pub dst_rgb: BlendFactor,
+    #[wasm_bindgen(js_name = srcAlpha)]
+    pub src_alpha: BlendFactor,
+    #[wasm_bindgen(js_name = dstAlpha)]
+    pub dst_alpha: BlendFactor,
+    #[wasm_bindgen(js_name = eqRgb)]
+    pub eq_rgb: BlendEquation,
+    #[wasm_bindgen(js_name = eqAlpha)]
+    pub eq_alpha: BlendEquation,
+    #[wasm_bindgen(js_name = maskR)]
+    pub mask_r: bool,
+    #[wasm_bindgen(js_name = maskG)]
+    pub mask_g: bool,
+    #[wasm_bindgen(js_name = maskB)]
+    pub mask_b: bool,
+    #[wasm_bindgen(js_name = maskA)]
+    pub mask_a: bool,
+}
+
+#[wasm_bindgen]
+impl TargetBlend {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Default for TargetBlend {
+    fn default() -> Self {
+        Self {
+            blend: false,
+            src_rgb: BlendFactor::One,
+            dst_rgb: BlendFactor::Zero,
+            src_alpha: BlendFactor::One,
+            dst_alpha: BlendFactor::Zero,
+            eq_rgb: BlendEquation::Add,
+            eq_alpha: BlendEquation::Add,
+            mask_r: true,
+            mask_g: true,
+            mask_b: true,
+            mask_a: true,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RenderState — fixed-function GL pipeline state (no shaders).
 // ---------------------------------------------------------------------------
 
@@ -232,6 +290,10 @@ pub struct RenderState {
     pub polygon_offset_factor: f32,
     #[wasm_bindgen(js_name = polygonOffsetUnits)]
     pub polygon_offset_units: f32,
+
+    // Per-attachment overrides of the blend state and color mask, sorted by
+    // attachment index (`OES_draw_buffers_indexed`).
+    targets: Vec<(u32, TargetBlend)>,
 }
 
 #[wasm_bindgen]
@@ -239,6 +301,25 @@ impl RenderState {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Blends color attachment `index` of a multiple-render-target pass its
+    /// own way (and with its own color mask), instead of by this state's
+    /// blend fields, which keep applying to the other attachments. Needs
+    /// `OES_draw_buffers_indexed` (`Context::can_blend_per_target`); without
+    /// it the overrides are ignored and reported when the state is interned.
+    #[wasm_bindgen(js_name = setTargetBlend)]
+    pub fn set_target_blend(&mut self, index: u32, blend: &TargetBlend) {
+        match self.targets.binary_search_by_key(&index, |(i, _)| *i) {
+            Ok(at) => self.targets[at].1 = blend.clone(),
+            Err(at) => self.targets.insert(at, (index, blend.clone())),
+        }
+    }
+
+    /// Back to the state's own blend fields for attachment `index`.
+    #[wasm_bindgen(js_name = clearTargetBlend)]
+    pub fn clear_target_blend(&mut self, index: u32) {
+        self.targets.retain(|(i, _)| *i != index);
     }
 }
 
@@ -284,6 +365,7 @@ impl Default for RenderState {
             polygon_offset_fill: false,
             polygon_offset_factor: 0.0,
             polygon_offset_units: 0.0,
+            targets: Vec::new(),
         }
     }
 }
@@ -344,9 +426,110 @@ impl RenderState {
 
         toggle(Gl::POLYGON_OFFSET_FILL, self.polygon_offset_fill);
         gl.polygon_offset(self.polygon_offset_factor, self.polygon_offset_units);
+
+        self.apply_targets(gl);
+    }
+
+    // The blend state and color mask for every attachment — the non-indexed
+    // calls set all of them, undoing any per-target override.
+    fn apply_blend(&self, gl: &WebGl2RenderingContext) {
+        if self.blend {
+            gl.enable(WebGl2RenderingContext::BLEND);
+        } else {
+            gl.disable(WebGl2RenderingContext::BLEND);
+        }
+        gl.blend_func_separate(
+            self.blend_src_rgb.as_gl(),
+            self.blend_dst_rgb.as_gl(),
+            self.blend_src_alpha.as_gl(),
+            self.blend_dst_alpha.as_gl(),
+        );
+        gl.blend_equation_separate(self.blend_eq_rgb.as_gl(), self.blend_eq_alpha.as_gl());
+        gl.color_mask(
+            self.color_mask_r,
+            self.color_mask_g,
+            self.color_mask_b,
+            self.color_mask_a,
+        );
+    }
+
+    // Per-target overrides on top (`OES_draw_buffers_indexed`, enabled when
+    // the state was interned with any).
+    fn apply_targets(&self, gl: &WebGl2RenderingContext) {
+        if self.targets.is_empty() {
+            return;
+        }
+        let Some(ext) = gl.get_extension("OES_draw_buffers_indexed").ok().flatten() else {
+            return;
+        };
+        let call = |name: &str, args: &[JsValue]| {
+            if let Ok(f) = js_sys::Reflect::get(&ext, &name.into())
+                .and_then(|f| f.dyn_into::<js_sys::Function>())
+            {
+                let _ = f.apply(&ext, &args.iter().collect());
+            }
+        };
+        for (i, t) in &self.targets {
+            let i = JsValue::from(*i);
+            let on = if t.blend { "enableiOES" } else { "disableiOES" };
+            call(on, &[WebGl2RenderingContext::BLEND.into(), i.clone()]);
+            call(
+                "blendFuncSeparateiOES",
+                &[
+                    i.clone(),
+                    t.src_rgb.as_gl().into(),
+                    t.dst_rgb.as_gl().into(),
+                    t.src_alpha.as_gl().into(),
+                    t.dst_alpha.as_gl().into(),
+                ],
+            );
+            call(
+                "blendEquationSeparateiOES",
+                &[
+                    i.clone(),
+                    t.eq_rgb.as_gl().into(),
+                    t.eq_alpha.as_gl().into(),
+                ],
+            );
+            call(
+                "colorMaskiOES",
+                &[
+                    i,
+                    t.mask_r.into(),
+                    t.mask_g.into(),
+                    t.mask_b.into(),
+                    t.mask_a.into(),
+                ],
+            );
+        }
+    }
+
+    // Whether the blend state or color mask (global or per target) differs.
+    fn blend_differs(&self, prev: &Self) -> bool {
+        self.blend != prev.blend
+            || self.blend_src_rgb != prev.blend_src_rgb
+            || self.blend_dst_rgb != prev.blend_dst_rgb
+            || self.blend_src_alpha != prev.blend_src_alpha
+            || self.blend_dst_alpha != prev.blend_dst_alpha
+            || self.blend_eq_rgb != prev.blend_eq_rgb
+            || self.blend_eq_alpha != prev.blend_eq_alpha
+            || self.color_mask_r != prev.color_mask_r
+            || self.color_mask_g != prev.color_mask_g
+            || self.color_mask_b != prev.color_mask_b
+            || self.color_mask_a != prev.color_mask_a
+            || self.targets != prev.targets
     }
 
     pub(crate) fn apply_diff(&self, prev: &Self, gl: &WebGl2RenderingContext) {
+        // With per-target overrides on either side, blending is reset for every
+        // attachment and the overrides laid on again: field-by-field diffs
+        // can't tell which attachment an earlier override left changed.
+        let per_target = !self.targets.is_empty() || !prev.targets.is_empty();
+        if per_target && self.blend_differs(prev) {
+            self.apply_blend(gl);
+            self.apply_targets(gl);
+        }
+        let prev_blend = if per_target { self } else { prev };
         // Depth
         if self.depth_test != prev.depth_test {
             if self.depth_test {
@@ -363,17 +546,17 @@ impl RenderState {
         }
 
         // Blend
-        if self.blend != prev.blend {
+        if self.blend != prev_blend.blend {
             if self.blend {
                 gl.enable(WebGl2RenderingContext::BLEND);
             } else {
                 gl.disable(WebGl2RenderingContext::BLEND);
             }
         }
-        if self.blend_src_rgb != prev.blend_src_rgb
-            || self.blend_dst_rgb != prev.blend_dst_rgb
-            || self.blend_src_alpha != prev.blend_src_alpha
-            || self.blend_dst_alpha != prev.blend_dst_alpha
+        if self.blend_src_rgb != prev_blend.blend_src_rgb
+            || self.blend_dst_rgb != prev_blend.blend_dst_rgb
+            || self.blend_src_alpha != prev_blend.blend_src_alpha
+            || self.blend_dst_alpha != prev_blend.blend_dst_alpha
         {
             gl.blend_func_separate(
                 self.blend_src_rgb.as_gl(),
@@ -382,7 +565,9 @@ impl RenderState {
                 self.blend_dst_alpha.as_gl(),
             );
         }
-        if self.blend_eq_rgb != prev.blend_eq_rgb || self.blend_eq_alpha != prev.blend_eq_alpha {
+        if self.blend_eq_rgb != prev_blend.blend_eq_rgb
+            || self.blend_eq_alpha != prev_blend.blend_eq_alpha
+        {
             gl.blend_equation_separate(self.blend_eq_rgb.as_gl(), self.blend_eq_alpha.as_gl());
         }
 
@@ -455,10 +640,10 @@ impl RenderState {
         }
 
         // Color mask
-        if self.color_mask_r != prev.color_mask_r
-            || self.color_mask_g != prev.color_mask_g
-            || self.color_mask_b != prev.color_mask_b
-            || self.color_mask_a != prev.color_mask_a
+        if self.color_mask_r != prev_blend.color_mask_r
+            || self.color_mask_g != prev_blend.color_mask_g
+            || self.color_mask_b != prev_blend.color_mask_b
+            || self.color_mask_a != prev_blend.color_mask_a
         {
             gl.color_mask(
                 self.color_mask_r,
@@ -486,11 +671,42 @@ impl RenderState {
 
 #[wasm_bindgen]
 impl Context {
+    /// Whether render states can blend each color attachment its own way
+    /// (`RenderState::set_target_blend`; `OES_draw_buffers_indexed`, enabled
+    /// on first ask).
+    #[wasm_bindgen(js_name = canBlendPerTarget)]
+    pub fn can_blend_per_target(&self) -> bool {
+        self.enable_extension_quietly(crate::extension::Extension::OesDrawBuffersIndexed)
+    }
+}
+
+#[wasm_bindgen]
+impl Context {
     /// The id of `state`, interned: equal states get the same id, so draws
     /// compare render states as numbers and the full diff runs only on an
     /// actual change. States are small and never freed (an app has a handful).
     #[wasm_bindgen(js_name = renderState)]
     pub fn render_state(&self, state: &RenderState) -> StateId {
+        let mut owned;
+        let mut state = state;
+        if !state.targets.is_empty() {
+            let max = crate::limits::max_draw_buffers();
+            let usable = self.can_blend_per_target();
+            if !usable || state.targets.iter().any(|(i, _)| *i >= max) {
+                crate::console::error_once(&if usable {
+                    format!(
+                        "[rswebgl] render state: a per-target blend past attachment {} \n                         (MAX_DRAW_BUFFERS); overrides ignored",
+                        max - 1
+                    )
+                } else {
+                    "[rswebgl] render state: per-target blending needs \n                     OES_draw_buffers_indexed, which this device lacks; overrides ignored"
+                        .to_string()
+                });
+                owned = state.clone();
+                owned.targets.clear();
+                state = &owned;
+            }
+        }
         let mut res = self.res();
         if let Some((h, _)) = res.render_states.iter().find(|(_, s)| *s == state) {
             return h.into();

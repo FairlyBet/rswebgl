@@ -62,10 +62,11 @@ attached. Left:
 - **`WEBGL_multi_draw`.** Several draws in one JS call (offset/count arrays).
   Real perf win for many-object scenes; fits `draw.rs`/`DrawCommand` as a
   `multi_draw_*` variant.
-- **`OES_draw_buffers_indexed`.** Per-attachment blend state (own blend
-  func/equation + color mask per MRT target). Pairs with the finished MRT
-  (`drawBuffers`) and `RenderState`; without it blending is shared across all
-  attachments.
+- ~~**`OES_draw_buffers_indexed`.**~~ Done: `RenderState::set_target_blend`
+  (blend func / equation / color mask per MRT attachment), `can_blend_per_target`.
+  A state with overrides resets and re-applies blending on every switch to or
+  from it (cheap: a few calls per attachment); without the extension the
+  overrides are dropped when the state is interned, reported.
 
 ### Cheap & pleasant — a method or two
 
