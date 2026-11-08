@@ -254,6 +254,25 @@ async fn a_baked_uniform_environment_lights_like_the_constant_one() {
     // All lit: the rough one by the diffuse term, the metals by the
     // prefiltered specular.
     assert!(baked.iter().all(|p| p[0] > 60), "{baked:?}");
+
+    // A sun brighter than half float's max (65504; real HDRIs reach 2e5)
+    // must not turn into infinities that the prefilter spreads as NaN (black
+    // here): the rough and the metal, which gather the whole sky, stay lit,
+    // and nothing tints. (The mirror sees only the dim sky: dark either way.)
+    let mut sunny = [0.5; 16 * 8 * 3];
+    sunny[(2 * 16 + 5) * 3..][..3].copy_from_slice(&[2.0e5; 3]);
+    scene
+        .set_environment_hdr(&encode_hdr(16, 8, &sunny), 64)
+        .expect("bake");
+    scene.set_environment_intensity(0.01, 0.01, 0.01);
+    let sun = frame(&mut scene);
+    assert!(sun[0][0] > 60 && sun[1][0] > 30, "{sun:?}");
+    for p in &sun {
+        assert!(
+            p[0].abs_diff(p[1]) <= 3 && p[0].abs_diff(p[2]) <= 3,
+            "{sun:?}"
+        );
+    }
     scene.destroy();
 }
 

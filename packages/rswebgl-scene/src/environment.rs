@@ -27,6 +27,9 @@ use crate::hdr::HdrImage;
 pub(crate) const FULLSCREEN_VERT: &str = include_str!("../shaders/fullscreen.vert");
 const BAKE_FRAG: &str = include_str!("../shaders/env_bake.frag");
 
+// The largest finite half float.
+const HALF_MAX: f32 = 65504.0;
+
 // RGBA16F storage filled from f32 data (allowed for half-float formats).
 const RGBA16F_FROM_F32: TextureFormat = TextureFormat {
     internal: 0x881A,  // RGBA16F
@@ -226,12 +229,19 @@ impl<'a> Baker<'a> {
             w,
             h,
         );
+        // Half float tops out at 65504; brighter texels (a sun in a real HDRI
+        // can reach 2e5) would become infinities, which filtering turns into
+        // NaN (∞·0) that the prefilter then spreads over whole faces. Scale
+        // such a texel down to the limit, keeping its hue.
         let data: Vec<u8> = image
             .rgb
             .as_chunks::<3>()
             .0
             .iter()
-            .flat_map(|p| [p[0], p[1], p[2], 1.0])
+            .flat_map(|&[r, g, b]| {
+                let k = (HALF_MAX / r.max(g).max(b)).min(1.0);
+                [r * k, g * k, b * k, 1.0]
+            })
             .flat_map(f32::to_le_bytes)
             .collect();
         ctx.texture_sub_image_2d(equirect, 0, 0, 0, w, h, &RGBA16F_FROM_F32, &data);
