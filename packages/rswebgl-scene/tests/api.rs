@@ -1172,3 +1172,36 @@ async fn identical_meshes_draw_as_one_instanced_draw() {
     assert_eq!((s.scene.drawn(), s.scene.draw_calls()), (3, 3));
     s.scene.destroy();
 }
+
+// GPU time per pass of renderFrame, a frame or two late; nothing when off.
+#[wasm_bindgen_test]
+async fn render_frame_times_its_passes_on_the_gpu() {
+    let mut s = setup().await;
+    if !s.scene.set_gpu_profiling(true) {
+        return; // no GPU timers in this browser
+    }
+    s.frame().await;
+    let key = |o: &js_sys::Object, k: &str| js_sys::Reflect::get(o, &k.into()).unwrap().as_f64();
+    let mut timings = s.scene.gpu_timings();
+    for _ in 0..60 {
+        s.scene.render_frame(s.camera);
+        sleep_ms(16).await;
+        timings = s.scene.gpu_timings();
+        if key(&timings, "present").is_some() {
+            break;
+        }
+    }
+    let hdr = s.scene.is_hdr();
+    for pass in ["opaque", "late", "present"] {
+        let ms = key(&timings, pass);
+        if pass == "opaque" || hdr {
+            assert!(
+                ms.is_some_and(|ms| (0.0..1000.0).contains(&ms)),
+                "{pass}: {ms:?}"
+            );
+        }
+    }
+    assert!(!s.scene.set_gpu_profiling(false));
+    assert_eq!(js_sys::Object::keys(&s.scene.gpu_timings()).length(), 0);
+    s.scene.destroy();
+}

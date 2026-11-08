@@ -91,6 +91,8 @@ pub struct Scene {
     // An intensity set while a bake runs, kept over its swap (which resets
     // to 1).
     env_intensity_after_bake: Option<Vec3>,
+    // GPU time per pass of renderFrame, when asked for.
+    profiler: Option<rswebgl::profiler::GpuProfiler>,
     // Models reloaded after a loss, applied at the next frame.
     reloads: Reloads,
     // HDR output: wanted (and supported), its target once made, how it is
@@ -154,6 +156,7 @@ impl Scene {
             env_baker: None,
             env_pending: None,
             env_intensity_after_bake: None,
+            profiler: None,
             reloads: Reloads::default(),
             hdr_wanted: crate::output::HdrOutput::supported(ctx),
             hdr: None,
@@ -538,6 +541,9 @@ impl Scene {
         pass.clear_draws();
         late.clear_draws();
         let hdr = self.prepare_output(&mut pass, &mut late, w, h);
+        if let Some(p) = &mut self.profiler {
+            p.update();
+        }
         let drawn = if hdr {
             // Opaque first; then, if anything transmits, a copy of it for
             // them to see through; then transmissive and transparent meshes.
@@ -545,6 +551,7 @@ impl Scene {
                 .set_scene_color(&self.ctx, self.hdr.as_ref().and_then(|o| o.scene_color()));
             let drawn = self.render_passes(camera, &mut pass, Some(&mut late));
             pass.sort();
+            self.time(&mut pass, "opaque");
             self.ctx.render(&pass);
             if self.stats.transmissive > 0
                 && let Some(out) = &self.hdr
@@ -552,6 +559,7 @@ impl Scene {
                 out.grab(&self.ctx);
             }
             late.sort();
+            self.time(&mut late, "late");
             self.ctx.render(&late);
             if let Some(out) = &self.hdr {
                 out.present(
@@ -559,6 +567,7 @@ impl Scene {
                     self.renderer.exposure(),
                     self.tone_mapping,
                     self.dither,
+                    self.profiler.as_mut(),
                 );
             }
             drawn
@@ -566,6 +575,7 @@ impl Scene {
             self.renderer.set_scene_color(&self.ctx, None);
             let drawn = self.render(camera, &mut pass);
             pass.sort();
+            self.time(&mut pass, "opaque");
             self.ctx.render(&pass);
             drawn
         };
@@ -644,6 +654,48 @@ impl Scene {
         self.stats.draws
     }
 
+    /// Times `renderFrame`'s passes on the GPU (`gpuTimings`), or stops.
+    /// Returns whether timing is on: false where the browser doesn't expose
+    /// GPU timers (`EXT_disjoint_timer_query_webgl2`, often withheld).
+    #[wasm_bindgen(js_name = setGpuProfiling)]
+    pub fn set_gpu_profiling(&mut self, on: bool) -> bool {
+        if let Some(mut p) = self.profiler.take() {
+            p.destroy();
+        }
+        if on {
+            let p = rswebgl::profiler::GpuProfiler::new(&self.ctx);
+            if p.available() {
+                self.profiler = Some(p);
+            }
+        }
+        self.profiler.is_some()
+    }
+
+    /// GPU milliseconds per pass of recent frames, averaged: `opaque` (with
+    /// the MSAA resolve), `late` (transmissive and transparent) and
+    /// `present` (tone mapping) with HDR output; `opaque` alone without.
+    /// Results come a frame or two late; empty until then, or without
+    /// `setGpuProfiling(true)`.
+    #[wasm_bindgen(js_name = gpuTimings)]
+    pub fn gpu_timings(&self) -> js_sys::Object {
+        let out = js_sys::Object::new();
+        if let Some(p) = &self.profiler {
+            for label in p.labels() {
+                if let Some(ms) = p.milliseconds(&label) {
+                    let _ = js_sys::Reflect::set(&out, &label.into(), &ms.into());
+                }
+            }
+        }
+        out
+    }
+
+    // Times `pass` under `label` when profiling.
+    fn time(&mut self, pass: &mut Pass, label: &str) {
+        if let Some(p) = &mut self.profiler {
+            p.time(pass, label);
+        }
+    }
+
     /// Meshes the last frame left out by frustum culling.
     pub fn culled(&self) -> usize {
         self.stats.culled
@@ -702,7 +754,10 @@ impl Scene {
     /// shaders, the models added with `addModel`, the cloned materials and
     /// the textures `loadTexture` made.
     /// Handles you passed in (`setMesh`) stay yours.
-    pub fn destroy(self) {
+    pub fn destroy(mut self) {
+        if let Some(mut p) = self.profiler.take() {
+            p.destroy();
+        }
         if let Some(p) = &self.env_pending {
             p.cancel();
         }

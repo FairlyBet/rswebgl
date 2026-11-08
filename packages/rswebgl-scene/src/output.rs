@@ -21,6 +21,7 @@ use rswebgl::ids::{
 };
 use rswebgl::param::{GROUP_SLOTS, ParamField, ParamLayoutBuilder};
 use rswebgl::pass::Pass;
+use rswebgl::profiler::GpuProfiler;
 use rswebgl::render_state::RenderState;
 use rswebgl::renderbuffer::RenderbufferFormat;
 use rswebgl::shader_source::ShaderSource;
@@ -243,7 +244,14 @@ impl HdrOutput {
     }
 
     /// Draws the target to the canvas.
-    pub fn present(&self, ctx: &Context, exposure: f32, tone_mapping: ToneMapping, dither: bool) {
+    pub fn present(
+        &self,
+        ctx: &Context,
+        exposure: f32,
+        tone_mapping: ToneMapping,
+        dither: bool,
+        profiler: Option<&mut GpuProfiler>,
+    ) {
         ctx.param_set_texture_by_name(self.group, "u_hdr", self.color);
         ctx.param_set_f32(self.group, self.f_exposure, exposure);
         ctx.param_set_i32(self.group, self.f_tone_mapping, tone_mapping as i32);
@@ -261,6 +269,9 @@ impl HdrOutput {
             groups,
             &DrawCommand::arrays(DrawMode::Triangles, 0, 3),
         );
+        if let Some(p) = profiler {
+            p.time(&mut pass, "present");
+        }
         ctx.render(&pass);
     }
 

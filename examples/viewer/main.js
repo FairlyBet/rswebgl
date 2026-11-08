@@ -70,6 +70,8 @@ const ctx = Context.fromCanvas(canvas, options);
 const fb = ctx.defaultFramebuffer();
 fb.setClearColor(0.05, 0.05, 0.06, 1);
 const scene = new Scene(ctx);
+// GPU time per pass, where the browser exposes timer queries.
+const gpuTiming = scene.setGpuProfiling(true);
 // For poking from the devtools console.
 Object.assign(globalThis, { viewer: { ctx, scene } });
 
@@ -446,6 +448,16 @@ let last = -1; // no frame yet
 let fpsShown = 0;
 let lastStats = 0;
 
+// "gpu 1.20 ms  (opaque 0.90 late 0.10 present 0.20)", or why there's none.
+function gpuLine() {
+  if (!gpuTiming) return "gpu: no timer queries in this browser";
+  const t = /** @type {Record<string, number>} */ (scene.gpuTimings());
+  const parts = Object.entries(t);
+  if (!parts.length) return "gpu …";
+  const total = parts.reduce((a, [, ms]) => a + ms, 0);
+  return `gpu ${total.toFixed(2)} ms  (${parts.map(([k, ms]) => `${k} ${ms.toFixed(2)}`).join(" ")})`;
+}
+
 function frame(/** @type {number} */ now) {
   const dt = last < 0 ? 16.7 : Math.max(0, now - last);
   last = now;
@@ -472,7 +484,9 @@ function frame(/** @type {number} */ now) {
     $("info").textContent =
       `\n${canvas.width}×${canvas.height}  ${scene.isHdr() ? "HDR" : "direct"}  ${scene.shadingModel()}\n` +
       `drawn ${scene.drawn()} in ${scene.drawCalls()} calls  culled ${scene.culled()}  pending ${scene.pending()}\n` +
-      `variants ${scene.shaderVariantCount()}  entities ${scene.entityCount()}  file lights ${root ? scene.lights(root).length : 0}`;
+      `variants ${scene.shaderVariantCount()}  entities ${scene.entityCount()}  file lights ${root ? scene.lights(root).length : 0}
+` +
+      gpuLine();
     // Frame times, 60 fps line at the middle.
     const g = graph;
     g.clearRect(0, 0, 180, 36);

@@ -168,3 +168,44 @@ async fn awaiting_a_query_run_again_fails_instead_of_hanging() {
     // Waiting on the latest run works.
     assert_eq!(f.ctx.query_result_async(q).await.unwrap(), 1.0);
 }
+
+// The profiler times passes by label, a frame or more late, without
+// reusing a query whose result hasn't been collected.
+#[wasm_bindgen_test]
+async fn the_profiler_times_passes_by_label() {
+    let f = fixture();
+    let mut profiler = rswebgl::profiler::GpuProfiler::new(&f.ctx);
+    if !profiler.available() {
+        return; // no EXT_disjoint_timer_query_webgl2 here
+    }
+    let program = red(&f);
+    let state = f.ctx.render_state(&RenderState::new());
+    let mut got = None;
+    for _ in 0..60 {
+        for label in ["scene", "post"] {
+            let mut pass = Pass::to_default();
+            pass.set_clear(&ClearMask::color());
+            push_quad(&f, &mut pass, program, state, 1);
+            profiler.time(&mut pass, label);
+            f.ctx.render(&pass);
+        }
+        profiler.update();
+        got = profiler.milliseconds("scene").zip(profiler.milliseconds("post"));
+        if got.is_some() {
+            break;
+        }
+        let p = js_sys::Promise::new(&mut |resolve, _| {
+            web_sys::window()
+                .unwrap()
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 16)
+                .unwrap();
+        });
+        wasm_bindgen_futures::JsFuture::from(p).await.unwrap();
+    }
+    let (scene, post) = got.expect("timings within 60 frames");
+    assert!(scene >= 0.0 && post >= 0.0 && scene < 1000.0, "{scene} {post}");
+    assert_eq!(profiler.labels(), ["scene", "post"]);
+    assert!(profiler.last_milliseconds("scene").is_some());
+    assert_eq!(profiler.milliseconds("other"), None);
+    profiler.destroy();
+}

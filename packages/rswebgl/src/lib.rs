@@ -43,6 +43,7 @@ pub mod ids;
 pub mod limits;
 pub mod param;
 pub mod pass;
+pub mod profiler;
 pub mod pixel_unpack;
 mod poller;
 pub mod program;

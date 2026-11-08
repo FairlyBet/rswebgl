@@ -56,9 +56,11 @@ attached. Left:
 ### Useful — maps onto subsystems we already have / have queued
 
 - ~~**`EXT_disjoint_timer_query_webgl2`.**~~ Done: `QueryKind::TimeElapsed` on
-  `Pass::set_timer`. Left: a ready-made per-pass profiler (a ring of timer
-  queries, results a few frames behind) instead of the app juggling them; a
-  timer spanning several passes; `TIMESTAMP_EXT` isn't exposed by WebGL2.
+  `Pass::set_timer`; `GpuProfiler` (a ring of timer queries per label,
+  smoothed, a few frames behind; the scene's `setGpuProfiling` /
+  `gpuTimings` time renderFrame's passes). Left: a timer spanning several
+  passes or a blit (the transmission grab isn't timed); `TIMESTAMP_EXT`
+  isn't exposed by WebGL2.
 - Occlusion queries wrap one draw (`Pass::set_last_draw_query`). Not done: a
   query around several draws (a whole object of many primitives).
 - **`WEBGL_multi_draw`.** Several draws in one JS call (offset/count arrays)
