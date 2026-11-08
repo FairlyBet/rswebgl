@@ -68,6 +68,8 @@ const ctx = Context.fromCanvas(canvas, options);
 const fb = ctx.defaultFramebuffer();
 fb.setClearColor(0.05, 0.05, 0.06, 1);
 const scene = new Scene(ctx);
+// For poking from the devtools console.
+Object.assign(globalThis, { viewer: { ctx, scene } });
 
 // --- resolution ---------------------------------------------------------------
 
@@ -90,7 +92,9 @@ resize();
 // --- camera and light ----------------------------------------------------------
 
 const camera = scene.spawn();
+Object.assign(/** @type {any} */ (globalThis).viewer, { camera });
 const orbit = { yaw: 0.6, pitch: 0.25, distance: 3, target: [0, 0, 0], radius: 1, fov: 45 };
+Object.assign(/** @type {any} */ (globalThis).viewer, { orbit });
 function setCameraLens() {
   const r = orbit.radius;
   scene.setCamera(camera, { type: "perspective", yfov: (orbit.fov * Math.PI) / 180, znear: r * 0.01, zfar: r * 200 });

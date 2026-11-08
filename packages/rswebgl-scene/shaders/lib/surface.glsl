@@ -100,11 +100,15 @@ vec3 env_transmission(Surface s, float ior, float roughness) {
 }
 
 // A punctual light seen through the surface: GGX around the light mirrored
-// to the far side (Khronos getPunctualRadianceTransmission).
+// to the far side (Khronos getPunctualRadianceTransmission), times the
+// light's cosine |n·l| like any punctual term. Khronos leaves the cosine
+// out; then nothing cancels V's 1/(n·l), and where n·l and n·v both near 0
+// (silhouettes) single pixels blow up into white sparkles.
 float punctual_transmission(vec3 n, vec3 v, vec3 l, float alpha, float ior) {
     float t_alpha = ior_roughness(alpha, ior);
     vec3 l_mirror = normalize(l + 2.0 * n * dot(-l, n));
     vec3 h = normalize(l_mirror + v);
+    float NdotL = clamp(dot(n, l_mirror), 0.0, 1.0);
     return D_GGX(clamp(dot(n, h), 0.0, 1.0), t_alpha)
-        * V_GGX(clamp(dot(n, l_mirror), 0.0, 1.0), clamp(dot(n, v), 0.0, 1.0), t_alpha);
+        * V_GGX(NdotL, clamp(dot(n, v), 0.0, 1.0), t_alpha) * NdotL;
 }
