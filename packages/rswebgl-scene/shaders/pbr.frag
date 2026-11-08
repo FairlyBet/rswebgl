@@ -101,6 +101,45 @@ uniform float u_iridescence_thickness; // nm
 uniform float u_anisotropy_strength;
 uniform float u_anisotropy_rotation;  // radians, from the tangent
 #endif
+// Extension maps (channels as their extensions define them).
+#ifdef HAS_CLEARCOAT_MAP
+uniform sampler2D u_clearcoat_tex;              // R
+#endif
+#ifdef HAS_CLEARCOAT_ROUGHNESS_MAP
+uniform sampler2D u_clearcoat_roughness_tex;    // G
+#endif
+#ifdef HAS_CLEARCOAT_NORMAL_MAP
+uniform sampler2D u_clearcoat_normal_tex;
+uniform float u_clearcoat_normal_scale;
+#endif
+#ifdef HAS_TRANSMISSION_MAP
+uniform sampler2D u_transmission_tex;           // R
+#endif
+#ifdef HAS_THICKNESS_MAP
+uniform sampler2D u_thickness_tex;              // G
+#endif
+#ifdef HAS_SPECULAR_MAP
+uniform sampler2D u_specular_tex;               // A
+#endif
+#ifdef HAS_SPECULAR_COLOR_MAP
+uniform sampler2D u_specular_color_tex;         // RGB, sRGB
+#endif
+#ifdef HAS_SHEEN_COLOR_MAP
+uniform sampler2D u_sheen_color_tex;            // RGB, sRGB
+#endif
+#ifdef HAS_SHEEN_ROUGHNESS_MAP
+uniform sampler2D u_sheen_roughness_tex;        // A
+#endif
+#ifdef HAS_IRIDESCENCE_MAP
+uniform sampler2D u_iridescence_tex;            // R
+#endif
+#ifdef HAS_IRIDESCENCE_THICKNESS_MAP
+uniform sampler2D u_iridescence_thickness_tex;  // G: minimum → maximum
+uniform float u_iridescence_thickness_min;
+#endif
+#ifdef HAS_ANISOTROPY_MAP
+uniform sampler2D u_anisotropy_tex;             // RG direction, B strength
+#endif
 
 out vec4 frag_color;
 
@@ -215,15 +254,27 @@ void main() {
     s.ior = u_ior;
     s.specular_weight = u_specular_factor;
     s.specular_color = u_specular_color;
+#ifdef HAS_SPECULAR_MAP
+    s.specular_weight *= texture(u_specular_tex, SPECULAR_UV).a;
+#endif
+#ifdef HAS_SPECULAR_COLOR_MAP
+    s.specular_color *= texture(u_specular_color_tex, SPECULAR_COLOR_UV).rgb;
+#endif
     s.transmission = 0.0;
 #ifdef HAS_TRANSMISSION
     s.transmission = u_transmission;
+#ifdef HAS_TRANSMISSION_MAP
+    s.transmission *= texture(u_transmission_tex, TRANSMISSION_UV).r;
+#endif
 #endif
     s.thickness = 0.0;
     s.attenuation_color = vec3(1.0);
     s.attenuation_distance = 0.0;
 #ifdef HAS_VOLUME
     s.thickness = u_thickness;
+#ifdef HAS_THICKNESS_MAP
+    s.thickness *= texture(u_thickness_tex, THICKNESS_UV).g;
+#endif
     s.attenuation_color = u_attenuation_color;
     s.attenuation_distance = u_attenuation_distance;
 #endif
@@ -238,7 +289,20 @@ void main() {
     s.coat_darkening = 0.0;
 #ifdef HAS_CLEARCOAT
     s.coat = u_clearcoat;
-    s.coat_roughness = specular_aa(s.n_coat, clamp(u_clearcoat_roughness, 0.0, 1.0));
+    float coat_roughness = u_clearcoat_roughness;
+#ifdef HAS_CLEARCOAT_MAP
+    s.coat *= texture(u_clearcoat_tex, CLEARCOAT_UV).r;
+#endif
+#ifdef HAS_CLEARCOAT_ROUGHNESS_MAP
+    coat_roughness *= texture(u_clearcoat_roughness_tex, CLEARCOAT_ROUGHNESS_UV).g;
+#endif
+#ifdef HAS_CLEARCOAT_NORMAL_MAP
+    // The coat's own normal map, through the same frame.
+    vec3 cm = texture(u_clearcoat_normal_tex, CLEARCOAT_NORMAL_UV).xyz * 2.0 - 1.0;
+    cm.xy *= u_clearcoat_normal_scale;
+    s.n_coat = normalize(mat3(frame.t, frame.b, frame.ng) * cm);
+#endif
+    s.coat_roughness = specular_aa(frame.ng, clamp(coat_roughness, 0.0, 1.0));
     s.coat_ior = u_coat_ior;
     s.coat_color = u_coat_color;
     s.coat_darkening = u_coat_darkening;
@@ -251,15 +315,29 @@ void main() {
     s.sheen_roughness = 0.0;
 #ifdef HAS_SHEEN
     s.sheen_color = u_sheen_color;
-    s.sheen_roughness = clamp(u_sheen_roughness, 0.0, 1.0);
+    float sheen_roughness = u_sheen_roughness;
+#ifdef HAS_SHEEN_COLOR_MAP
+    s.sheen_color *= texture(u_sheen_color_tex, SHEEN_COLOR_UV).rgb;
+#endif
+#ifdef HAS_SHEEN_ROUGHNESS_MAP
+    sheen_roughness *= texture(u_sheen_roughness_tex, SHEEN_ROUGHNESS_UV).a;
+#endif
+    s.sheen_roughness = clamp(sheen_roughness, 0.0, 1.0);
 #endif
     s.iridescence = 0.0;
     s.iridescence_ior = 1.3;
     s.iridescence_thickness = 0.0;
 #ifdef HAS_IRIDESCENCE
     s.iridescence = u_iridescence;
+#ifdef HAS_IRIDESCENCE_MAP
+    s.iridescence *= texture(u_iridescence_tex, IRIDESCENCE_UV).r;
+#endif
     s.iridescence_ior = u_iridescence_ior;
     s.iridescence_thickness = u_iridescence_thickness;
+#ifdef HAS_IRIDESCENCE_THICKNESS_MAP
+    s.iridescence_thickness = mix(u_iridescence_thickness_min, u_iridescence_thickness,
+        texture(u_iridescence_thickness_tex, IRIDESCENCE_THICKNESS_UV).g);
+#endif
 #endif
     s.anisotropy = 0.0;
     s.anisotropy_t = frame.t;
@@ -267,10 +345,19 @@ void main() {
 #ifdef HAS_ANISOTROPY
     // The direction: the tangent turned by the rotation, in the surface
     // (Khronos getAnisotropyInfo).
-    vec2 dir = vec2(cos(u_anisotropy_rotation), sin(u_anisotropy_rotation));
+    vec2 dir = vec2(1.0, 0.0);
+    float strength = u_anisotropy_strength;
+#ifdef HAS_ANISOTROPY_MAP
+    vec3 at = texture(u_anisotropy_tex, ANISOTROPY_UV).rgb;
+    dir = at.rg * 2.0 - 1.0;
+    strength *= at.b;
+#endif
+    float c = cos(u_anisotropy_rotation);
+    float sn = sin(u_anisotropy_rotation);
+    dir = mat2(c, sn, -sn, c) * dir;
     s.anisotropy_t = normalize(mat3(frame.t, frame.b, frame.n) * vec3(dir, 0.0));
     s.anisotropy_b = cross(frame.ng, s.anisotropy_t);
-    s.anisotropy = clamp(u_anisotropy_strength, 0.0, 1.0);
+    s.anisotropy = clamp(strength, 0.0, 1.0);
 #endif
     s.emission = u_emissive_factor * u_emissive_strength;
 #ifdef HAS_EMISSIVE_MAP

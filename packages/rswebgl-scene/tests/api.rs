@@ -972,3 +972,47 @@ async fn openpbr_parameter_names() {
     assert!(Scene::open_pbr_parameters().contains(&"fuzz_roughness".to_string()));
     s.scene.destroy();
 }
+
+// Extension maps are settable from JS like the core ones: they switch the
+// variant while their layer is on, and read back.
+#[wasm_bindgen_test]
+async fn extension_maps_from_js() {
+    let mut s = setup().await;
+    let stone = s.scene.find_material(s.root, "Stone");
+    let p = s
+        .scene
+        .load_texture(
+            &png_url([255, 255, 255, 255]),
+            json(r#"{ "colorSpace": "linear" }"#),
+        )
+        .unwrap();
+    let tex = await_texture(p).await.unwrap();
+    // No coat yet: the map is held but costs no variant.
+    let before = s.scene.shader_variant_count();
+    s.scene
+        .set_material_texture(stone, "clearcoatTexture", tex, JsValue::UNDEFINED)
+        .unwrap();
+    assert_eq!(s.scene.material_texture(stone, "clearcoatTexture"), tex);
+    s.scene
+        .set_material_property(stone, "coat_weight", json("1"))
+        .unwrap();
+    let coated = s.scene.shader_variant_count();
+    assert!(coated > before, "the coat (with its map) is a new variant");
+    // Removing the map: yet another variant (coat without a map).
+    s.scene
+        .set_material_texture(
+            stone,
+            "clearcoatTexture",
+            TextureId::NULL,
+            JsValue::UNDEFINED,
+        )
+        .unwrap();
+    assert_eq!(s.scene.shader_variant_count(), coated + 1);
+    assert!(
+        s.scene
+            .set_material_texture(stone, "glitterTexture", tex, JsValue::UNDEFINED)
+            .is_err()
+    );
+    s.frame().await;
+    s.scene.destroy();
+}

@@ -21,7 +21,9 @@ use rswebgl::texture::{
     TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget, TextureWrap,
 };
 use rswebgl_ecs::Entity;
-use rswebgl_gltf::{EXTERNAL_TEXTURE, MAP_NAMES, MAP_UNIFORMS, Material, Model, default_material};
+use rswebgl_gltf::{
+    EXTERNAL_TEXTURE, MAP_COUNT, MAP_NAMES, MAP_UNIFORMS, Material, Model, default_material,
+};
 use wasm_bindgen::prelude::*;
 
 use super::{Scene, openpbr, options};
@@ -37,7 +39,7 @@ pub(crate) struct MaterialRecord {
     pub(crate) material: Material,
     pub(crate) cloned: bool,
     // The texture of each map (`MAP_NAMES` order), NULL for none.
-    pub(crate) maps: [TextureId; 5],
+    pub(crate) maps: [TextureId; MAP_COUNT],
     // OpenPBR fuzz_color as last set: with no fuzz (weight 0) the stored
     // sheen color can't carry it.
     pub(crate) fuzz_color: [f32; 3],
@@ -246,13 +248,20 @@ impl Scene {
         }
     }
 
-    /// Sets one of a material's maps (`baseColorTexture`,
-    /// `metallicRoughnessTexture`, `normalTexture`, `occlusionTexture`,
-    /// `emissiveTexture` — glTF names) to `texture` (any texture of this
-    /// context: `loadTexture`'s, or your own), or removes it with `0`.
-    /// Every mesh drawn with the material sees it; adding or removing a map
-    /// switches their shader variant. Colors (baseColor, emissive) want an
-    /// sRGB texture, the rest linear. Throws for an unknown material or map.
+    /// Sets one of a material's maps, by glTF name — the core
+    /// `baseColorTexture`, `metallicRoughnessTexture`, `normalTexture`,
+    /// `occlusionTexture`, `emissiveTexture`, and the extensions'
+    /// `clearcoatTexture` (R), `clearcoatRoughnessTexture` (G),
+    /// `clearcoatNormalTexture`, `transmissionTexture` (R), `thicknessTexture`
+    /// (G), `specularTexture` (A), `specularColorTexture`, `sheenColorTexture`,
+    /// `sheenRoughnessTexture` (A), `iridescenceTexture` (R),
+    /// `iridescenceThicknessTexture` (G), `anisotropyTexture` (RG direction, B
+    /// strength) — to `texture` (any texture of this context: `loadTexture`'s,
+    /// or your own), or removes it with `0`. A map multiplies its factor, and an
+    /// extension's map counts only while its factor is on. Every mesh drawn
+    /// with the material sees it; adding or removing a map switches their
+    /// shader variant. Colors (base, emissive, specular, sheen) want an sRGB
+    /// texture, the rest linear. Throws for an unknown material or map.
     #[wasm_bindgen(js_name = setMaterialTexture)]
     pub fn set_material_texture(
         &mut self,

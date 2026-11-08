@@ -31,18 +31,10 @@ pub struct Material {
     pub(crate) alpha_mode: AlphaMode,
     pub(crate) alpha_cutoff: f32,
     pub(crate) double_sided: bool,
-    pub(crate) base_color_tex: i32,
-    pub(crate) base_color_uv: u32,
-    pub(crate) metallic_roughness_tex: i32,
-    pub(crate) metallic_roughness_uv: u32,
-    pub(crate) normal_tex: i32,
-    pub(crate) normal_uv: u32,
+    // Each map's (texture index or -1, TEXCOORD set), in `MAP_SLOTS` order.
+    pub(crate) maps: [(i32, u32); MAP_COUNT],
     pub(crate) normal_scale: f32,
-    pub(crate) occlusion_tex: i32,
-    pub(crate) occlusion_uv: u32,
     pub(crate) occlusion_strength: f32,
-    pub(crate) emissive_tex: i32,
-    pub(crate) emissive_uv: u32,
     // KHR_materials_emissive_strength (1 without it).
     pub(crate) emissive_strength: f32,
     // KHR_materials_unlit.
@@ -77,6 +69,10 @@ pub struct Material {
     pub(crate) iridescence_thickness: f32,
     pub(crate) anisotropy_strength: f32,
     pub(crate) anisotropy_rotation: f32,
+    // clearcoatNormalTexture.scale; the iridescence thickness at texture
+    // value 0 (the maximum is at 1).
+    pub(crate) clearcoat_normal_scale: f32,
+    pub(crate) iridescence_thickness_min: f32,
 }
 
 #[wasm_bindgen]
@@ -117,45 +113,45 @@ impl Material {
     /// Index into `Model::texture(i)`, or `-1` if absent.
     #[wasm_bindgen(getter, js_name = baseColorTexture)]
     pub fn base_color_texture(&self) -> i32 {
-        self.base_color_tex
+        self.maps[0].0
     }
     /// TEXCOORD set index used by the base-color texture (`TEXCOORD_n`).
     #[wasm_bindgen(getter, js_name = baseColorUv)]
     pub fn base_color_uv(&self) -> u32 {
-        self.base_color_uv
+        self.maps[0].1
     }
     #[wasm_bindgen(getter, js_name = metallicRoughnessTexture)]
     pub fn metallic_roughness_texture(&self) -> i32 {
-        self.metallic_roughness_tex
+        self.maps[1].0
     }
     #[wasm_bindgen(getter, js_name = normalTexture)]
     pub fn normal_texture(&self) -> i32 {
-        self.normal_tex
+        self.maps[2].0
     }
     #[wasm_bindgen(getter, js_name = occlusionTexture)]
     pub fn occlusion_texture(&self) -> i32 {
-        self.occlusion_tex
+        self.maps[3].0
     }
     #[wasm_bindgen(getter, js_name = emissiveTexture)]
     pub fn emissive_texture(&self) -> i32 {
-        self.emissive_tex
+        self.maps[4].0
     }
     /// TEXCOORD set of each map (`TEXCOORD_n`); 0 when the map is absent.
     #[wasm_bindgen(getter, js_name = metallicRoughnessUv)]
     pub fn metallic_roughness_uv(&self) -> u32 {
-        self.metallic_roughness_uv
+        self.maps[1].1
     }
     #[wasm_bindgen(getter, js_name = normalUv)]
     pub fn normal_uv(&self) -> u32 {
-        self.normal_uv
+        self.maps[2].1
     }
     #[wasm_bindgen(getter, js_name = occlusionUv)]
     pub fn occlusion_uv(&self) -> u32 {
-        self.occlusion_uv
+        self.maps[3].1
     }
     #[wasm_bindgen(getter, js_name = emissiveUv)]
     pub fn emissive_uv(&self) -> u32 {
-        self.emissive_uv
+        self.maps[4].1
     }
     /// `normalTexture.scale` (1 without a normal map).
     #[wasm_bindgen(getter, js_name = normalScale)]
@@ -264,7 +260,7 @@ const fn prop(name: &'static str, uniform: &'static str, len: usize) -> Property
 }
 
 /// Every numeric property a material group carries, by glTF name.
-pub const PROPERTIES: [Property; 30] = [
+pub const PROPERTIES: [Property; 32] = [
     prop("baseColorFactor", "u_base_color_factor", 4),
     prop("metallicFactor", "u_metallic_factor", 1),
     prop("roughnessFactor", "u_roughness_factor", 1),
@@ -295,11 +291,17 @@ pub const PROPERTIES: [Property; 30] = [
     prop("iridescenceThickness", "u_iridescence_thickness", 1),
     prop("anisotropyStrength", "u_anisotropy_strength", 1),
     prop("anisotropyRotation", "u_anisotropy_rotation", 1),
+    prop("clearcoatNormalScale", "u_clearcoat_normal_scale", 1),
+    prop(
+        "iridescenceThicknessMinimum",
+        "u_iridescence_thickness_min",
+        1,
+    ),
 ];
 
 impl Material {
     // The storage of each of `PROPERTIES`, in the same order.
-    fn values_mut(&mut self) -> [&mut [f32]; 30] {
+    fn values_mut(&mut self) -> [&mut [f32]; 32] {
         [
             &mut self.base_color_factor,
             std::slice::from_mut(&mut self.metallic),
@@ -331,6 +333,8 @@ impl Material {
             std::slice::from_mut(&mut self.iridescence_thickness),
             std::slice::from_mut(&mut self.anisotropy_strength),
             std::slice::from_mut(&mut self.anisotropy_rotation),
+            std::slice::from_mut(&mut self.clearcoat_normal_scale),
+            std::slice::from_mut(&mut self.iridescence_thickness_min),
         ]
     }
 
@@ -383,48 +387,197 @@ impl Material {
     }
 }
 
-/// The material maps by glTF name, in the order of `MAP_UNIFORMS`.
-pub const MAP_NAMES: [&str; 5] = [
-    "baseColorTexture",
-    "metallicRoughnessTexture",
-    "normalTexture",
-    "occlusionTexture",
-    "emissiveTexture",
+/// One kind of material map: its glTF name, the sampler uniform carrying it
+/// in a material group, the shader's name for it (`HAS_<define>_MAP`,
+/// `<define>_UV`), and whether it holds colors (decoded from sRGB).
+#[derive(Debug, Clone, Copy)]
+pub struct MapSlot {
+    pub name: &'static str,
+    pub uniform: &'static str,
+    pub define: &'static str,
+    pub srgb: bool,
+}
+
+const fn slot(
+    name: &'static str,
+    uniform: &'static str,
+    define: &'static str,
+    srgb: bool,
+) -> MapSlot {
+    MapSlot {
+        name,
+        uniform,
+        define,
+        srgb,
+    }
+}
+
+/// How many kinds of maps a material has.
+pub const MAP_COUNT: usize = 17;
+
+/// Every material map: the core five, then the extensions'
+/// (KHR_materials_clearcoat, _transmission, _volume, _specular, _sheen,
+/// _iridescence, _anisotropy). The channels each reads are the extensions'.
+pub const MAP_SLOTS: [MapSlot; MAP_COUNT] = [
+    slot("baseColorTexture", "u_base_color_tex", "BASE_COLOR", true),
+    slot(
+        "metallicRoughnessTexture",
+        "u_metallic_roughness_tex",
+        "METALLIC_ROUGHNESS",
+        false,
+    ),
+    slot("normalTexture", "u_normal_tex", "NORMAL", false),
+    slot("occlusionTexture", "u_occlusion_tex", "OCCLUSION", false),
+    slot("emissiveTexture", "u_emissive_tex", "EMISSIVE", true),
+    slot("clearcoatTexture", "u_clearcoat_tex", "CLEARCOAT", false),
+    slot(
+        "clearcoatRoughnessTexture",
+        "u_clearcoat_roughness_tex",
+        "CLEARCOAT_ROUGHNESS",
+        false,
+    ),
+    slot(
+        "clearcoatNormalTexture",
+        "u_clearcoat_normal_tex",
+        "CLEARCOAT_NORMAL",
+        false,
+    ),
+    slot(
+        "transmissionTexture",
+        "u_transmission_tex",
+        "TRANSMISSION",
+        false,
+    ),
+    slot("thicknessTexture", "u_thickness_tex", "THICKNESS", false),
+    slot("specularTexture", "u_specular_tex", "SPECULAR", false),
+    slot(
+        "specularColorTexture",
+        "u_specular_color_tex",
+        "SPECULAR_COLOR",
+        true,
+    ),
+    slot(
+        "sheenColorTexture",
+        "u_sheen_color_tex",
+        "SHEEN_COLOR",
+        true,
+    ),
+    slot(
+        "sheenRoughnessTexture",
+        "u_sheen_roughness_tex",
+        "SHEEN_ROUGHNESS",
+        false,
+    ),
+    slot(
+        "iridescenceTexture",
+        "u_iridescence_tex",
+        "IRIDESCENCE",
+        false,
+    ),
+    slot(
+        "iridescenceThicknessTexture",
+        "u_iridescence_thickness_tex",
+        "IRIDESCENCE_THICKNESS",
+        false,
+    ),
+    slot("anisotropyTexture", "u_anisotropy_tex", "ANISOTROPY", false),
 ];
+
+/// The material maps by glTF name (`MAP_SLOTS` order).
+pub const MAP_NAMES: [&str; MAP_COUNT] = {
+    let mut out = [""; MAP_COUNT];
+    let mut i = 0;
+    while i < MAP_COUNT {
+        out[i] = MAP_SLOTS[i].name;
+        i += 1;
+    }
+    out
+};
 
 /// The texture index of a map whose texture isn't one of the model's (set by
 /// the app — a scene's `setMaterialTexture`).
 pub const EXTERNAL_TEXTURE: i32 = i32::MAX;
 
 impl Material {
-    // Each map's (texture index, TEXCOORD set), in `MAP_NAMES` order.
-    fn maps_mut(&mut self) -> [(&mut i32, &mut u32); 5] {
-        [
-            (&mut self.base_color_tex, &mut self.base_color_uv),
-            (
-                &mut self.metallic_roughness_tex,
-                &mut self.metallic_roughness_uv,
-            ),
-            (&mut self.normal_tex, &mut self.normal_uv),
-            (&mut self.occlusion_tex, &mut self.occlusion_uv),
-            (&mut self.emissive_tex, &mut self.emissive_uv),
-        ]
-    }
-
-    /// Map `slot` (an index into `MAP_NAMES`): its texture index (−1 none,
+    /// Map `slot` (an index into `MAP_SLOTS`): its texture index (−1 none,
     /// `EXTERNAL_TEXTURE` for the app's) and TEXCOORD set.
     pub fn map(&self, slot: usize) -> Option<(i32, u32)> {
-        let mut m = self.clone();
-        m.maps_mut().into_iter().nth(slot).map(|(t, uv)| (*t, *uv))
+        self.maps.get(slot).copied()
     }
 
     /// Sets map `slot`: `texture` as for `map`, `uv` its TEXCOORD set (0 or 1).
     pub fn set_map(&mut self, slot: usize, texture: i32, uv: u32) {
-        if let Some((t, u)) = self.maps_mut().into_iter().nth(slot) {
-            *t = texture;
-            *u = if texture < 0 { 0 } else { uv };
+        if let Some(m) = self.maps.get_mut(slot) {
+            *m = (texture, if texture < 0 { 0 } else { uv });
         }
     }
+
+    /// Every map's (texture index or −1, TEXCOORD set), `MAP_SLOTS` order.
+    pub fn maps(&self) -> [(i32, u32); MAP_COUNT] {
+        self.maps
+    }
+}
+
+/// A map's reference in the glTF document: the document texture and the
+/// TEXCOORD set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DocMap {
+    pub(crate) texture: usize,
+    pub(crate) tex_coord: u32,
+}
+
+/// The raw JSON of a texture-info object inside an extension the `gltf`
+/// crate doesn't model.
+fn ext_texture<'a>(mat: &'a gltf::Material, ext: &str, key: &str) -> Option<&'a gltf::json::Value> {
+    mat.extension_value(ext)?.get(key)
+}
+
+fn doc_map_from_json(v: Option<&gltf::json::Value>) -> Option<DocMap> {
+    let v = v?;
+    Some(DocMap {
+        texture: v.get("index")?.as_u64()? as usize,
+        tex_coord: v.get("texCoord").and_then(|t| t.as_u64()).unwrap_or(0) as u32,
+    })
+}
+
+fn doc_map(info: Option<gltf::texture::Info>) -> Option<DocMap> {
+    info.map(|i| DocMap {
+        texture: i.texture().index(),
+        tex_coord: i.tex_coord(),
+    })
+}
+
+/// Every map `mat` references, `MAP_SLOTS` order.
+pub(crate) fn doc_maps(mat: &gltf::Material) -> [Option<DocMap>; MAP_COUNT] {
+    let pbr = mat.pbr_metallic_roughness();
+    let json = |ext: &str, key: &str| doc_map_from_json(ext_texture(mat, ext, key));
+    [
+        doc_map(pbr.base_color_texture()),
+        doc_map(pbr.metallic_roughness_texture()),
+        mat.normal_texture().map(|n| DocMap {
+            texture: n.texture().index(),
+            tex_coord: n.tex_coord(),
+        }),
+        mat.occlusion_texture().map(|o| DocMap {
+            texture: o.texture().index(),
+            tex_coord: o.tex_coord(),
+        }),
+        doc_map(mat.emissive_texture()),
+        json("KHR_materials_clearcoat", "clearcoatTexture"),
+        json("KHR_materials_clearcoat", "clearcoatRoughnessTexture"),
+        json("KHR_materials_clearcoat", "clearcoatNormalTexture"),
+        mat.transmission()
+            .and_then(|t| doc_map(t.transmission_texture())),
+        mat.volume().and_then(|v| doc_map(v.thickness_texture())),
+        mat.specular().and_then(|s| doc_map(s.specular_texture())),
+        mat.specular()
+            .and_then(|s| doc_map(s.specular_color_texture())),
+        json("KHR_materials_sheen", "sheenColorTexture"),
+        json("KHR_materials_sheen", "sheenRoughnessTexture"),
+        json("KHR_materials_iridescence", "iridescenceTexture"),
+        json("KHR_materials_iridescence", "iridescenceThicknessTexture"),
+        json("KHR_materials_anisotropy", "anisotropyTexture"),
+    ]
 }
 
 /// Translate one glTF material's data.
@@ -443,20 +596,9 @@ pub fn translate(mat: &gltf::Material) -> Material {
         },
         alpha_cutoff: mat.alpha_cutoff().unwrap_or(0.5),
         double_sided: mat.double_sided(),
-        base_color_tex: tex_index(pbr.base_color_texture().map(|i| i.texture())),
-        base_color_uv: pbr.base_color_texture().map_or(0, |i| i.tex_coord()),
-        metallic_roughness_tex: tex_index(pbr.metallic_roughness_texture().map(|i| i.texture())),
-        metallic_roughness_uv: pbr
-            .metallic_roughness_texture()
-            .map_or(0, |i| i.tex_coord()),
-        normal_tex: tex_index(mat.normal_texture().map(|i| i.texture())),
-        normal_uv: mat.normal_texture().map_or(0, |i| i.tex_coord()),
+        maps: doc_maps(mat).map(|m| m.map_or((-1, 0), |m| (m.texture as i32, m.tex_coord))),
         normal_scale: mat.normal_texture().map_or(1.0, |i| i.scale()),
-        occlusion_tex: tex_index(mat.occlusion_texture().map(|i| i.texture())),
-        occlusion_uv: mat.occlusion_texture().map_or(0, |i| i.tex_coord()),
         occlusion_strength: mat.occlusion_texture().map_or(1.0, |i| i.strength()),
-        emissive_tex: tex_index(mat.emissive_texture().map(|i| i.texture())),
-        emissive_uv: mat.emissive_texture().map_or(0, |i| i.tex_coord()),
         emissive_strength: mat.emissive_strength().unwrap_or(1.0),
         unlit: mat.unlit(),
         ior: mat.ior().unwrap_or(1.5),
@@ -497,6 +639,19 @@ pub fn translate(mat: &gltf::Material) -> Material {
         ),
         anisotropy_strength: ext_f32(mat, "KHR_materials_anisotropy", "anisotropyStrength", 0.0),
         anisotropy_rotation: ext_f32(mat, "KHR_materials_anisotropy", "anisotropyRotation", 0.0),
+        clearcoat_normal_scale: ext_texture(
+            mat,
+            "KHR_materials_clearcoat",
+            "clearcoatNormalTexture",
+        )
+        .and_then(|t| t.get("scale").and_then(|s| s.as_f64()))
+        .map_or(1.0, |s| s as f32),
+        iridescence_thickness_min: ext_f32(
+            mat,
+            "KHR_materials_iridescence",
+            "iridescenceThicknessMinimum",
+            100.0,
+        ),
     }
 }
 
@@ -511,11 +666,11 @@ pub fn remap_textures(m: &mut Material, remap: &[i32]) {
             -1
         }
     };
-    m.base_color_tex = map(m.base_color_tex);
-    m.metallic_roughness_tex = map(m.metallic_roughness_tex);
-    m.normal_tex = map(m.normal_tex);
-    m.occlusion_tex = map(m.occlusion_tex);
-    m.emissive_tex = map(m.emissive_tex);
+    for (tex, _) in &mut m.maps {
+        if *tex != EXTERNAL_TEXTURE {
+            *tex = map(*tex);
+        }
+    }
 }
 
 /// The glTF default material (used for primitives that reference none):
@@ -530,18 +685,9 @@ pub fn default_material() -> Material {
         alpha_mode: AlphaMode::Opaque,
         alpha_cutoff: 0.5,
         double_sided: false,
-        base_color_tex: -1,
-        base_color_uv: 0,
-        metallic_roughness_tex: -1,
-        metallic_roughness_uv: 0,
-        normal_tex: -1,
-        normal_uv: 0,
+        maps: [(-1, 0); MAP_COUNT],
         normal_scale: 1.0,
-        occlusion_tex: -1,
-        occlusion_uv: 0,
         occlusion_strength: 1.0,
-        emissive_tex: -1,
-        emissive_uv: 0,
         emissive_strength: 1.0,
         unlit: false,
         ior: 1.5,
@@ -566,6 +712,8 @@ pub fn default_material() -> Material {
         iridescence_thickness: 400.0,
         anisotropy_strength: 0.0,
         anisotropy_rotation: 0.0,
+        clearcoat_normal_scale: 1.0,
+        iridescence_thickness_min: 100.0,
     }
 }
 
@@ -619,10 +767,6 @@ fn ext_vec3(mat: &gltf::Material, ext: &str, key: &str, default: [f32; 3]) -> [f
             <[f32; 3]>::try_from(c).ok()
         })
         .unwrap_or(default)
-}
-
-fn tex_index(t: Option<gltf::Texture>) -> i32 {
-    t.map(|t| t.index() as i32).unwrap_or(-1)
 }
 
 #[cfg(test)]

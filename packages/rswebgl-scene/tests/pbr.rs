@@ -15,7 +15,7 @@ use rswebgl::framebuffer::ClearMask;
 use rswebgl::pass::Pass;
 use rswebgl_ecs::Entity;
 use rswebgl_gltf::load_model;
-use rswebgl_scene::{Camera, Light, PbrKey, PbrShaders, Scene};
+use rswebgl_scene::{Camera, Light, PbrKey, PbrShaders, Scene, ShadingModel};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -48,32 +48,37 @@ fn context() -> (Context, Gl) {
 fn every_feature_compiles_and_links() {
     let (ctx, _) = context();
     let mut shaders = PbrShaders::new();
-    // Each feature bit alone, every alpha mode, maps on UV1, and all at once.
-    let mut keys: Vec<u32> = (0..15).map(|b| 1 << b).collect();
-    keys.extend([0, 1 << 15, 2 << 15, 1 << 17]);
+    // Bits (see pbr.rs): 0..5 attributes, 5..7 alpha, 7 unlit, 8..12
+    // transmission/volume/clearcoat/dispersion, 12 glTF model, 13 EON,
+    // 14..17 sheen/film/anisotropy, 17..34 maps, 34..51 maps on UV1.
+    let attrs: u64 = 0x1f;
+    let maps: u64 = 0x1ffff << 17;
+    let uv1: u64 = 0x1ffff << 34;
+    let layers: u64 = 0xf << 8 | 0xf << 13;
+    // Each bit alone, every alpha mode, and everything at once.
+    let mut keys: Vec<u64> = (0..51).map(|b| 1u64 << b).collect();
     keys.extend([
-        0x1f | 0x1f << 5,              // all attributes and maps
-        0x1f | 0x1f << 5 | 0x1f << 10, // ...maps on UV1
-        0x1f << 5,                     // maps without UVs, normals or tangents
-        1 << 7,                        // normal map without tangents: derived frame
-        0x1f | 0x1f << 5 | 2 << 15 | 1 << 17,
-        // Material extensions, alone and together (dispersion needs a volume).
-        1 << 18,
-        1 << 18 | 1 << 19,
-        1 << 20,
-        1 << 18 | 1 << 19 | 1 << 21,
-        0x1f | 0x1f << 5 | 1 << 18 | 1 << 19 | 1 << 20 | 1 << 21,
+        0,
+        2 << 5,
+        attrs | maps,
+        attrs | maps | uv1,
+        maps,
+        attrs | maps | layers,
+        attrs | maps | layers | 2 << 5,
     ]);
-    for bits in keys {
-        let key = PbrKey::from_bits(bits);
-        let p = shaders.program(&ctx, key).expect("program");
-        // Waits for the link; then validity is known.
-        ctx.program_active_uniform_names(p);
-        assert!(
-            ctx.program_is_valid(p),
-            "variant {bits:#x} doesn't link:\n{}",
-            key.defines()
-        );
+    for model in [ShadingModel::OpenPbr, ShadingModel::Gltf] {
+        shaders.set_model(model);
+        for &bits in &keys {
+            let key = PbrKey::from_bits(bits).fit_texture_units();
+            let p = shaders.program(&ctx, key).expect("program");
+            // Waits for the link; then validity is known.
+            ctx.program_active_uniform_names(p);
+            assert!(
+                ctx.program_is_valid(p),
+                "{model:?} variant {bits:#x} doesn't link:\n{}",
+                key.with_model(model).defines()
+            );
+        }
     }
     // A known key comes from the cache.
     let first = shaders.program(&ctx, PbrKey::from_bits(0)).unwrap();

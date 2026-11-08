@@ -13,119 +13,172 @@ use rswebgl::error::Error;
 use rswebgl::ids::ProgramId;
 use rswebgl::shader_source::ShaderSource;
 use rswebgl_gltf::{
-    ATTR_COLOR, ATTR_NORMAL, ATTR_TANGENT, ATTR_UV0, ATTR_UV1, AlphaMode, DrawItem, Material, Model,
+    ATTR_COLOR, ATTR_NORMAL, ATTR_TANGENT, ATTR_UV0, ATTR_UV1, AlphaMode, DrawItem, MAP_COUNT,
+    MAP_SLOTS, Material, Model,
 };
 
 const VERT: &str = include_str!("../shaders/pbr.vert");
 const FRAG: &str = include_str!("../shaders/pbr.frag");
 
-// Key layout: bits 0..5 the primitive's ATTR_* bits; 5..10 which maps the
-// material has (`MAPS` order); 10..15 which of them read TEXCOORD_1; 15..17
-// the alpha mode; 17 unlit; 18..22 material extensions (`EXTENSIONS`).
-const MAPS: [&str; 5] = [
-    "BASE_COLOR",
-    "METALLIC_ROUGHNESS",
-    "NORMAL",
-    "OCCLUSION",
-    "EMISSIVE",
+// Key layout (u64): bits 0..5 the primitive's ATTR_* bits; 5..7 the alpha
+// mode; 7 unlit; 8..12 transmission, volume, clearcoat, dispersion; 12 the
+// glTF reference model; 13 EON diffuse; 14..17 sheen, thin film,
+// anisotropy; 17..34 which maps the material has (`MAP_SLOTS` order);
+// 34..51 which of them read TEXCOORD_1.
+const ATTRS: [(u64, &str); 5] = [
+    (ATTR_NORMAL as u64, "HAS_NORMAL"),
+    (ATTR_UV0 as u64, "HAS_UV0"),
+    (ATTR_TANGENT as u64, "HAS_TANGENT"),
+    (ATTR_COLOR as u64, "HAS_COLOR"),
+    (ATTR_UV1 as u64, "HAS_UV1"),
 ];
-const ATTRS: [(u32, &str); 5] = [
-    (ATTR_NORMAL, "HAS_NORMAL"),
-    (ATTR_UV0, "HAS_UV0"),
-    (ATTR_TANGENT, "HAS_TANGENT"),
-    (ATTR_COLOR, "HAS_COLOR"),
-    (ATTR_UV1, "HAS_UV1"),
-];
-const MAP_SHIFT: u32 = 5;
-const UV1_SHIFT: u32 = 10;
-const ALPHA_SHIFT: u32 = 15;
-const UNLIT: u32 = 1 << 17;
-// Material extensions with a non-default factor, each its own code path.
-const EXTENSIONS: [(u32, &str); 4] = [
-    (1 << 18, "HAS_TRANSMISSION"),
-    (1 << 19, "HAS_VOLUME"),
-    (1 << 20, "HAS_CLEARCOAT"),
-    (1 << 21, "HAS_DISPERSION"),
-];
+const ALPHA_SHIFT: u64 = 5;
+const UNLIT: u64 = 1 << 7;
+const TRANSMISSION: u64 = 1 << 8;
+const VOLUME: u64 = 1 << 9;
+const CLEARCOAT: u64 = 1 << 10;
+const DISPERSION: u64 = 1 << 11;
 // The shading model: OpenPBR unless set (the glTF reference).
-const MODEL_GLTF: u32 = 1 << 22;
+const MODEL_GLTF: u64 = 1 << 12;
 // EON diffuse (base_diffuse_roughness > 0); Lambert otherwise.
-const DIFFUSE_ROUGHNESS: u32 = 1 << 23;
+const DIFFUSE_ROUGHNESS: u64 = 1 << 13;
 // Layers: glTF sheen / OpenPBR fuzz, thin film, specular anisotropy.
-const SHEEN: u32 = 1 << 24;
-const IRIDESCENCE: u32 = 1 << 25;
-const ANISOTROPY: u32 = 1 << 26;
-const TOP_BIT: u32 = 1 << 26;
+const SHEEN: u64 = 1 << 14;
+const IRIDESCENCE: u64 = 1 << 15;
+const ANISOTROPY: u64 = 1 << 16;
+const MAP_SHIFT: u64 = 17;
+const UV1_SHIFT: u64 = MAP_SHIFT + MAP_COUNT as u64;
+const TOP_BIT: u64 = 1 << (UV1_SHIFT + MAP_COUNT as u64 - 1);
+// Feature defines, by bit.
+const FEATURES: [(u64, &str); 10] = [
+    (UNLIT, "MATERIAL_UNLIT"),
+    (TRANSMISSION, "HAS_TRANSMISSION"),
+    (VOLUME, "HAS_VOLUME"),
+    (CLEARCOAT, "HAS_CLEARCOAT"),
+    (DISPERSION, "HAS_DISPERSION"),
+    (DIFFUSE_ROUGHNESS, "HAS_DIFFUSE_ROUGHNESS"),
+    (SHEEN, "HAS_SHEEN"),
+    (IRIDESCENCE, "HAS_IRIDESCENCE"),
+    (ANISOTROPY, "HAS_ANISOTROPY"),
+    (MODEL_GLTF, "MODEL_GLTF"),
+];
+
+// The layer a map belongs to (0: always used): an extension's maps only
+// count while its layer is on, so a texture without its factor costs nothing.
+// Samplers every scene shader binds: environment diffuse, specular, the BRDF
+// table, the scene copy.
+const FRAME_SAMPLERS: u32 = 4;
+
+// Maps left out first when a variant would need more texture units than
+// the device has: the subtlest effects first, the base color last.
+const DROP_ORDER: [usize; MAP_COUNT] = [16, 15, 14, 13, 7, 6, 10, 11, 9, 12, 5, 8, 3, 4, 1, 2, 0];
+
+const MAP_LAYERS: [u64; MAP_COUNT] = [
+    0,
+    0,
+    0,
+    0,
+    0, // core
+    CLEARCOAT,
+    CLEARCOAT,
+    CLEARCOAT, // clearcoat, its roughness, normal
+    TRANSMISSION,
+    VOLUME, // transmission, thickness
+    0,
+    0, // specular, specular color
+    SHEEN,
+    SHEEN, // sheen color, roughness
+    IRIDESCENCE,
+    IRIDESCENCE, // iridescence, its thickness
+    ANISOTROPY,  // anisotropy
+];
 
 /// A shader variant: which features one program is compiled with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PbrKey(u32);
+pub struct PbrKey(u64);
 
 impl PbrKey {
     /// The variant for a primitive with `attributes` (`ATTR_*` bits) drawn
     /// with `material`.
     pub fn new(attributes: u32, material: &Material) -> Self {
-        let maps = [
-            (material.base_color_texture(), material.base_color_uv()),
-            (
-                material.metallic_roughness_texture(),
-                material.metallic_roughness_uv(),
-            ),
-            (material.normal_texture(), material.normal_uv()),
-            (material.occlusion_texture(), material.occlusion_uv()),
-            (material.emissive_texture(), material.emissive_uv()),
-        ];
-        let mut key = attributes & 0x1f;
-        for (i, (tex, uv)) in maps.into_iter().enumerate() {
-            if tex >= 0 {
-                key |= 1 << (MAP_SHIFT + i as u32);
-                if uv == 1 {
-                    key |= 1 << (UV1_SHIFT + i as u32);
-                }
-            }
-        }
-        key |= (material.alpha_mode() as u32) << ALPHA_SHIFT;
+        let mut key = (attributes & 0x1f) as u64;
+        key |= (material.alpha_mode() as u64) << ALPHA_SHIFT;
         if material.unlit() {
             key |= UNLIT;
         }
         // Volume and dispersion only matter for light going through.
         let transmissive = material.transmission() > 0.0;
+        let volume = transmissive && material.thickness() > 0.0;
         let present = [
-            transmissive,
-            transmissive && material.thickness() > 0.0,
-            material.clearcoat() > 0.0,
-            transmissive && material.thickness() > 0.0 && material.dispersion() > 0.0,
+            (TRANSMISSION, transmissive),
+            (VOLUME, volume),
+            (CLEARCOAT, material.clearcoat() > 0.0),
+            (DISPERSION, volume && material.dispersion() > 0.0),
+            (DIFFUSE_ROUGHNESS, material.diffuse_roughness() > 0.0),
+            (SHEEN, material.sheen_color().iter().any(|&c| c > 0.0)),
+            (IRIDESCENCE, material.iridescence() > 0.0),
+            (ANISOTROPY, material.anisotropy_strength() != 0.0),
         ];
-        for ((bit, _), on) in EXTENSIONS.into_iter().zip(present) {
+        for (bit, on) in present {
             if on {
                 key |= bit;
             }
         }
-        if material.diffuse_roughness() > 0.0 {
-            key |= DIFFUSE_ROUGHNESS;
+        for (i, (tex, uv)) in material.maps().into_iter().enumerate() {
+            let layer = MAP_LAYERS[i];
+            if tex >= 0 && (layer == 0 || key & layer != 0) {
+                key |= 1 << (MAP_SHIFT + i as u64);
+                if uv == 1 {
+                    key |= 1 << (UV1_SHIFT + i as u64);
+                }
+            }
         }
-        if material.sheen_color().iter().any(|&c| c > 0.0) {
-            key |= SHEEN;
-        }
-        if material.iridescence() > 0.0 {
-            key |= IRIDESCENCE;
-        }
-        if material.anisotropy_strength() != 0.0 {
-            key |= ANISOTROPY;
-        }
-        Self(key)
+        Self(key).fit_texture_units()
     }
 
-    /// A key from raw bits: 0..5 `ATTR_*`, 5..10 maps (base color, metallic-
-    /// roughness, normal, occlusion, emissive), 10..15 which maps read
-    /// TEXCOORD_1, 15..17 alpha mode, 17 unlit, 18..22 transmission, volume,
-    /// clearcoat, dispersion. For tools and tests; models
-    /// go through `new`.
-    pub fn from_bits(bits: u32) -> Self {
+    /// This variant with the least important maps dropped until its samplers
+    /// fit the device (`MAX_TEXTURE_IMAGE_UNITS`, the frame's own four
+    /// included): a material using every extension map would otherwise fail
+    /// to link on 16-unit devices. Reported once.
+    pub fn fit_texture_units(self) -> Self {
+        let units = rswebgl::limits::max_texture_image_units();
+        let (fit, dropped) = self.within_texture_units(units);
+        for slot in dropped {
+            rswebgl::console::warn_once(&format!(
+                "[rswebgl-scene] a material uses more maps than this device can sample \
+                 ({units} texture units); its {} is left out",
+                MAP_SLOTS[slot].name
+            ));
+        }
+        fit
+    }
+
+    // `fit_texture_units` for `units`, and the map slots it dropped.
+    fn within_texture_units(self, units: u32) -> (Self, Vec<usize>) {
+        let mut key = self.0;
+        let used =
+            |k: u64| ((k >> MAP_SHIFT) & ((1 << MAP_COUNT) - 1)).count_ones() + FRAME_SAMPLERS;
+        let mut dropped = Vec::new();
+        for slot in DROP_ORDER {
+            if used(key) <= units {
+                break;
+            }
+            let bit = 1 << (MAP_SHIFT + slot as u64);
+            if key & bit != 0 {
+                key &= !(bit | 1 << (UV1_SHIFT + slot as u64));
+                dropped.push(slot);
+            }
+        }
+        (Self(key), dropped)
+    }
+
+    /// A key from raw bits (see the layout above). For tools and tests;
+    /// models go through `new`.
+    pub fn from_bits(bits: u64) -> Self {
         Self(bits & ((TOP_BIT << 1) - 1))
     }
 
-    pub fn bits(&self) -> u32 {
+    pub fn bits(&self) -> u64 {
         self.0
     }
 
@@ -146,13 +199,14 @@ impl PbrKey {
                 let _ = writeln!(s, "#define {name}");
             }
         }
-        for (i, name) in MAPS.iter().enumerate() {
-            if k & (1 << (MAP_SHIFT + i as u32)) != 0 {
-                let uv = if k & (1 << (UV1_SHIFT + i as u32)) != 0 {
+        for (i, slot) in MAP_SLOTS.iter().enumerate() {
+            if k & (1 << (MAP_SHIFT + i as u64)) != 0 {
+                let uv = if k & (1 << (UV1_SHIFT + i as u64)) != 0 {
                     "v_uv1"
                 } else {
                     "v_uv0"
                 };
+                let name = slot.define;
                 let _ = writeln!(s, "#define HAS_{name}_MAP\n#define {name}_UV {uv}");
             }
         }
@@ -162,28 +216,10 @@ impl PbrKey {
             _ => "OPAQUE",
         };
         let _ = writeln!(s, "#define ALPHAMODE_{alpha}");
-        if k & UNLIT != 0 {
-            s.push_str("#define MATERIAL_UNLIT\n");
-        }
-        for (bit, name) in EXTENSIONS {
+        for (bit, name) in FEATURES {
             if k & bit != 0 {
                 let _ = writeln!(s, "#define {name}");
             }
-        }
-        if k & DIFFUSE_ROUGHNESS != 0 {
-            s.push_str("#define HAS_DIFFUSE_ROUGHNESS\n");
-        }
-        for (bit, name) in [
-            (SHEEN, "HAS_SHEEN"),
-            (IRIDESCENCE, "HAS_IRIDESCENCE"),
-            (ANISOTROPY, "HAS_ANISOTROPY"),
-        ] {
-            if k & bit != 0 {
-                let _ = writeln!(s, "#define {name}");
-            }
-        }
-        if k & MODEL_GLTF != 0 {
-            s.push_str("#define MODEL_GLTF\n");
         }
         s
     }
@@ -279,5 +315,27 @@ impl PbrShaders {
         for p in self.programs.into_values() {
             ctx.destroy_program(p);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn too_many_maps_drop_the_subtlest_first() {
+        let all = PbrKey::from_bits(0x1ffff << MAP_SHIFT | 0x1ffff << UV1_SHIFT);
+        // 17 maps + the frame's 4 on 16 units: 5 go.
+        let (fit, dropped) = all.within_texture_units(16);
+        assert_eq!(dropped, [16, 15, 14, 13, 7]);
+        let maps = |k: PbrKey| (k.0 >> MAP_SHIFT) & 0x1ffff;
+        assert_eq!(maps(fit).count_ones() + FRAME_SAMPLERS, 16);
+        for gone in [16, 15, 14, 13, 7] {
+            assert_eq!(maps(fit) & 1 << gone, 0, "{}", MAP_SLOTS[gone].name);
+            assert_eq!(fit.0 & 1 << (UV1_SHIFT + gone as u64), 0, "its UV bit too");
+        }
+        assert_ne!(maps(fit) & 1, 0, "base color stays");
+        // Within the limit nothing changes.
+        assert_eq!(all.within_texture_units(32), (all, vec![]));
     }
 }

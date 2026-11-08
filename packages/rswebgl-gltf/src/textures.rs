@@ -128,17 +128,19 @@ pub(crate) fn build_texture(
     Ok(out)
 }
 
-/// Texture indices used in an sRGB role (baseColor, emissive) — those decode
-/// from sRGB; every other texture (normal, metallic-roughness, occlusion) is
-/// linear.
+/// Texture indices used in an sRGB role (base color, emissive, specular
+/// color, sheen color) — those decode from sRGB; every other texture
+/// (normals, data maps) is linear.
 pub(crate) fn srgb_texture_set(doc: &gltf::Document) -> HashSet<usize> {
     let mut set = HashSet::new();
     for mat in doc.materials() {
-        if let Some(info) = mat.pbr_metallic_roughness().base_color_texture() {
-            set.insert(info.texture().index());
-        }
-        if let Some(info) = mat.emissive_texture() {
-            set.insert(info.texture().index());
+        for (slot, m) in crate::material::MAP_SLOTS
+            .iter()
+            .zip(crate::material::doc_maps(&mat))
+        {
+            if let (true, Some(m)) = (slot.srgb, m) {
+                set.insert(m.texture);
+            }
         }
     }
     set

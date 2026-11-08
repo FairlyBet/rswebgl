@@ -139,6 +139,8 @@ struct Roles {
     emissive: bool,
     occ: bool,
     mr: bool,
+    // Used by an extension's map: never repointed.
+    other: bool,
 }
 
 /// Decide which (occlusion, metallic-roughness) index pairs are safe to pack.
@@ -171,6 +173,15 @@ fn plan_orm_pairs(doc: &gltf::Document, tex_count: usize) -> Vec<(usize, usize)>
         if let Some(i) = em {
             roles[i].emissive = true;
         }
+        for m in crate::material::doc_maps(&mat)
+            .into_iter()
+            .skip(5)
+            .flatten()
+        {
+            if let Some(r) = roles.get_mut(m.texture) {
+                r.other = true;
+            }
+        }
         if let (Some(o), Some(m)) = (oc, mr)
             && o != m
         {
@@ -181,8 +192,8 @@ fn plan_orm_pairs(doc: &gltf::Document, tex_count: usize) -> Vec<(usize, usize)>
     // A texture must be used *only* as occlusion (resp. only as MR) to be packed,
     // so repointing it doesn't disturb another role. And the occ↔MR pairing must
     // be 1:1: if either side ever pairs differently, reject both.
-    let occ_only = |r: &Roles| r.occ && !r.base && !r.normal && !r.emissive && !r.mr;
-    let mr_only = |r: &Roles| r.mr && !r.base && !r.normal && !r.emissive && !r.occ;
+    let occ_only = |r: &Roles| r.occ && !r.base && !r.normal && !r.emissive && !r.mr && !r.other;
+    let mr_only = |r: &Roles| r.mr && !r.base && !r.normal && !r.emissive && !r.occ && !r.other;
 
     let mut rejected: HashSet<usize> = HashSet::new();
     for &(o, m) in &candidates {

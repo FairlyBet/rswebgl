@@ -31,7 +31,8 @@ mod scene;
 mod textures;
 
 pub use material::{
-    AlphaMode, EXTERNAL_TEXTURE, MAP_NAMES, Material, PROPERTIES, Property, default_material,
+    AlphaMode, EXTERNAL_TEXTURE, MAP_COUNT, MAP_NAMES, MAP_SLOTS, MapSlot, Material, PROPERTIES,
+    Property, default_material,
 };
 
 use rswebgl::context::Context;
@@ -502,27 +503,23 @@ fn js_err(e: JsValue) -> Error {
     e.as_string().unwrap_or_else(|| format!("{e:?}")).into()
 }
 
-// The material maps in the order of `MAP_UNIFORMS`: (texture index or -1,
-// TEXCOORD set).
-const MAPS: usize = 5;
+// The material maps in `MAP_SLOTS` order: (texture index or -1, TEXCOORD set).
+const MAPS: usize = MAP_COUNT;
 fn material_maps(m: &Material) -> [(i32, u32); MAPS] {
-    [
-        (m.base_color_tex, m.base_color_uv),
-        (m.metallic_roughness_tex, m.metallic_roughness_uv),
-        (m.normal_tex, m.normal_uv),
-        (m.occlusion_tex, m.occlusion_uv),
-        (m.emissive_tex, m.emissive_uv),
-    ]
+    m.maps()
 }
 
-/// Sampler uniforms of the material maps, as named in a material group.
-pub const MAP_UNIFORMS: [&str; MAPS] = [
-    "u_base_color_tex",
-    "u_metallic_roughness_tex",
-    "u_normal_tex",
-    "u_occlusion_tex",
-    "u_emissive_tex",
-];
+/// Sampler uniforms of the material maps, as named in a material group
+/// (`MAP_SLOTS` order).
+pub const MAP_UNIFORMS: [&str; MAPS] = {
+    let mut out = [""; MAPS];
+    let mut i = 0;
+    while i < MAPS {
+        out[i] = MAP_SLOTS[i].uniform;
+        i += 1;
+    }
+    out
+};
 
 // One parameter group per material (plus the default material's, last).
 fn build_material_groups(

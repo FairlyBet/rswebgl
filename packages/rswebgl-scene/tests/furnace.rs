@@ -119,6 +119,8 @@ fn grid_url(materials: &[&str]) -> String {
     {{ "bufferView": 1, "componentType": 5126, "count": 4, "type": "VEC3" }},
     {{ "bufferView": 2, "componentType": 5123, "count": 6, "type": "SCALAR" }}
   ],
+  "images": [{{ "uri": "{black}" }}],
+  "textures": [{{ "source": 0 }}],
   "materials": [{materials}],
   "meshes": [{meshes}],
   "nodes": [{nodes}],
@@ -131,6 +133,10 @@ fn grid_url(materials: &[&str]) -> String {
         meshes = meshes.join(","),
         nodes = nodes.join(","),
         node_list = node_list.join(","),
+        black = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(png([0, 0, 0, 0]))
+        ),
     );
     format!("data:model/gltf+json;base64,{}", b64(json.as_bytes()))
 }
@@ -532,4 +538,158 @@ async fn glass_sees_the_scene_behind_it() {
         );
     }
     scene.destroy();
+}
+
+// A 1×1 RGBA PNG of one color (stored deflate).
+fn png(rgba: [u8; 4]) -> Vec<u8> {
+    fn crc32(data: &[u8]) -> u32 {
+        let mut c = 0xffff_ffffu32;
+        for &b in data {
+            c ^= b as u32;
+            for _ in 0..8 {
+                c = if c & 1 != 0 {
+                    0xedb8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
+            }
+        }
+        !c
+    }
+    fn chunk(out: &mut Vec<u8>, kind: &[u8], data: &[u8]) {
+        out.extend((data.len() as u32).to_be_bytes());
+        let start = out.len();
+        out.extend(kind);
+        out.extend(data);
+        let crc = crc32(&out[start..]);
+        out.extend(crc.to_be_bytes());
+    }
+    let raw = [0, rgba[0], rgba[1], rgba[2], rgba[3]];
+    let (mut a, mut b) = (1u32, 0u32);
+    for &x in &raw {
+        a = (a + x as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    let mut zlib = vec![0x78, 0x01, 1, raw.len() as u8, 0, !(raw.len() as u8), 0xff];
+    zlib.extend(raw);
+    zlib.extend(((b << 16) | a).to_be_bytes());
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunk(&mut out, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    chunk(&mut out, b"IDAT", &zlib);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+// An extension's map multiplies its factor: a black clearcoat, sheen color
+// or transmission map turns that layer off, in both models. (The grid's
+// texture 0 is a 1×1 black, transparent PNG; the quads have no UVs, so
+// every pixel reads it.)
+#[wasm_bindgen_test]
+async fn extension_maps_scale_their_factors() {
+    const ROWS: [&str; 6] = [
+        // A rough black base under a glossy coat, then the coat masked off,
+        // then no coat at all.
+        r#"{ "pbrMetallicRoughness": { "baseColorFactor": [0, 0, 0, 1], "metallicFactor": 0, "roughnessFactor": 1 },
+             "extensions": { "KHR_materials_clearcoat": { "clearcoatFactor": 1 } } }"#,
+        r#"{ "pbrMetallicRoughness": { "baseColorFactor": [0, 0, 0, 1], "metallicFactor": 0, "roughnessFactor": 1 },
+             "extensions": { "KHR_materials_clearcoat": { "clearcoatFactor": 1, "clearcoatTexture": { "index": 0 } } } }"#,
+        r#"{ "pbrMetallicRoughness": { "baseColorFactor": [0, 0, 0, 1], "metallicFactor": 0, "roughnessFactor": 1 } }"#,
+        // White sheen on black, and the same with its color map black.
+        r#"{ "pbrMetallicRoughness": { "baseColorFactor": [0, 0, 0, 1], "metallicFactor": 0, "roughnessFactor": 1 },
+             "extensions": { "KHR_materials_sheen": { "sheenColorFactor": [1, 1, 1], "sheenRoughnessFactor": 0.5 } } }"#,
+        r#"{ "pbrMetallicRoughness": { "baseColorFactor": [0, 0, 0, 1], "metallicFactor": 0, "roughnessFactor": 1 },
+             "extensions": { "KHR_materials_sheen": { "sheenColorFactor": [1, 1, 1], "sheenRoughnessFactor": 0.5,
+                                                      "sheenColorTexture": { "index": 0 } } } }"#,
+        // Red glass with its transmission map black: an opaque red dielectric.
+        r#"{ "pbrMetallicRoughness": { "baseColorFactor": [1, 0, 0, 1], "metallicFactor": 0, "roughnessFactor": 0.5 },
+             "extensions": { "KHR_materials_transmission": { "transmissionFactor": 1, "transmissionTexture": { "index": 0 } } } }"#,
+    ];
+    let rows = ROWS.len() as i32;
+    let (w, h) = (96, 32 * rows);
+    let canvas: HtmlCanvasElement = web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .create_element("canvas")
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    canvas.set_width(w as u32);
+    canvas.set_height(h as u32);
+    let mut options = ContextOptions::new();
+    options.antialias = false;
+    let ctx = Context::from_canvas(&canvas, &options).expect("ctx");
+    let gl: Gl = canvas
+        .get_context("webgl2")
+        .unwrap()
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    let mut scene = Scene::new(&ctx).expect("scene");
+    scene.set_environment_intensity(1.0, 1.0, 1.0);
+    scene.set_tone_mapping("none").unwrap();
+    scene.set_dither(false);
+    let camera = scene.spawn();
+    scene.insert_camera(
+        camera,
+        Camera::orthographic(rows as f32 / 2.0, 0.5, 0.1, 100.0),
+    );
+    scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
+    scene.add_model(load_model(&ctx, &grid_url(&ROWS)).await.expect("load"));
+    // The image decodes asynchronously.
+    sleep_ms(100).await;
+
+    for model in ["openpbr", "gltf"] {
+        scene.set_shading_model(model).unwrap();
+        for _ in 0..2 {
+            wasm_bindgen_futures::JsFuture::from(scene.when_ready())
+                .await
+                .unwrap();
+            scene.render_frame(camera);
+        }
+        let px = |row: i32, col: i32| {
+            let mut p = [0u8; 4];
+            gl.read_pixels_with_opt_u8_array(
+                16 + 32 * col,
+                h - 16 - 32 * row,
+                1,
+                1,
+                Gl::RGBA,
+                Gl::UNSIGNED_BYTE,
+                Some(&mut p[..]),
+            )
+            .unwrap();
+            p
+        };
+        let (coated, masked, bare) = (px(0, 0), px(1, 0), px(2, 0));
+        assert!(
+            coated[0] > bare[0] + 10,
+            "{model}: the coat shows: {bare:?} → {coated:?}"
+        );
+        assert!(
+            masked[0].abs_diff(bare[0]) <= 2,
+            "{model}: masked coat = none: {masked:?} vs {bare:?}"
+        );
+        let (sheen, no_sheen) = (px(3, 2), px(4, 2));
+        assert!(
+            sheen[0] > no_sheen[0] + 20,
+            "{model}: a black sheen map: {sheen:?} → {no_sheen:?}"
+        );
+        let opaque = px(5, 0);
+        assert!(
+            opaque[0] > opaque[2] + 40,
+            "{model}: no transmission, red shows: {opaque:?}"
+        );
+    }
+    scene.destroy();
+}
+
+async fn sleep_ms(ms: i32) {
+    let p = js_sys::Promise::new(&mut |resolve, _| {
+        web_sys::window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+            .unwrap();
+    });
+    wasm_bindgen_futures::JsFuture::from(p).await.unwrap();
 }

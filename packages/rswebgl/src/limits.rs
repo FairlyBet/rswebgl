@@ -10,6 +10,7 @@ use web_sys::WebGl2RenderingContext as Gl;
 #[derive(Debug, Clone, Copy)]
 struct Limits {
     max_combined_texture_units: u32,
+    max_texture_image_units: u32,
     max_uniform_block_size: u32,
     max_uniform_buffer_bindings: u32,
     uniform_buffer_offset_alignment: u32,
@@ -27,6 +28,7 @@ struct Limits {
 // WebGL2 spec minimums.
 const MINIMUMS: Limits = Limits {
     max_combined_texture_units: 32,
+    max_texture_image_units: 16,
     max_uniform_block_size: 16384,
     max_uniform_buffer_bindings: 24,
     // No spec minimum; 256 is the common hardware value and a safe (over-)alignment.
@@ -58,6 +60,7 @@ pub(crate) fn init(gl: &Gl) {
                 Gl::MAX_COMBINED_TEXTURE_IMAGE_UNITS,
                 m.max_combined_texture_units,
             ),
+            max_texture_image_units: q(Gl::MAX_TEXTURE_IMAGE_UNITS, m.max_texture_image_units),
             max_uniform_block_size: q(Gl::MAX_UNIFORM_BLOCK_SIZE, m.max_uniform_block_size),
             max_uniform_buffer_bindings: q(
                 Gl::MAX_UNIFORM_BUFFER_BINDINGS,
@@ -85,6 +88,12 @@ pub(crate) fn init(gl: &Gl) {
 
 fn get() -> &'static Limits {
     LIMITS.get().unwrap_or(&MINIMUMS)
+}
+
+/// `MAX_TEXTURE_IMAGE_UNITS`: textures a fragment shader can sample (16 at
+/// least, often exactly 16 on mobile).
+pub fn max_texture_image_units() -> u32 {
+    get().max_texture_image_units
 }
 
 /// `MAX_COMBINED_TEXTURE_IMAGE_UNITS`: texture units one program can sample.
