@@ -234,16 +234,22 @@ FBO blit). Done. Deferred polish:
   is also the background, so a sharp background is only as sharp as its
   `size`. A device without half-float render targets gets an error, no
   fallback (e.g. RGBM in RGBA8).
-- Material extensions (E5c): factors only — the extensions' textures
-  (transmission, thickness, clearcoat + its roughness and normal, specular
-  and specular color) aren't read. Transmission refracts the environment
-  only: objects behind glass or a gem don't show through it (needs an
-  opaque pass into a mipmapped texture, sampled by the transmissive pass —
-  Khronos' approach). One refraction (entry) for volumes; no internal
-  reflections, which is what makes cut diamonds sparkle — a dedicated gem
-  shader (ray-marching the stone's own geometry) is the jewelry-grade
-  follow-up. Punctual lights don't transmit. Not read: sheen, iridescence,
-  anisotropy, diffuse transmission, KHR_materials_variants.
+- Material model (OpenPBR + glTF reference, `shaders/lib/surface_*.glsl`):
+  factors only — the extensions' textures (transmission, thickness,
+  clearcoat + its roughness and normal, specular / specular color, sheen,
+  iridescence + thickness, anisotropy) aren't read, and
+  `KHR_texture_transform` isn't supported (assets requiring it, e.g.
+  SheenChair, fail to load). Transmission sees a half-size copy of the
+  opaque scene (HDR output) — one layer: glass behind glass shows the
+  environment's / the opaque scene, not the other glass (depth peeling,
+  2–4 layers, is the planned upgrade; dual peeling needs EXT_float_blend).
+  One refraction (entry) for volumes; no internal reflections — a dedicated
+  gem shader (ray-marching the stone's own geometry) is the jewelry-grade
+  follow-up. glTF sheen's image-based light uses the GGX-prefiltered map at
+  the sheen roughness (no Charlie-prefiltered cube). OpenPBR: no
+  subsurface (diffuse stands in), no coat anisotropy, emission is radiance
+  (not nits), thin-walled translucency only through glTF's thickness = 0.
+  Not read: diffuse transmission, KHR_materials_variants.
 - Picking is on the GPU (`gpu_pick.rs`): a 1×1 draw through a pick matrix,
   read back async. It draws meshes by their location-0 attribute, not their
   own shaders (a displacing or skinning vertex shader is picked at rest).
@@ -276,3 +282,7 @@ Fixed in the review commits; these were found and left for later:
   `createImageBitmap`" (else an `<img>`).
 - Timer queries: disjoint handling is now context-wide but untested by
   pixels (headless Chrome never reports a disjoint).
+- `DefaultFramebuffer`'s ResizeObserver keeps calling its closure after the
+  context is dropped (seen when a page's script throws after creating one):
+  "closure invoked recursively or after being dropped". Disconnect it on
+  drop.

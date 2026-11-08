@@ -13,7 +13,8 @@ light. Other assets: `?model=<url>` and `?env=<url.hdr>`.
 (through a copy of its material). Keys: **V** hides / shows the model (through its root, so the
 whole subtree), **R** pauses the turntable, **+ / −** change the exposure, **B**
 toggles the background, **E** turns the environment, **L** simulates a
-context loss (restored a second later: the scene rebuilds itself).
+context loss (restored a second later: the scene rebuilds itself), **M** switches
+the shading model (OpenPBR ↔ the glTF reference), **T** the tone mapper.
 
 ```bash
 wasm-pack build packages/rswebgl-scene --target web --out-dir ../../examples/js-scene/pkg

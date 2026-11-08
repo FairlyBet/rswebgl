@@ -89,6 +89,8 @@ let background = true;
 let envAngle = 0;
 let spinning = true;
 let exposure = 1;
+const toneMappers = ["neutral", "aces", "agx", "none"];
+let toneMapper = 0;
 let angle = 0;
 window.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
@@ -103,6 +105,9 @@ window.addEventListener("keydown", (e) => {
   }
   if (k === "e") scene.setEnvironmentRotation((envAngle += Math.PI / 4));
   if (k === "c") recolor();
+  // Shading model: OpenPBR (default) vs the glTF reference, on the same materials.
+  if (k === "m") scene.setShadingModel(scene.shadingModel() === "openpbr" ? "gltf" : "openpbr");
+  if (k === "t") scene.setToneMapping(toneMappers[(toneMapper = (toneMapper + 1) % toneMappers.length)]);
   // Simulate a context loss; the scene rebuilds itself after the restore
   // (model fetched again, environment re-baked, materials as they were).
   if (k === "l" && ctx.simulateContextLoss()) {
@@ -120,9 +125,11 @@ function frame(now) {
   const part = picked ? (scene.name(scene.parent(picked)) ?? `entity ${picked}`) : "—";
   statsEl.textContent =
     `entities ${scene.entityCount()}  drawn ${scene.drawn()}  culled ${scene.culled()}  ` +
-    `shader variants ${scene.shaderVariantCount()}  exposure ${exposure.toFixed(2)}\n` +
+    `shader variants ${scene.shaderVariantCount()}  exposure ${exposure.toFixed(2)}  ` +
+    `model ${scene.shadingModel()}  tone ${toneMappers[toneMapper]}\n` +
     `picked: ${part}   click: pick   C: recolor it   V: ${visible ? "hide" : "show"} model   ` +
-    `R: ${spinning ? "pause" : "resume"}   +/-: exposure   B: background   E: turn the environment`;
+    `R: ${spinning ? "pause" : "resume"}   +/-: exposure   B: background   E: turn the environment   ` +
+    `M: OpenPBR / glTF   T: tone mapping`;
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

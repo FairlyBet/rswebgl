@@ -26,6 +26,7 @@
 
 mod lights;
 mod materials;
+mod openpbr;
 mod options;
 mod output;
 mod restore;

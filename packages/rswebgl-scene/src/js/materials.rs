@@ -24,7 +24,7 @@ use rswebgl_ecs::Entity;
 use rswebgl_gltf::{EXTERNAL_TEXTURE, MAP_NAMES, MAP_UNIFORMS, Material, Model, default_material};
 use wasm_bindgen::prelude::*;
 
-use super::{Scene, options};
+use super::{Scene, openpbr, options};
 use crate::hierarchy::descendants;
 use crate::model::Primitive;
 use crate::pbr::PbrKey;
@@ -38,6 +38,9 @@ pub(crate) struct MaterialRecord {
     pub(crate) cloned: bool,
     // The texture of each map (`MAP_NAMES` order), NULL for none.
     pub(crate) maps: [TextureId; 5],
+    // OpenPBR fuzz_color as last set: with no fuzz (weight 0) the stored
+    // sheen color can't carry it.
+    pub(crate) fuzz_color: [f32; 3],
 }
 
 #[wasm_bindgen]
@@ -107,7 +110,9 @@ impl Scene {
     /// undefined for an unknown material or name.
     #[wasm_bindgen(js_name = materialProperty)]
     pub fn material_property(&self, material: ParamGroupId, name: &str) -> Option<Vec<f32>> {
-        self.materials.get(&material)?.material.property(name)
+        let record = self.materials.get(&material)?;
+        openpbr::get(&record.material, name, record.fuzz_color)
+            .or_else(|| record.material.property(name))
     }
 
     /// Sets a material property (names as for `materialProperty`): a number,
@@ -124,6 +129,20 @@ impl Scene {
     ) -> Result<(), Error> {
         let values = options::numbers(&value)
             .ok_or_else(|| Error::from(format!("\"{name}\" takes a number or numbers")))?;
+        // An OpenPBR name: the glTF-side properties that carry it.
+        let record = self
+            .materials
+            .get_mut(&material)
+            .ok_or("setMaterialProperty: not a material of this scene")?;
+        if name == "fuzz_color" && values.len() == 3 {
+            record.fuzz_color = [values[0], values[1], values[2]];
+        }
+        if let Some(writes) = openpbr::set(&record.material, name, &values, record.fuzz_color) {
+            for (prop, v) in writes.map_err(Error::from)? {
+                self.set_material_values(material, prop, &v)?;
+            }
+            return Ok(());
+        }
         self.set_material_values(material, name, &values)
     }
 
@@ -139,6 +158,7 @@ impl Scene {
             .material
             .clone();
         let maps = self.materials[&material].maps;
+        let fuzz_color = self.materials[&material].fuzz_color;
         let copy = self.ctx.copy_param_group(material)?;
         self.materials.insert(
             copy,
@@ -146,6 +166,7 @@ impl Scene {
                 material: data,
                 cloned: true,
                 maps,
+                fuzz_color,
             },
         );
         Ok(copy)
@@ -347,6 +368,7 @@ impl Scene {
                     material: material.clone(),
                     cloned: false,
                     maps,
+                    fuzz_color: [1.0; 3],
                 },
             );
         }
@@ -540,5 +562,15 @@ impl Scene {
             crate::pbr::ShadingModel::Gltf => "gltf",
         }
         .to_string()
+    }
+}
+
+#[wasm_bindgen]
+impl Scene {
+    /// The OpenPBR parameter names `materialProperty` / `setMaterialProperty`
+    /// take besides glTF's (`base_color`, `coat_weight`, `fuzz_weight`, …).
+    #[wasm_bindgen(js_name = openPbrParameters)]
+    pub fn open_pbr_parameters() -> Vec<String> {
+        openpbr::NAMES.iter().map(|s| s.to_string()).collect()
     }
 }

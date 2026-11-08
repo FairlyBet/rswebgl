@@ -929,3 +929,46 @@ async fn tone_mappers_and_a_transparent_canvas() {
     assert_eq!(empty, [0, 0, 0, 0]);
     s.scene.destroy();
 }
+
+// OpenPBR parameter names read and write the glTF-side properties that
+// carry them; composite ones (base_color / geometry_opacity, fuzz weight ×
+// color) keep their parts.
+#[wasm_bindgen_test]
+async fn openpbr_parameter_names() {
+    let mut s = setup().await;
+    let gold = s.scene.find_material(s.root, "Gold");
+    let set =
+        |s: &mut Setup, name: &str, v: &str| s.scene.set_material_property(gold, name, json(v));
+    let get = |s: &Setup, name: &str| s.scene.material_property(gold, name).unwrap();
+
+    set(&mut s, "base_color", "[0, 1, 0]").unwrap();
+    set(&mut s, "geometry_opacity", "0.5").unwrap();
+    assert_eq!(get(&s, "baseColorFactor"), [0.0, 1.0, 0.0, 0.5]);
+    assert_eq!(get(&s, "base_color"), [0.0, 1.0, 0.0]);
+    set(&mut s, "specular_roughness", "0.25").unwrap();
+    assert_eq!(get(&s, "roughnessFactor"), [0.25]);
+    set(&mut s, "thin_film_thickness", "0.4").unwrap();
+    assert_eq!(get(&s, "iridescenceThickness"), [400.0]);
+    assert_eq!(get(&s, "thin_film_thickness"), [0.4]);
+    set(&mut s, "transmission_dispersion_abbe_number", "40").unwrap();
+    assert_eq!(get(&s, "dispersion"), [0.5]);
+
+    // Fuzz: a color set before any weight is remembered, then carried.
+    set(&mut s, "fuzz_color", "[1, 0.5, 0]").unwrap();
+    assert_eq!(get(&s, "fuzz_weight"), [0.0]);
+    assert_eq!(get(&s, "fuzz_color"), [1.0, 0.5, 0.0]);
+    set(&mut s, "fuzz_weight", "0.8").unwrap();
+    assert_eq!(get(&s, "sheenColorFactor"), [0.8, 0.4, 0.0]);
+    assert_eq!(get(&s, "fuzz_color"), [1.0, 0.5, 0.0]);
+
+    // A layer turned on switches the variant, as with glTF names.
+    let variants = s.scene.shader_variant_count();
+    set(&mut s, "coat_weight", "1").unwrap();
+    assert_eq!(get(&s, "clearcoatFactor"), [1.0]);
+    assert_eq!(s.scene.shader_variant_count(), variants + 1);
+
+    assert!(set(&mut s, "base_color", "[1, 0]").is_err(), "wrong length");
+    assert!(set(&mut s, "coat_sparkle", "1").is_err(), "unknown name");
+    assert!(Scene::open_pbr_parameters().contains(&"fuzz_roughness".to_string()));
+    s.scene.destroy();
+}
