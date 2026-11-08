@@ -101,6 +101,9 @@ pub struct MeshRenderer {
     /// Blended: drawn after everything opaque, farthest first (by the
     /// distance to its bounds' center, or its origin without `Bounds`).
     pub transparent: bool,
+    /// Refracts what is behind it (transmission): drawn after the opaque
+    /// scene, which it sees through (with HDR output).
+    pub transmissive: bool,
 }
 
 /// Hides the entity and everything under it when false. No component =
@@ -123,6 +126,8 @@ pub struct RenderStats {
     pub culled: usize,
     /// Object groups whose matrices were written (moved or new objects).
     pub objects_written: usize,
+    /// Transmissive meshes drawn (they want the scene behind them).
+    pub transmissive: usize,
     /// Visible meshes left out because their shader is still compiling in
     /// the background (parallel compile); they appear once it links.
     pub pending: usize,
@@ -192,6 +197,9 @@ pub struct SceneRenderer {
     // display pass.
     display_output: bool,
     tone_mapping: ToneMapping,
+    // The opaque scene, copied for transmissive meshes (and its last mip),
+    // when the frame has one.
+    scene_color: Option<(TextureId, u32)>,
     stats: RenderStats,
 }
 
@@ -225,6 +233,7 @@ impl SceneRenderer {
                 .texture("u_env_diffuse")
                 .texture("u_env_specular")
                 .texture("u_env_brdf")
+                .texture("u_scene_color")
                 .uniform("u_background_blur", UniformType::F32),
         )?;
         let frame_group = ctx.create_param_group(frame_layout)?;
@@ -238,6 +247,8 @@ impl SceneRenderer {
         )?;
         let brdf_lut = brdf_lut_texture(ctx)?;
         ctx.param_set_texture_by_name(frame_group, "u_env_brdf", brdf_lut);
+        // Until a frame grabs the scene: any valid texture (not sampled).
+        ctx.param_set_texture_by_name(frame_group, "u_scene_color", brdf_lut);
         let mut skybox_state = RenderState::new();
         skybox_state.depth_mask = false;
         let renderer = Self {
@@ -267,6 +278,7 @@ impl SceneRenderer {
             generation: ctx.generation(),
             display_output: true,
             tone_mapping: ToneMapping::Neutral,
+            scene_color: None,
             stats: RenderStats::default(),
         };
         renderer.bind_environment(ctx);
@@ -397,6 +409,19 @@ impl SceneRenderer {
         );
     }
 
+    /// The opaque scene as transmissive meshes see it through themselves:
+    /// a texture with mips (`last_mip` its last level), or None to fall back
+    /// to the environment. Set by the frame that copies it (see
+    /// `HdrOutput::grab`), before drawing them.
+    pub fn set_scene_color(&mut self, ctx: &Context, scene: Option<(TextureId, u32)>) {
+        if self.scene_color == scene {
+            return;
+        }
+        self.scene_color = scene;
+        let tex = scene.map_or(self.brdf_lut, |(t, _)| t);
+        ctx.param_set_texture_by_name(self.frame_group, "u_scene_color", tex);
+    }
+
     /// Where `scene_output` sends shaded colors: `display` true (the default)
     /// applies exposure, `tone_mapping` and sRGB in each shader, for drawing
     /// straight to the canvas; false leaves linear radiance (HDR) for a
@@ -425,6 +450,20 @@ impl SceneRenderer {
         camera: Entity,
         pass: &mut Pass,
     ) -> RenderStats {
+        self.render_split(world, ctx, camera, pass, None)
+    }
+
+    /// `render`, with transmissive and transparent meshes into `late`: drawn
+    /// after `opaque` has been rendered (and copied for them to see
+    /// through, `set_scene_color`).
+    pub fn render_split(
+        &mut self,
+        world: &World,
+        ctx: &Context,
+        camera: Entity,
+        opaque: &mut Pass,
+        mut late: Option<&mut Pass>,
+    ) -> RenderStats {
         self.stats = RenderStats::default();
         self.release_removed(world, ctx);
 
@@ -432,7 +471,7 @@ impl SceneRenderer {
             return self.stats;
         };
         self.write_lighting(world, ctx);
-        self.push_background(ctx, pass);
+        self.push_background(ctx, opaque);
         let frustum = Frustum::from_view_proj_depth(&view_proj, ctx.reverse_z());
 
         let (Some(meshes), Some(worlds)) = (
@@ -480,6 +519,13 @@ impl SceneRenderer {
             groups[FRAME_SLOT] = self.frame_group;
             groups[MATERIAL_SLOT] = mesh.material;
             groups[OBJECT_SLOT] = group;
+            if mesh.transmissive {
+                self.stats.transmissive += 1;
+            }
+            let pass: &mut Pass = match &mut late {
+                Some(late) if mesh.transparent || mesh.transmissive => late,
+                _ => &mut *opaque,
+            };
             if mesh.transparent {
                 // After every default key, farthest first: the key grows as
                 // the distance shrinks (a non-negative float's bits order
@@ -595,8 +641,8 @@ impl SceneRenderer {
         data.push(Vec4::new(
             if self.display_output { 1.0 } else { 0.0 },
             self.tone_mapping as u32 as f32,
-            0.0,
-            0.0,
+            if self.scene_color.is_some() { 1.0 } else { 0.0 },
+            self.scene_color.map_or(0.0, |(_, mip)| mip as f32),
         ));
         if data == self.lighting {
             return;

@@ -69,7 +69,13 @@ impl Scene {
     // Points `pass` at the HDR target (made or remade as needed) and the
     // renderer at linear output; or, without HDR, at the canvas with display
     // output. Returns whether HDR is in use this frame.
-    pub(super) fn prepare_output(&mut self, pass: &mut Pass, w: i32, h: i32) -> bool {
+    pub(super) fn prepare_output(
+        &mut self,
+        pass: &mut Pass,
+        late: &mut Pass,
+        w: i32,
+        h: i32,
+    ) -> bool {
         if self.hdr.as_ref().is_some_and(|o| o.is_lost(&self.ctx))
             && let Some(out) = self.hdr.take()
         {
@@ -82,8 +88,9 @@ impl Scene {
             }
         }
         if let Some(out) = &mut self.hdr {
-            match out.prepare(&self.ctx, w, h, pass) {
+            match out.prepare_split(&self.ctx, w, h, pass, false) {
                 Ok(()) => {
+                    out.prepare_late(late);
                     self.renderer.set_output(false, self.tone_mapping);
                     return true;
                 }

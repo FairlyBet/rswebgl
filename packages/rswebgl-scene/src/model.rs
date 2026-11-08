@@ -93,6 +93,10 @@ pub fn spawn_model(
                 material: item.material_group(),
                 command: item.draw_command(),
                 transparent: item.render_state().blend,
+                transmissive: usize::try_from(item.material_index())
+                    .ok()
+                    .and_then(|i| model.materials().get(i))
+                    .is_some_and(|m| m.transmission() > 0.0),
             },
         );
         world.insert(

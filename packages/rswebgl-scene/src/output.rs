@@ -24,7 +24,9 @@ use rswebgl::pass::Pass;
 use rswebgl::render_state::RenderState;
 use rswebgl::renderbuffer::RenderbufferFormat;
 use rswebgl::shader_source::ShaderSource;
-use rswebgl::texture::{TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget};
+use rswebgl::texture::{
+    TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget, TextureWrap,
+};
 use rswebgl::uniform_buffer::UniformType;
 use wasm_bindgen::prelude::*;
 
@@ -73,6 +75,10 @@ pub struct HdrOutput {
     // The resolved (or directly rendered) radiance the display pass reads.
     resolve_fb: FramebufferId,
     color: TextureId,
+    // A half-size copy of the opaque scene with mips, for transmission.
+    grab_fb: FramebufferId,
+    grab: TextureId,
+    grab_size: (i32, i32),
     size: (i32, i32),
     samples: i32,
     reverse_z: bool,
@@ -118,6 +124,9 @@ impl HdrOutput {
             color_rb: RenderbufferId::NULL,
             depth_rb: RenderbufferId::NULL,
             resolve_fb: FramebufferId::NULL,
+            grab_fb: FramebufferId::NULL,
+            grab: TextureId::NULL,
+            grab_size: (0, 0),
             color: TextureId::NULL,
             size: (0, 0),
             samples: samples.clamp(0, rswebgl::limits::max_samples() as i32),
@@ -153,6 +162,20 @@ impl HdrOutput {
     /// after drawing when multisampled), sized `w`×`h` (the canvas):
     /// (re)allocates the target when the size or depth mode changed.
     pub fn prepare(&mut self, ctx: &Context, w: i32, h: i32, pass: &mut Pass) -> Result<(), Error> {
+        self.prepare_split(ctx, w, h, pass, true)
+    }
+
+    /// `prepare` for the first of two passes into the target (`last`
+    /// false): it resolves but keeps the multisampled data for the next
+    /// (`prepare_late`).
+    pub fn prepare_split(
+        &mut self,
+        ctx: &Context,
+        w: i32,
+        h: i32,
+        pass: &mut Pass,
+        last: bool,
+    ) -> Result<(), Error> {
         let (w, h) = (w.max(1), h.max(1));
         let reverse_z = ctx.reverse_z();
         if self.size != (w, h) || self.reverse_z != reverse_z || self.fb.is_null() {
@@ -170,18 +193,53 @@ impl HdrOutput {
         ctx.framebuffer_set_color_clear_f32(self.fb, 0, lin(r) * a, lin(g) * a, lin(b) * a, a);
         pass.set_target(self.fb);
         pass.set_clear(&ClearMask::color_depth());
+        self.finish_pass(pass, last);
+        Ok(())
+    }
+
+    /// The second pass into the target: no clear, drawn over the first.
+    pub fn prepare_late(&self, pass: &mut Pass) {
+        pass.set_target(self.fb);
+        pass.set_clear(&ClearMask::none());
+        self.finish_pass(pass, true);
+    }
+
+    fn finish_pass(&self, pass: &mut Pass, last: bool) {
         let mut discard = InvalidateMask::none();
-        // Depth isn't read after the frame; neither is the multisampled color
-        // once resolved. Telling tiled (mobile) GPUs saves writing them back.
-        discard.depth = true;
+        // After the last pass depth isn't read again, nor the multisampled
+        // color once resolved: telling tiled (mobile) GPUs saves writing
+        // them back.
+        discard.depth = last;
         if self.fb != self.resolve_fb {
             pass.set_resolve(self.resolve_fb);
-            discard.color = true;
+            discard.color = last;
         } else {
             pass.clear_resolve();
         }
         pass.set_invalidate(&discard);
-        Ok(())
+    }
+
+    /// The scene copy transmission reads, and its last mip — valid once
+    /// `grab` has run this frame.
+    pub fn scene_color(&self) -> Option<(TextureId, u32)> {
+        let levels = mip_levels(self.grab_size.0, self.grab_size.1);
+        (!self.grab.is_null()).then_some((self.grab, levels - 1))
+    }
+
+    /// Copies what the target holds (the resolved opaque scene) into the
+    /// half-size mipmapped texture transmissive surfaces see through.
+    pub fn grab(&self, ctx: &Context) {
+        let (w, h) = self.size;
+        let (gw, gh) = self.grab_size;
+        ctx.blit_framebuffer(
+            self.resolve_fb,
+            &Viewport::new(0, 0, w, h),
+            self.grab_fb,
+            &Viewport::new(0, 0, gw, gh),
+            &ClearMask::color(),
+            TextureMagFilter::Linear,
+        );
+        ctx.texture_generate_mipmaps(self.grab);
     }
 
     /// Draws the target to the canvas.
@@ -226,6 +284,25 @@ impl HdrOutput {
         ctx.framebuffer_attach_color_texture_2d(resolve_fb, 0, color, 0);
         self.resolve_fb = resolve_fb;
 
+        let (gw, gh) = ((w / 2).max(1), (h / 2).max(1));
+        let grab = ctx.create_texture(
+            TextureTarget::Texture2D,
+            TextureMinFilter::LinearMipmapLinear,
+            TextureMagFilter::Linear,
+        )?;
+        ctx.texture_storage_2d(
+            grab,
+            mip_levels(gw, gh) as i32,
+            &TextureFormat::rgba16f(),
+            gw,
+            gh,
+        );
+        ctx.texture_set_wrap_s(grab, TextureWrap::ClampToEdge);
+        ctx.texture_set_wrap_t(grab, TextureWrap::ClampToEdge);
+        let grab_fb = ctx.create_framebuffer(gw, gh)?;
+        ctx.framebuffer_attach_color_texture_2d(grab_fb, 0, grab, 0);
+        (self.grab, self.grab_fb, self.grab_size) = (grab, grab_fb, (gw, gh));
+
         // Multisampled if the device takes it for this format; else straight
         // into the texture.
         while self.samples > 1 {
@@ -266,6 +343,14 @@ impl HdrOutput {
         if !self.resolve_fb.is_null() {
             ctx.destroy_framebuffer(self.resolve_fb);
         }
+        if !self.grab_fb.is_null() {
+            ctx.destroy_framebuffer(self.grab_fb);
+        }
+        if !self.grab.is_null() {
+            ctx.destroy_texture(self.grab);
+        }
+        self.grab_fb = FramebufferId::NULL;
+        self.grab = TextureId::NULL;
         for rb in [self.color_rb, self.depth_rb] {
             if !rb.is_null() {
                 ctx.destroy_renderbuffer(rb);
@@ -291,4 +376,8 @@ impl HdrOutput {
         self.free_target(ctx);
         ctx.destroy_program(self.program);
     }
+}
+
+fn mip_levels(w: i32, h: i32) -> u32 {
+    32 - (w.max(h).max(1) as u32).leading_zeros()
 }

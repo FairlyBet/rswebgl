@@ -15,7 +15,8 @@ layout(std140) uniform Lighting {
                         // w last mip of the specular cube
     vec4 u_output;      // x 1: scene_output shows (exposure, tone map, sRGB),
                         //   0: it leaves linear radiance (HDR target);
-                        // y tone mapper (tone_map modes)
+                        // y tone mapper (tone_map modes), z 1 with a
+                        // scene copy for transmission, w its last mip
 };
 
 // Direction from a surface point toward light `light` (unnormalized for

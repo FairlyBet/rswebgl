@@ -26,3 +26,20 @@ vec3 scene_reflection(vec3 r, float roughness) {
     return textureLod(u_env_specular, env_dir(r, u_lighting.z), roughness * u_lighting.w).rgb
         * u_environment.rgb;
 }
+
+// The opaque scene behind transmissive surfaces, copied with mips after the
+// opaque draws (u_output.z = 1 when there is one this frame, u_output.w its
+// last mip). Needs frame.glsl.
+uniform sampler2D u_scene_color;
+
+bool scene_color_available() {
+    return u_output.z > 0.5;
+}
+
+// The opaque scene seen at world point `p`, blurred for `roughness`
+// (perceptual; 1 → the last mip).
+vec3 scene_color_at(vec3 p, float roughness) {
+    vec4 clip = u_view_proj * vec4(p, 1.0);
+    vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+    return textureLod(u_scene_color, uv, roughness * u_output.w).rgb;
+}

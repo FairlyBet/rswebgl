@@ -90,10 +90,10 @@ vec2 fresnel_dielectric_polarized(float cos_theta, float ior) {
     float t0 = max(ior * ior - s2, 0.0);
     float t1 = t0 + c2;
     float t2 = 2.0 * sqrt(t0) * cos_theta;
-    float rs = (t1 - t2) / (t1 + t2);
+    float rs = (t1 - t2) / max(t1 + t2, 1e-8);
     float t3 = c2 * t0 + s2 * s2;
     float t4 = t2 * s2;
-    float rp = rs * (t3 - t4) / (t3 + t4);
+    float rp = rs * (t3 - t4) / max(t3 + t4, 1e-8);
     return vec2(rp, rs);
 }
 
@@ -117,8 +117,11 @@ vec3 openpbr_thin_film(float cos_theta, float film_ior, float thickness_nm,
     vec3 f23 = dielectric_base
         ? vec3(fresnel_dielectric(cos_t, base_eta / eta2))
         : fresnel_f82(cos_t, base_f0, base_f82);
-    vec3 r23p = 0.5 * f23;
-    vec3 r23s = 0.5 * f23;
+    // Unpolarized base reflectance split equally: Rp = Rs = F. (MaterialX
+    // halves it on its Schlick branch, which loses half of a metal under a
+    // film; the spec wants the film non-absorbing.)
+    vec3 r23p = f23;
+    vec3 r23s = f23;
 
     float cos_b = cos(atan(eta2));
     vec2 phi21 = vec2(cos_theta < cos_b ? 0.0 : PI, PI);

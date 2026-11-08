@@ -114,6 +114,7 @@ fn setup() -> Setup {
         material,
         command: DrawCommand::arrays(DrawMode::Triangles, 0, 6),
         transparent: false,
+        transmissive: false,
     };
     let red = mesh(material([1.0, 0.0, 0.0, 1.0]));
     let green = mesh(material([0.0, 1.0, 0.0, 1.0]));
@@ -195,6 +196,7 @@ fn stats(drawn: usize, culled: usize, objects_written: usize) -> RenderStats {
         culled,
         objects_written,
         pending: 0,
+        transmissive: 0,
     }
 }
 

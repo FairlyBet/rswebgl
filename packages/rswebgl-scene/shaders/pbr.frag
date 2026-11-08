@@ -131,10 +131,11 @@ ShadingFrame shading_frame() {
     ShadingFrame f;
 #ifdef HAS_NORMAL
     f.ng = normalize(v_normal);
+    if (!gl_FrontFacing) f.ng = -f.ng;
 #else
+    // Faces the eye whichever way the triangle winds.
     f.ng = normalize(cross(dFdx(v_world), dFdy(v_world)));
 #endif
-    if (!gl_FrontFacing) f.ng = -f.ng;
 #if defined(HAS_NORMAL) && defined(HAS_TANGENT)
     f.t = normalize(v_tangent.xyz);
     f.b = cross(normalize(v_normal), f.t) * v_tangent.w;
@@ -156,6 +157,12 @@ ShadingFrame shading_frame() {
     float inv = inversesqrt(max(dot(f.t, f.t), dot(f.b, f.b)) + 1e-12);
     f.t *= inv;
     f.b *= inv;
+    // UVs that don't vary across the pixel give no direction: any will do.
+    if (dot(f.t, f.t) < 1e-8) {
+        f.t = normalize(abs(f.ng.y) < 0.999 ? cross(vec3(0.0, 1.0, 0.0), f.ng)
+                                            : cross(vec3(1.0, 0.0, 0.0), f.ng));
+        f.b = cross(f.ng, f.t);
+    }
 #else
     f.t = normalize(abs(f.ng.y) < 0.999 ? cross(vec3(0.0, 1.0, 0.0), f.ng)
                                         : cross(vec3(1.0, 0.0, 0.0), f.ng));

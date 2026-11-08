@@ -94,6 +94,8 @@ pub struct Scene {
     dither: bool,
     // The canvas pass `renderFrame` reuses.
     frame_pass: Pass,
+    // Its second pass with HDR output: what draws after the opaque scene.
+    late_pass: Pass,
     stats: RenderStats,
     // PBR variant switches waiting for the new program to link: the mesh
     // keeps drawing with its old one meanwhile.
@@ -148,6 +150,7 @@ impl Scene {
             tone_mapping: crate::output::ToneMapping::Neutral,
             dither: true,
             frame_pass,
+            late_pass: Pass::to_default(),
             stats: RenderStats::default(),
             pending_variants: Vec::new(),
         })
@@ -378,6 +381,7 @@ impl Scene {
             material: ParamGroupId::from_raw(options::u32_or(&mesh, "material", 0)?),
             command: *draw,
             transparent: options::bool_or(&mesh, "transparent", false)?,
+            transmissive: options::bool_or(&mesh, "transmissive", false)?,
         };
         if mesh.program.is_null() || mesh.state.is_null() {
             return Err("setMesh: \"program\" and \"state\" are required".into());
@@ -498,20 +502,43 @@ impl Scene {
             return 0; // lost: nothing to draw with
         }
         let mut pass = std::mem::replace(&mut self.frame_pass, Pass::to_default());
+        let mut late = std::mem::replace(&mut self.late_pass, Pass::to_default());
         pass.clear_draws();
-        let hdr = self.prepare_output(&mut pass, w, h);
-        let drawn = self.render(camera, &mut pass);
-        pass.sort();
-        self.ctx.render(&pass);
-        if hdr && let Some(out) = &self.hdr {
-            out.present(
-                &self.ctx,
-                self.renderer.exposure(),
-                self.tone_mapping,
-                self.dither,
-            );
-        }
+        late.clear_draws();
+        let hdr = self.prepare_output(&mut pass, &mut late, w, h);
+        let drawn = if hdr {
+            // Opaque first; then, if anything transmits, a copy of it for
+            // them to see through; then transmissive and transparent meshes.
+            self.renderer
+                .set_scene_color(&self.ctx, self.hdr.as_ref().and_then(|o| o.scene_color()));
+            let drawn = self.render_passes(camera, &mut pass, Some(&mut late));
+            pass.sort();
+            self.ctx.render(&pass);
+            if self.stats.transmissive > 0
+                && let Some(out) = &self.hdr
+            {
+                out.grab(&self.ctx);
+            }
+            late.sort();
+            self.ctx.render(&late);
+            if let Some(out) = &self.hdr {
+                out.present(
+                    &self.ctx,
+                    self.renderer.exposure(),
+                    self.tone_mapping,
+                    self.dither,
+                );
+            }
+            drawn
+        } else {
+            self.renderer.set_scene_color(&self.ctx, None);
+            let drawn = self.render(camera, &mut pass);
+            pass.sort();
+            self.ctx.render(&pass);
+            drawn
+        };
         self.frame_pass = pass;
+        self.late_pass = late;
         drawn
     }
 
@@ -520,15 +547,7 @@ impl Scene {
     /// clearing or sorting the pass, and leaves the camera's aspect to you
     /// (`setCameraAspect`). Returns the draws added.
     pub fn render(&mut self, camera: Entity, pass: &mut Pass) -> usize {
-        if !self.sync_context() {
-            return 0; // lost: nothing to draw with
-        }
-        self.apply_reloads();
-        self.apply_pending_variants();
-        self.transforms.update(&mut self.world);
-        self.stats = self.renderer.render(&self.world, &self.ctx, camera, pass);
-        self.world.clear_trackers();
-        self.stats.drawn
+        self.render_passes(camera, pass, None)
     }
 
     /// Reverse-Z on or off (`EXT_clip_control`): depth precision spread
@@ -696,5 +715,23 @@ impl Scene {
         let mut next = *t;
         f(&mut next);
         t.set_if_neq(next);
+    }
+}
+
+impl Scene {
+    // A frame's draws: into `pass`, or with transmissive and transparent
+    // meshes into `late`.
+    fn render_passes(&mut self, camera: Entity, pass: &mut Pass, late: Option<&mut Pass>) -> usize {
+        if !self.sync_context() {
+            return 0; // lost: nothing to draw with
+        }
+        self.apply_reloads();
+        self.apply_pending_variants();
+        self.transforms.update(&mut self.world);
+        self.stats = self
+            .renderer
+            .render_split(&self.world, &self.ctx, camera, pass, late);
+        self.world.clear_trackers();
+        self.stats.drawn
     }
 }

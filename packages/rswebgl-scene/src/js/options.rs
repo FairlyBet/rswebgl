@@ -67,6 +67,8 @@ export interface MeshOptions {
   material?: number;
   /** Blended: drawn after opaque meshes, farthest first. */
   transparent?: boolean;
+  /** Sees the opaque scene behind it (HDR output; scene_transmitted). */
+  transmissive?: boolean;
 }
 "#;
 

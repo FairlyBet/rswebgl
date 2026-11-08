@@ -8,8 +8,8 @@
 // Ported from the Khronos glTF-Sample-Renderer (Apache-2.0),
 // source/Renderer/shaders/pbr.frag, ibl.glsl, punctual.glsl,
 // material_info.glsl. Differences:
-// - the environment's transmission stands in for the transmission
-//   framebuffer (the scene behind isn't seen yet);
+// - transmission sees a half-size copy of the opaque scene with HDR output
+//   (as Khronos' transmission framebuffer), the environment otherwise;
 // - sheen's image-based light reads the GGX-prefiltered environment at the
 //   sheen roughness (no Charlie-prefiltered map), scaled by the sheen
 //   albedo the BRDF table integrates from the same punctual BRDF.

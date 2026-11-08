@@ -64,36 +64,38 @@ vec3 volume_attenuation(vec3 radiance, float distance, vec3 color, float at_dist
     return pow(color, vec3(distance / at_distance)) * radiance;
 }
 
-// Environment light refracted through the surface, attenuated by the volume:
-// light enters along the refracted ray (straight through when thin-walled),
-// each color channel bent by its own IOR with dispersion. The scene behind
-// the surface isn't seen (the environment stands in for it).
-vec3 env_refracted(Surface s, float ior, float lod, out float path) {
-    vec3 dir = -s.v;
+// Light arriving through the surface, attenuated by the volume: met where
+// the refracted view ray leaves it (straight through when thin-walled),
+// each color channel bent by its own IOR with dispersion. The opaque scene
+// behind it where the frame copied it (HDR output), the environment
+// otherwise (Khronos getIBLVolumeRefraction / getTransmissionSample).
+vec3 refracted_light(Surface s, float ior, float roughness, out float path) {
+    vec3 ray = vec3(0.0);
     path = 0.0;
     if (s.thickness > 0.0) {
-        vec3 ray = volume_ray(s.n, s.v, s.thickness, ior);
+        ray = volume_ray(s.n, s.v, s.thickness, ior);
         path = length(ray);
-        dir = normalize(ray);
     }
-    return textureLod(u_env_specular, env_dir(dir, u_lighting.z), lod).rgb;
+    float blur = ior_roughness(roughness, ior);
+    if (scene_color_available()) return scene_color_at(s.position + ray, blur);
+    vec3 dir = path > 0.0 ? ray / path : -s.v;
+    return textureLod(u_env_specular, env_dir(dir, u_lighting.z), blur * u_lighting.w).rgb
+        * u_environment.rgb;
 }
 
 vec3 env_transmission(Surface s, float ior, float roughness) {
-    float lod = ior_roughness(roughness, ior) * u_lighting.w;
     float path;
 #ifdef HAS_DISPERSION
     // Each channel bent by its own IOR (glTF KHR_materials_dispersion).
     float half_spread = (ior - 1.0) * 0.025 * s.dispersion;
     float path_r;
     float path_b;
-    vec3 c = vec3(env_refracted(s, ior - half_spread, lod, path_r).r,
-                  env_refracted(s, ior, lod, path).g,
-                  env_refracted(s, ior + half_spread, lod, path_b).b);
+    vec3 c = vec3(refracted_light(s, ior - half_spread, roughness, path_r).r,
+                  refracted_light(s, ior, roughness, path).g,
+                  refracted_light(s, ior + half_spread, roughness, path_b).b);
 #else
-    vec3 c = env_refracted(s, ior, lod, path);
+    vec3 c = refracted_light(s, ior, roughness, path);
 #endif
-    c *= u_environment.rgb;
     return volume_attenuation(c, path, s.attenuation_color, s.attenuation_distance);
 }
 

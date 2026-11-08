@@ -19,7 +19,7 @@ use rswebgl_scene::{Camera, Scene};
 wasm_bindgen_test_configure!(run_in_browser);
 
 // One white material per row.
-const MATERIALS: [(&str, &str); 9] = [
+const MATERIALS: [(&str, &str); 10] = [
     (
         "glossy dielectric",
         r#"{ "pbrMetallicRoughness": { "metallicFactor": 0, "roughnessFactor": 0.3 } }"#,
@@ -59,6 +59,11 @@ const MATERIALS: [(&str, &str); 9] = [
         "thin film over white",
         r#"{ "pbrMetallicRoughness": { "metallicFactor": 0, "roughnessFactor": 0.3 },
           "extensions": { "KHR_materials_iridescence": { "iridescenceFactor": 1, "iridescenceThicknessMaximum": 300 } } }"#,
+    ),
+    (
+        "thin film over metal",
+        r#"{ "pbrMetallicRoughness": { "metallicFactor": 1, "roughnessFactor": 0.3 },
+          "extensions": { "KHR_materials_iridescence": { "iridescenceFactor": 1, "iridescenceIor": 1.0001, "iridescenceThicknessMaximum": 300 } } }"#,
     ),
 ];
 // Turns about +Y per column: n·v = 1, 0.5, 0.2.
@@ -101,7 +106,7 @@ fn grid_url(materials: &[&str]) -> String {
     let json = format!(
         r#"{{
   "asset": {{ "version": "2.0" }},
-  "extensionsUsed": ["KHR_materials_clearcoat", "KHR_materials_sheen", "KHR_materials_anisotropy", "KHR_materials_iridescence"],
+  "extensionsUsed": ["KHR_materials_clearcoat", "KHR_materials_sheen", "KHR_materials_anisotropy", "KHR_materials_iridescence", "KHR_materials_transmission", "KHR_materials_unlit"],
   "buffers": [{{ "byteLength": {len}, "uri": "data:application/octet-stream;base64,{bin}" }}],
   "bufferViews": [
     {{ "buffer": 0, "byteOffset": 0, "byteLength": 48 }},
@@ -189,7 +194,7 @@ async fn white_furnace() {
             scene.render_frame(camera);
         }
         for (row, (name, _)) in MATERIALS.iter().enumerate() {
-            if model == "gltf" && (row == 5 || row == 8) {
+            if model == "gltf" && (row == 5 || row >= 8) {
                 // glTF has no rough diffuse; its thin film (Khronos rgb_mix)
                 // isn't energy-conserving by construction.
                 continue;
@@ -219,7 +224,10 @@ async fn white_furnace() {
                     .iter()
                     .map(|&c| (lin(c) - 0.5).abs())
                     .fold(0.0, f32::max);
-                if worst > 0.02 {
+                // The film's image-based albedo is MaterialX's blend of the mirror
+                // and rough values: a few percent off at grazing angles.
+                let tolerance = if name.contains("film") { 0.03 } else { 0.02 };
+                if worst > tolerance {
                     let white = lin(px[0]) * 2.0;
                     report.push(format!("{model} {name} n·v #{col}: {px:?} = {white:.3}"));
                 }
@@ -445,6 +453,83 @@ async fn layers_show() {
             "{model}: anisotropy {iso} → {aniso}"
         );
         scene.set_environment_intensity(1.0, 1.0, 1.0);
+    }
+    scene.destroy();
+}
+
+// Glass in front of a red wall, in a white environment: with HDR output
+// the glass sees the wall (the copied opaque scene); drawing straight to
+// the canvas it falls back to the environment.
+#[wasm_bindgen_test]
+async fn glass_sees_the_scene_behind_it() {
+    let (w, h) = (96, 32);
+    let canvas: HtmlCanvasElement = web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .create_element("canvas")
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    canvas.set_width(w as u32);
+    canvas.set_height(h as u32);
+    let mut options = ContextOptions::new();
+    options.antialias = false;
+    let ctx = Context::from_canvas(&canvas, &options).expect("ctx");
+    let gl: Gl = canvas
+        .get_context("webgl2")
+        .unwrap()
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    let mut scene = Scene::new(&ctx).expect("scene");
+    scene.set_environment_intensity(1.0, 1.0, 1.0);
+    scene.set_tone_mapping("none").unwrap();
+    scene.set_dither(false);
+    let camera = scene.spawn();
+    scene.insert_camera(camera, Camera::orthographic(0.5, 3.0, 0.1, 100.0));
+    scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
+    let wall = r#"{ "pbrMetallicRoughness": { "baseColorFactor": [1, 0, 0, 1] },
+                   "extensions": { "KHR_materials_unlit": {} } }"#;
+    let glass = r#"{ "pbrMetallicRoughness": { "metallicFactor": 0, "roughnessFactor": 0 },
+                    "extensions": { "KHR_materials_transmission": { "transmissionFactor": 1 } } }"#;
+    scene.add_model(load_model(&ctx, &grid_url(&[wall])).await.expect("wall"));
+    let front = scene.add_model(load_model(&ctx, &grid_url(&[glass])).await.expect("glass"));
+    scene.set_translation(front, 0.0, 0.0, 1.0);
+
+    for model in ["openpbr", "gltf"] {
+        scene.set_shading_model(model).unwrap();
+        wasm_bindgen_futures::JsFuture::from(scene.when_ready())
+            .await
+            .unwrap();
+        let mut look = |hdr: bool| {
+            assert_eq!(scene.set_hdr(hdr), hdr);
+            scene.render_frame(camera);
+            let mut p = [0u8; 4];
+            // Column 0's quad (head-on): glass over the wall.
+            gl.read_pixels_with_opt_u8_array(
+                16,
+                h / 2,
+                1,
+                1,
+                Gl::RGBA,
+                Gl::UNSIGNED_BYTE,
+                Some(&mut p[..]),
+            )
+            .unwrap();
+            p
+        };
+        look(true);
+        let through = look(true);
+        assert!(
+            through[0] > 150 && through[1] < 60 && through[2] < 60,
+            "{model}: the wall shows through: {through:?}"
+        );
+        let env = look(false);
+        assert!(
+            env[1] > 150 && env[2] > 150,
+            "{model}: without HDR the environment: {env:?}"
+        );
     }
     scene.destroy();
 }

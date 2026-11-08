@@ -368,6 +368,12 @@ impl Scene {
             return;
         }
         let key = PbrKey::new(prim.attributes, &record.material);
+        let transmissive = record.material.transmission() > 0.0;
+        if mesh.transmissive != transmissive
+            && let Some(mut m) = self.world.get_mut::<MeshRenderer>(e)
+        {
+            m.transmissive = transmissive;
+        }
         match self.pbr.program(&self.ctx, key) {
             // A new variant still linking: keep drawing with the current one
             // (if it is ready) and switch when the new one is.
