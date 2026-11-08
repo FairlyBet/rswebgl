@@ -147,6 +147,12 @@ impl DrawCommand {
 }
 
 impl DrawCommand {
+    /// Whether `instance_count` takes effect: false for a range-elements
+    /// draw (`drawRangeElements` has no instanced form).
+    pub fn is_instanceable(&self) -> bool {
+        self.kind != RANGE_ELEMENTS
+    }
+
     pub(crate) fn is_arrays(&self) -> bool {
         self.kind == ARRAYS
     }

@@ -634,7 +634,9 @@ impl SceneRenderer {
             // Opaque meshes of a shader that reads its instance draw
             // together: one instanced draw per program, state, vertex array,
             // material and command.
-            if kind == ProgramKind::Batched && !mesh.transparent {
+            // (Not a command that draws its own instances, or can't.)
+            let single = mesh.command.instance_count == 1 && mesh.command.is_instanceable();
+            if kind == ProgramKind::Batched && !mesh.transparent && single {
                 self.batches.add(dest, mesh, &m);
                 continue;
             }
@@ -643,8 +645,14 @@ impl SceneRenderer {
                 continue;
             };
             if kind != ProgramKind::Uniforms {
-                // One instance of its own.
+                // An instance of its own — as many copies as the command
+                // draws instances (each sees its object, as with uniforms).
                 let base = self.instances.push(&m);
+                if mesh.command.is_instanceable() {
+                    for _ in 1..mesh.command.instance_count.clamp(1, 4096) {
+                        self.instances.push(&m);
+                    }
+                }
                 ctx.param_set_i32(group, self.f_instance_base, base);
                 self.write_deformers(world, ctx, e, group);
             }
@@ -724,6 +732,11 @@ impl SceneRenderer {
     // object uniforms. Asked once the program has linked (the frame skips
     // it before), so the uniform list doesn't wait.
     fn program_kind(&mut self, ctx: &Context, program: ProgramId) -> ProgramKind {
+        // Programs come and go (variants, context loss): forget them now
+        // and then rather than grow for ever; kinds are cheap to ask again.
+        if self.program_kinds.len() > 1024 {
+            self.program_kinds.clear();
+        }
         if let Some(&kind) = self.program_kinds.get(&program) {
             return kind;
         }

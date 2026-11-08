@@ -137,7 +137,13 @@ fn walk(
                     instance: instance as u32,
                     model: world.to_cols_array(),
                     instance_matrix: local_instance.to_cols_array(),
-                    attributes: geo.attributes,
+                    // Joints and weights without a skin on the node (valid
+                    // glTF, a validator warning): drawn unskinned.
+                    attributes: if node.skin().is_some() {
+                        geo.attributes
+                    } else {
+                        geo.attributes & !crate::ATTR_SKIN
+                    },
                     aabb_min: geo.aabb_min,
                     aabb_max: geo.aabb_max,
                     skin: node.skin().map_or(-1, |s| s.index() as i32),

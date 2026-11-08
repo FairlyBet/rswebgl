@@ -27,6 +27,11 @@ const BLACK: [u8; 4] = [0, 0, 0, 255];
 // folds it onto its right edge, weight 0). Animation "Move", linear over 1 s: the bone
 // from x = −1 to 0, the target's weight from 0 to 1.
 fn asset_url() -> String {
+    asset_url_with(|json| json)
+}
+
+// The asset with its glTF JSON rewritten by `edit`.
+fn asset_url_with(edit: impl Fn(String) -> String) -> String {
     let mut bin = Vec::new();
     let f = |bin: &mut Vec<u8>, v: &[f32]| v.iter().for_each(|x| bin.extend(x.to_le_bytes()));
     #[rustfmt::skip]
@@ -120,6 +125,7 @@ fn asset_url() -> String {
         len = bin.len(),
         bin = b64(&bin),
     );
+    let json = edit(json);
     format!("data:model/gltf+json;base64,{}", b64(json.as_bytes()))
 }
 
@@ -192,6 +198,21 @@ async fn skins_and_morph_targets_follow_the_animation() {
     scene.advance_animations(0.5);
     assert_eq!(scene.animation_time(root), Some(1.0));
     assert!(scene.play_animation(root, 3, true).is_err());
+    // Non-finite steps and speeds don't break it.
+    scene.play_animation(root, 0, true).unwrap();
+    scene.advance_animations(f32::NAN);
+    scene.set_animation_speed(root, f32::INFINITY);
+    scene.advance_animations(0.25);
+    assert_eq!(scene.animation_time(root), Some(0.25));
+
+    // Joints and weights on a node without a skin: drawn unskinned, at the
+    // node (x = 0), not from someone else's matrices.
+    let unskinned = asset_url_with(|json| json.replace(r#", "skin": 0"#, ""));
+    let other = scene.add_model(load_model(&ctx, &unskinned).await.expect("load"));
+    scene.set_translation(root, 0.0, 10.0, 0.0); // the first model out of view
+    let px = frame(&mut scene).await;
+    assert_eq!(px[1], RED, "{px:?}");
+    let _ = other;
     let _ = JsValue::NULL;
     scene.destroy();
 }

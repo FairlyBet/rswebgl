@@ -190,7 +190,9 @@ async fn the_profiler_times_passes_by_label() {
             f.ctx.render(&pass);
         }
         profiler.update();
-        got = profiler.milliseconds("scene").zip(profiler.milliseconds("post"));
+        got = profiler
+            .milliseconds("scene")
+            .zip(profiler.milliseconds("post"));
         if got.is_some() {
             break;
         }
@@ -203,7 +205,10 @@ async fn the_profiler_times_passes_by_label() {
         wasm_bindgen_futures::JsFuture::from(p).await.unwrap();
     }
     let (scene, post) = got.expect("timings within 60 frames");
-    assert!(scene >= 0.0 && post >= 0.0 && scene < 1000.0, "{scene} {post}");
+    assert!(
+        scene >= 0.0 && post >= 0.0 && scene < 1000.0,
+        "{scene} {post}"
+    );
     assert_eq!(profiler.labels(), ["scene", "post"]);
     assert!(profiler.last_milliseconds("scene").is_some());
     assert_eq!(profiler.milliseconds("other"), None);

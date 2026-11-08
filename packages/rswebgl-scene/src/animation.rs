@@ -40,6 +40,9 @@ pub struct Playback {
 /// `channel`'s value at `t` seconds into `out` (`channel.components` floats):
 /// held at the first and last keyframes outside their range.
 pub fn sample(channel: &AnimationChannel, t: f32, out: &mut [f32]) {
+    // A NaN time would pass both range checks below and index before the
+    // first key.
+    let t = if t.is_nan() { 0.0 } else { t };
     let c = channel.components;
     let times = &channel.times;
     let cubic = channel.interpolation == Interpolation::CubicSpline;
@@ -142,6 +145,9 @@ pub fn apply(world: &mut World, anim: &Animation, nodes: &HashMap<u32, Entity>, 
 
 /// Moves every playing animation on by `dt` seconds and poses its nodes.
 pub fn advance(world: &mut World, dt: f32) {
+    if !dt.is_finite() {
+        return;
+    }
     let playing: Vec<(Entity, ModelAnimations)> = match world.storage::<ModelAnimations>() {
         Some(s) => s
             .iter()
@@ -164,6 +170,9 @@ pub fn advance(world: &mut World, dt: f32) {
         } else {
             p.time.clamp(0.0, duration)
         };
+        if !p.time.is_finite() {
+            p.time = 0.0; // an infinite speed: start over rather than stick
+        }
         apply(world, clip, &anims.nodes, p.time);
         anims.playing = Some(p);
         if let Some(mut a) = world.get_mut::<ModelAnimations>(root) {
@@ -218,6 +227,20 @@ mod tests {
         };
         assert_eq!(at(&step, 2.9), [0.0, 0.0, 0.0]);
         assert_eq!(at(&step, 3.0), [2.0, 4.0, -2.0]);
+    }
+
+    // A NaN time (an infinite speed, a NaN step) holds the first key
+    // instead of indexing before it.
+    #[test]
+    fn a_nan_time_is_harmless() {
+        let c = channel(
+            AnimationPath::Translation,
+            Interpolation::Linear,
+            &[1.0, 3.0],
+            &[0.0, 0.0, 0.0, 2.0, 4.0, -2.0],
+            3,
+        );
+        assert_eq!(at(&c, f32::NAN), [0.0, 0.0, 0.0]);
     }
 
     #[test]

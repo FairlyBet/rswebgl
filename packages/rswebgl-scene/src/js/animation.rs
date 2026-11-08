@@ -78,13 +78,13 @@ impl Scene {
     }
 
     /// Seconds of animation per second of `advanceAnimations` (default 1;
-    /// negative plays backwards).
+    /// negative plays backwards; a non-finite speed counts as 1).
     #[wasm_bindgen(js_name = setAnimationSpeed)]
     pub fn set_animation_speed(&mut self, root: Entity, speed: f32) {
         if let Some(mut a) = self.world.get_mut::<ModelAnimations>(root)
             && let Some(p) = a.playing.as_mut()
         {
-            p.speed = speed;
+            p.speed = if speed.is_finite() { speed } else { 1.0 };
         }
     }
 
