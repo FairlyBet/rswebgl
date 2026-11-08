@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild main.js --bundle --format=esm --outdir=out --loader:.wasm=file --asset-names=[name]-[hash] --public-path=./out",
+    "serve": "node serve.mjs"
+  },
+  "dependencies": {
+    "rswebgl": "file:../../dist/npm"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10"
+  }
+}

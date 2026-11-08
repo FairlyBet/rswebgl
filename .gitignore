@@ -26,3 +26,8 @@ dist
 
 # Generated JS bindings for the plain-JS examples
 examples/*/pkg
+
+# The npm consumer example
+examples/npm-consumer/node_modules
+examples/npm-consumer/out
+examples/npm-consumer/package-lock.json

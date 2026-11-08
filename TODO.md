@@ -207,8 +207,11 @@ FBO blit). Done. Deferred polish:
 - Builders consume themselves (`VaoBuilder.build`, `ParamLayoutBuilder`
   chaining): in JS the object is freed by the call. Documented, but a
   `&mut self` builder would be less surprising from JS.
-- No npm package / bundler setup yet; `examples/js-cube` builds with
-  `wasm-pack --target web`.
+- npm: `node scripts/build-npm.mjs` builds the `rswebgl` package (the
+  scene crate: renderer, loader, scene in one wasm) into dist/npm, not
+  published; `examples/npm-consumer` bundles it with esbuild. Left: the
+  name on npm, a bundler-target build (`--target bundler`) if wanted, a
+  smaller core-only package.
 - Description objects via serde (`ctx.renderState({ depthTest: true })`) as
   planned in the design doc — not needed yet.
 
