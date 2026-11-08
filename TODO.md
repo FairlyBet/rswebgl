@@ -267,8 +267,11 @@ FBO blit). Done. Deferred polish:
   One refraction (entry) for volumes; no internal reflections — a dedicated
   gem shader (ray-marching the stone's own geometry) is the jewelry-grade
   follow-up. glTF sheen's image-based light uses the GGX-prefiltered map at
-  the sheen roughness (no Charlie-prefiltered cube). OpenPBR: no
-  subsurface (diffuse stands in), no coat anisotropy, emission is radiance
+  the sheen roughness (no Charlie-prefiltered cube). OpenPBR:
+  subsurface is MaterialX's real-time approximation (curvature-sized Burley
+  profile for direct light, irradiance × color for indirect; no scatter
+  anisotropy, not thin-walled, OpenPBR names only — glTF has no extension);
+  coat anisotropy along the surface tangent; emission is radiance
   (not nits), thin-walled translucency only through glTF's thickness = 0.
   Not read: diffuse transmission, KHR_materials_variants.
 - Picking is on the GPU (`gpu_pick.rs`): a 1×1 draw through a pick matrix,

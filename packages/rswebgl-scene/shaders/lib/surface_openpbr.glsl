@@ -26,7 +26,12 @@
 //   specular (Lagarde).
 // glTF inputs map onto it: sheen → fuzz (weight = max of the color),
 // iridescence → thin film, anisotropy → specular anisotropy.
-// Not yet: subsurface (diffuse stands in), the coat's own anisotropy.
+// - the coat's anisotropy as the specular's (MaterialX open_pbr_anisotropy),
+//   along the surface tangent;
+// - subsurface: MaterialX's real-time approximation (subsurface.glsl) —
+//   direct light through a curvature-sized Burley profile, indirect as
+//   irradiance × subsurface_color — mixed into the diffuse by its weight;
+//   no scatter anisotropy, not thin-walled.
 
 struct OpenPbr {
     float alpha;          // base specular α (roughened by the coat; mean of the two below)
@@ -42,7 +47,9 @@ struct OpenPbr {
     vec3 fg_metal;        // the metal's directional albedo (× specular_weight)
     float film;           // thin-film weight (0 without a film)
     vec3 tint;            // translucent base: thin-walled tint
-    float coat_alpha;
+    float coat_alpha;     // the coat's α (mean of the two below)
+    float coat_alpha_t;
+    float coat_alpha_b;
     float coat_eta;
     float coat_f0;
     float coat_comp;
@@ -138,6 +145,8 @@ OpenPbr openpbr_setup(Surface s, float NdotV, float coat_NdotV) {
     o.tint = s.thickness > 0.0 ? vec3(1.0) : s.base_color;
 
     o.coat_alpha = 1.0;
+    o.coat_alpha_t = 1.0;
+    o.coat_alpha_b = 1.0;
     o.coat_eta = 1.0;
     o.coat_f0 = 0.0;
     o.coat_comp = 1.0;
@@ -146,6 +155,14 @@ OpenPbr openpbr_setup(Surface s, float NdotV, float coat_NdotV) {
     o.darkening = vec3(1.0);
 #ifdef HAS_CLEARCOAT
     o.coat_alpha = max(s.coat_roughness * s.coat_roughness, 1e-4);
+    o.coat_alpha_t = o.coat_alpha;
+    o.coat_alpha_b = o.coat_alpha;
+    if (s.coat_anisotropy > 0.0) {
+        float ca1 = 1.0 - s.coat_anisotropy;
+        o.coat_alpha_t = o.coat_alpha * sqrt(2.0 / (1.0 + ca1 * ca1));
+        o.coat_alpha_b = max(ca1 * o.coat_alpha_t, 1e-4);
+        o.coat_alpha = sqrt(o.coat_alpha_t * o.coat_alpha_b);
+    }
     o.coat_eta = s.coat_ior;
     o.coat_f0 = ior_to_f0(s.coat_ior);
     o.coat_comp = ggx_energy_compensation(coat_NdotV, o.coat_alpha, vec3(o.coat_f0), vec3(1.0)).x;
@@ -206,8 +223,12 @@ vec3 shade_openpbr(Surface s) {
 #endif
     vec3 prefiltered = scene_reflection(r_dir, o.roughness) * spec_ao;
     vec3 dielectric = prefiltered * s.specular_color * o.fg_dielectric;
-    vec3 under = diffuse_weight * scene_irradiance(n)
-        * diffuse_albedo(s.base_color, s.diffuse_roughness, NdotV) * s.ao;
+    vec3 diffuse_ibl = diffuse_albedo(s.base_color, s.diffuse_roughness, NdotV);
+#ifdef HAS_SUBSURFACE
+    // MaterialX: indirect subsurface as plain irradiance × its color.
+    diffuse_ibl = mix(diffuse_ibl, s.subsurface_color, s.subsurface);
+#endif
+    vec3 under = diffuse_weight * scene_irradiance(n) * diffuse_ibl * s.ao;
 #ifdef HAS_TRANSMISSION
     under += s.transmission * o.tint * env_transmission(s, o.eta, o.roughness);
 #endif
@@ -215,8 +236,11 @@ vec3 shade_openpbr(Surface s) {
     vec3 metal = prefiltered * o.fg_metal;
     vec3 color = mix(dielectric, metal, s.metallic) * openpbr_coat_filter(s, o, c_NdotV, c_NdotV);
 #ifdef HAS_CLEARCOAT
+    vec3 coat_dir = s.coat_anisotropy > 0.0
+        ? aniso_reflection(s.n_coat, v, s.coat_roughness, s.coat_anisotropy, s.coat_b)
+        : reflect(-v, s.n_coat);
     color += s.coat * o.coat_e * specular_occlusion(c_NdotV, s.ao, o.coat_alpha)
-        * scene_reflection(reflect(-v, s.n_coat), s.coat_roughness);
+        * scene_reflection(coat_dir, s.coat_roughness);
 #endif
 #ifdef HAS_SHEEN
     color = o.fuzz * o.fuzz_color * o.fuzz_e * scene_irradiance(n) * s.ao
@@ -256,9 +280,18 @@ vec3 shade_openpbr(Surface s) {
             vec3 spec_d = dv * f_d * s.specular_color * o.comp_dielectric;
             vec3 diff = diffuse_weight
                 * diffuse_brdf(s.base_color, s.diffuse_roughness, NdotL, NdotV, dot(l, v));
+#ifdef HAS_SUBSURFACE
+            diff *= 1.0 - s.subsurface;
+#endif
             vec3 spec_m = s.specular_weight * dv * f_m * o.comp_metal;
             lit = mix(spec_d + (1.0 - o.fg_dielectric) * diff, spec_m, s.metallic) * NdotL;
         }
+#ifdef HAS_SUBSURFACE
+        // Wraps past the terminator: its own cosine, not NdotL's cut.
+        vec3 sss = subsurface_scattering(n, l, s.subsurface_color, s.subsurface_mfp,
+                                         s.subsurface_radius);
+        lit += (1.0 - s.metallic) * (1.0 - o.fg_dielectric) * diffuse_weight * s.subsurface * sss;
+#endif
 #ifdef HAS_TRANSMISSION
         // Light from behind, through the surface (as glTF's reference does).
         vec3 to_exit = light_vector(light, s.position);
@@ -278,8 +311,15 @@ vec3 shade_openpbr(Surface s) {
 #ifdef HAS_CLEARCOAT
         if (dot(s.n_coat, l) > 0.0) {
             float c_NdotH = clamp(dot(s.n_coat, h), 0.0, 1.0);
-            lit += s.coat * D_GGX(c_NdotH, o.coat_alpha) * V_GGX(c_NdotL, c_NdotV, o.coat_alpha)
-                * fresnel_dielectric(VdotH, o.coat_eta) * o.coat_comp * c_NdotL;
+            float c_dv = D_GGX(c_NdotH, o.coat_alpha) * V_GGX(c_NdotL, c_NdotV, o.coat_alpha);
+            if (s.coat_anisotropy > 0.0) {
+                vec3 ct = s.coat_t;
+                vec3 cb = s.coat_b;
+                c_dv = D_GGX_aniso(c_NdotH, dot(ct, h), dot(cb, h), o.coat_alpha_t, o.coat_alpha_b)
+                    * V_GGX_aniso(c_NdotL, c_NdotV, dot(cb, v), dot(ct, v), dot(ct, l), dot(cb, l),
+                                  o.coat_alpha_t, o.coat_alpha_b);
+            }
+            lit += s.coat * c_dv * fresnel_dielectric(VdotH, o.coat_eta) * o.coat_comp * c_NdotL;
         }
 #endif
 #ifdef HAS_SHEEN

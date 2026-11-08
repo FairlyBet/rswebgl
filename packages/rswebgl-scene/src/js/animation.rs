@@ -121,7 +121,8 @@ impl Scene {
     #[wasm_bindgen(js_name = setMorphWeights)]
     pub fn set_morph_weights(&mut self, e: Entity, weights: Vec<f32>) {
         if self.world.is_alive(e) {
-            self.world.insert(e, crate::animation::MorphWeights(weights));
+            self.world
+                .insert(e, crate::animation::MorphWeights(weights));
         }
     }
 }

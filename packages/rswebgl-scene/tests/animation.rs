@@ -38,7 +38,10 @@ fn asset_url() -> String {
     f(&mut bin, &[1.0, 0.0, 0.0, 0.0].repeat(4)); // 76..140 weights
     // 140..188 target: the left vertices (0, 3) +1 x — the quad folds to
     // its right edge.
-    f(&mut bin, &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+    f(
+        &mut bin,
+        &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    );
     f(&mut bin, &[0.0, 1.0]); // 188..196 times
     f(&mut bin, &[-1.0, 0.0, 0.0, 0.0, 0.0, 0.0]); // 196..220 bone x
     f(&mut bin, &[0.0, 1.0]); // 220..228 weight

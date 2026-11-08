@@ -30,6 +30,13 @@ struct Surface {
     float coat_ior;
     vec3 coat_color;        // OpenPBR coat_color (absorption)
     float coat_darkening;   // OpenPBR coat_darkening
+    float coat_anisotropy;  // OpenPBR coat_roughness_anisotropy
+    vec3 coat_t;            // the coat's stretch direction, and across it
+    vec3 coat_b;
+    float subsurface;       // OpenPBR subsurface_weight
+    vec3 subsurface_color;
+    vec3 subsurface_mfp;    // mean free path per channel (radius × radius_scale)
+    float subsurface_radius; // curvature radius at the point
     float ao;
     vec3 emission;          // radiance
     vec3 sheen_color;       // glTF sheen; OpenPBR fuzz = its max as weight

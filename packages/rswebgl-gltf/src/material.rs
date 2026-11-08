@@ -61,6 +61,13 @@ pub struct Material {
     pub(crate) coat_ior: f32,
     pub(crate) coat_color: [f32; 3],
     pub(crate) coat_darkening: f32,
+    // OpenPBR coat_roughness_anisotropy, and subsurface (weight, color, mean
+    // free path radius and its per-channel scale).
+    pub(crate) coat_anisotropy: f32,
+    pub(crate) subsurface_weight: f32,
+    pub(crate) subsurface_color: [f32; 3],
+    pub(crate) subsurface_radius: f32,
+    pub(crate) subsurface_radius_scale: [f32; 3],
     // KHR_materials_sheen (OpenPBR fuzz), _iridescence (thin film; thickness
     // in nm, the extension's maximum without a thickness texture),
     // _anisotropy (strength, rotation in radians).
@@ -235,6 +242,16 @@ impl Material {
     pub fn anisotropy_strength(&self) -> f32 {
         self.anisotropy_strength
     }
+    /// OpenPBR `coat_roughness_anisotropy`.
+    pub fn coat_anisotropy(&self) -> f32 {
+        self.coat_anisotropy
+    }
+
+    /// OpenPBR `subsurface_weight` (0: none).
+    pub fn subsurface_weight(&self) -> f32 {
+        self.subsurface_weight
+    }
+
     /// OpenPBR `base_diffuse_roughness` (0: Lambert).
     #[wasm_bindgen(getter, js_name = diffuseRoughness)]
     pub fn diffuse_roughness(&self) -> f32 {
@@ -262,7 +279,7 @@ const fn prop(name: &'static str, uniform: &'static str, len: usize) -> Property
 }
 
 /// Every numeric property a material group carries, by glTF name.
-pub const PROPERTIES: [Property; 32] = [
+pub const PROPERTIES: [Property; 37] = [
     prop("baseColorFactor", "u_base_color_factor", 4),
     prop("metallicFactor", "u_metallic_factor", 1),
     prop("roughnessFactor", "u_roughness_factor", 1),
@@ -286,6 +303,11 @@ pub const PROPERTIES: [Property; 32] = [
     prop("coatIor", "u_coat_ior", 1),
     prop("coatColor", "u_coat_color", 3),
     prop("coatDarkening", "u_coat_darkening", 1),
+    prop("coatAnisotropy", "u_coat_anisotropy", 1),
+    prop("subsurfaceWeight", "u_subsurface_weight", 1),
+    prop("subsurfaceColor", "u_subsurface_color", 3),
+    prop("subsurfaceRadius", "u_subsurface_radius", 1),
+    prop("subsurfaceRadiusScale", "u_subsurface_radius_scale", 3),
     prop("sheenColorFactor", "u_sheen_color", 3),
     prop("sheenRoughnessFactor", "u_sheen_roughness", 1),
     prop("iridescenceFactor", "u_iridescence", 1),
@@ -303,7 +325,7 @@ pub const PROPERTIES: [Property; 32] = [
 
 impl Material {
     // The storage of each of `PROPERTIES`, in the same order.
-    fn values_mut(&mut self) -> [&mut [f32]; 32] {
+    fn values_mut(&mut self) -> [&mut [f32]; 37] {
         [
             &mut self.base_color_factor,
             std::slice::from_mut(&mut self.metallic),
@@ -328,6 +350,11 @@ impl Material {
             std::slice::from_mut(&mut self.coat_ior),
             &mut self.coat_color,
             std::slice::from_mut(&mut self.coat_darkening),
+            std::slice::from_mut(&mut self.coat_anisotropy),
+            std::slice::from_mut(&mut self.subsurface_weight),
+            &mut self.subsurface_color,
+            std::slice::from_mut(&mut self.subsurface_radius),
+            &mut self.subsurface_radius_scale,
             &mut self.sheen_color,
             std::slice::from_mut(&mut self.sheen_roughness),
             std::slice::from_mut(&mut self.iridescence),
@@ -774,6 +801,11 @@ pub fn translate(mat: &gltf::Material) -> Material {
         coat_ior: 1.5,
         coat_color: [1.0; 3],
         coat_darkening: 1.0,
+        coat_anisotropy: 0.0,
+        subsurface_weight: 0.0,
+        subsurface_color: [0.8; 3],
+        subsurface_radius: 1.0,
+        subsurface_radius_scale: [1.0, 0.5, 0.25],
         sheen_color: ext_vec3(mat, "KHR_materials_sheen", "sheenColorFactor", [0.0; 3]),
         sheen_roughness: ext_f32(mat, "KHR_materials_sheen", "sheenRoughnessFactor", 0.0),
         iridescence: ext_f32(mat, "KHR_materials_iridescence", "iridescenceFactor", 0.0),
@@ -853,6 +885,11 @@ pub fn default_material() -> Material {
         coat_ior: 1.5,
         coat_color: [1.0; 3],
         coat_darkening: 1.0,
+        coat_anisotropy: 0.0,
+        subsurface_weight: 0.0,
+        subsurface_color: [0.8; 3],
+        subsurface_radius: 1.0,
+        subsurface_radius_scale: [1.0, 0.5, 0.25],
         sheen_color: [0.0; 3],
         sheen_roughness: 0.0,
         iridescence: 0.0,

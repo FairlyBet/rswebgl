@@ -57,9 +57,12 @@ const MORPH_POSITION: u64 = TEXTURE_TRANSFORM << 2;
 const MORPH_NORMAL: u64 = TEXTURE_TRANSFORM << 3;
 const MORPH_TANGENT: u64 = TEXTURE_TRANSFORM << 4;
 const MORPH: u64 = MORPH_POSITION | MORPH_NORMAL | MORPH_TANGENT;
-const TOP_BIT: u64 = MORPH_TANGENT;
+// OpenPBR subsurface (subsurface_weight > 0).
+const SUBSURFACE: u64 = TEXTURE_TRANSFORM << 5;
+const TOP_BIT: u64 = SUBSURFACE;
 // Feature defines, by bit.
-const FEATURES: [(u64, &str); 15] = [
+const FEATURES: [(u64, &str); 16] = [
+    (SUBSURFACE, "HAS_SUBSURFACE"),
     (TEXTURE_TRANSFORM, "HAS_TEXTURE_TRANSFORM"),
     (SKIN, "HAS_SKIN"),
     (MORPH_POSITION, "HAS_MORPH_POSITION"),
@@ -142,6 +145,8 @@ impl PbrKey {
             (SHEEN, material.sheen_color().iter().any(|&c| c > 0.0)),
             (IRIDESCENCE, material.iridescence() > 0.0),
             (ANISOTROPY, material.anisotropy_strength() != 0.0),
+            // Through the base only: not under a full transmission.
+            (SUBSURFACE, material.subsurface_weight() > 0.0),
         ];
         for (bit, on) in present {
             if on {

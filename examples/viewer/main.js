@@ -382,6 +382,9 @@ const SCALARS = [
   ["coat_roughness", 0, 1],
   ["coat_ior", 1, 3],
   ["coat_darkening", 0, 1],
+  ["coat_roughness_anisotropy", 0, 1],
+  ["subsurface_weight", 0, 1],
+  ["subsurface_radius", 0, 5],
   ["fuzz_weight", 0, 1],
   ["fuzz_roughness", 0, 1],
   ["thin_film_weight", 0, 1],
@@ -390,7 +393,9 @@ const SCALARS = [
   ["emission_luminance", 0, 10],
   ["geometry_opacity", 0, 1],
 ];
-const COLORS = ["base_color", "specular_color", "coat_color", "fuzz_color", "transmission_color", "emission_color"];
+const COLORS = [
+  "base_color", "specular_color", "coat_color", "fuzz_color", "subsurface_color", "transmission_color", "emission_color",
+];
 
 // Color pickers speak sRGB; materials, linear.
 const toLinear = (/** @type {number} */ c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);

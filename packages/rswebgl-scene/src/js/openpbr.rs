@@ -13,13 +13,16 @@
 //! | transmission_weight, transmission_color, transmission_depth | transmissionFactor, attenuationColor, attenuationDistance |
 //! | transmission_dispersion_abbe_number | dispersion = 20 / Abbe |
 //! | coat_weight, coat_roughness, coat_ior, coat_color, coat_darkening | clearcoatFactor, clearcoatRoughnessFactor, coatIor, coatColor, coatDarkening |
+//! | coat_roughness_anisotropy | coatAnisotropy |
+//! | subsurface_weight, subsurface_color, subsurface_radius, subsurface_radius_scale | subsurfaceWeight, subsurfaceColor, subsurfaceRadius, subsurfaceRadiusScale |
 //! | fuzz_weight, fuzz_color, fuzz_roughness | sheenColorFactor = weight × color, sheenRoughnessFactor |
 //! | thin_film_weight, thin_film_thickness (µm), thin_film_ior | iridescenceFactor, iridescenceThickness (nm), iridescenceIor |
 //! | emission_luminance, emission_color | emissiveStrength, emissiveFactor |
 //!
 //! Emission is radiance in the scene's units, as glTF's (not photometric
 //! nits). A volume's depth needs `thicknessFactor` > 0 to absorb (glTF's
-//! convention); subsurface parameters aren't supported.
+//! convention). Subsurface is MaterialX's real-time approximation (no
+//! scatter anisotropy, not thin-walled).
 
 use rswebgl_gltf::Material;
 
@@ -27,7 +30,7 @@ use rswebgl_gltf::Material;
 pub type Writes = Vec<(&'static str, Vec<f32>)>;
 
 /// Every OpenPBR name the API takes.
-pub const NAMES: [&str; 27] = [
+pub const NAMES: [&str; 32] = [
     "base_weight",
     "base_color",
     "base_metalness",
@@ -46,6 +49,11 @@ pub const NAMES: [&str; 27] = [
     "coat_roughness",
     "coat_ior",
     "coat_darkening",
+    "coat_roughness_anisotropy",
+    "subsurface_weight",
+    "subsurface_color",
+    "subsurface_radius",
+    "subsurface_radius_scale",
     "fuzz_weight",
     "fuzz_color",
     "fuzz_roughness",
@@ -58,7 +66,7 @@ pub const NAMES: [&str; 27] = [
 ];
 
 // Names that are one stored property as is.
-const DIRECT: [(&str, &str); 18] = [
+const DIRECT: [(&str, &str); 23] = [
     ("base_weight", "baseWeight"),
     ("base_metalness", "metallicFactor"),
     ("base_diffuse_roughness", "diffuseRoughness"),
@@ -75,6 +83,11 @@ const DIRECT: [(&str, &str); 18] = [
     ("coat_roughness", "clearcoatRoughnessFactor"),
     ("coat_ior", "coatIor"),
     ("coat_darkening", "coatDarkening"),
+    ("coat_roughness_anisotropy", "coatAnisotropy"),
+    ("subsurface_weight", "subsurfaceWeight"),
+    ("subsurface_color", "subsurfaceColor"),
+    ("subsurface_radius", "subsurfaceRadius"),
+    ("subsurface_radius_scale", "subsurfaceRadiusScale"),
     ("fuzz_roughness", "sheenRoughnessFactor"),
     ("thin_film_weight", "iridescenceFactor"),
 ];

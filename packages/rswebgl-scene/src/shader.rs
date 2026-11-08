@@ -62,6 +62,10 @@ pub const CHUNKS: &[(&str, &str)] = &[
     ("tonemap.glsl", include_str!("../shaders/lib/tonemap.glsl")),
     ("brdf.glsl", include_str!("../shaders/lib/brdf.glsl")),
     ("eon.glsl", include_str!("../shaders/lib/eon.glsl")),
+    (
+        "subsurface.glsl",
+        include_str!("../shaders/lib/subsurface.glsl"),
+    ),
     ("surface.glsl", include_str!("../shaders/lib/surface.glsl")),
     ("sheen.glsl", include_str!("../shaders/lib/sheen.glsl")),
     (

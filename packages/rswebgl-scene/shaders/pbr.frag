@@ -23,6 +23,7 @@ flat in vec3 v_model_scale;
 
 #include "brdf.glsl"
 #include "eon.glsl"
+#include "subsurface.glsl"
 #include "sheen.glsl"
 #include "iridescence.glsl"
 #include "surface.glsl"
@@ -88,6 +89,13 @@ uniform float u_clearcoat_roughness;
 uniform float u_coat_ior;
 uniform vec3 u_coat_color;
 uniform float u_coat_darkening;
+uniform float u_coat_anisotropy;
+#endif
+#ifdef HAS_SUBSURFACE
+uniform float u_subsurface_weight;
+uniform vec3 u_subsurface_color;
+uniform float u_subsurface_radius;
+uniform vec3 u_subsurface_radius_scale;
 #endif
 #ifdef HAS_DISPERSION
 uniform float u_dispersion;
@@ -344,6 +352,9 @@ void main() {
     s.coat_ior = 1.5;
     s.coat_color = vec3(1.0);
     s.coat_darkening = 0.0;
+    s.coat_anisotropy = 0.0;
+    s.coat_t = frame.t;
+    s.coat_b = frame.b;
 #ifdef HAS_CLEARCOAT
     s.coat = u_clearcoat;
     float coat_roughness = u_clearcoat_roughness;
@@ -363,6 +374,24 @@ void main() {
     s.coat_ior = u_coat_ior;
     s.coat_color = u_coat_color;
     s.coat_darkening = u_coat_darkening;
+    // Along the surface tangent (OpenPBR geometry_coat_tangent's default),
+    // in the coat's plane.
+    s.coat_anisotropy = clamp(u_coat_anisotropy, 0.0, 1.0);
+    s.coat_t = normalize(frame.t - s.n_coat * dot(s.n_coat, frame.t));
+    s.coat_b = cross(s.n_coat, s.coat_t);
+#endif
+    s.subsurface = 0.0;
+    s.subsurface_color = vec3(0.0);
+    s.subsurface_mfp = vec3(1.0);
+    s.subsurface_radius = 1.0;
+#ifdef HAS_SUBSURFACE
+    s.subsurface = clamp(u_subsurface_weight, 0.0, 1.0);
+    s.subsurface_color = max(u_subsurface_color, vec3(0.0));
+    s.subsurface_mfp = u_subsurface_radius * u_subsurface_radius_scale;
+    // The curvature radius, from how fast the normal turns per unit of
+    // surface (MaterialX mx_subsurface_scattering_approx).
+    float curvature = length(fwidth(frame.ng)) / max(length(fwidth(v_world)), 1e-6);
+    s.subsurface_radius = 1.0 / max(curvature, 0.01);
 #endif
     s.ao = 1.0;
 #ifdef HAS_OCCLUSION_MAP

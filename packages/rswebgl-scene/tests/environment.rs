@@ -420,3 +420,85 @@ async fn environments_bake_in_the_background() {
     );
     scene.destroy();
 }
+
+// Subsurface lets light wrap past the terminator where the surface curves:
+// on the splayed quad, lit from +x with no environment, the half facing
+// away is black without it and glows with it. Coat anisotropy stretches the
+// coat's highlight across its tangent.
+#[wasm_bindgen_test]
+async fn subsurface_wraps_light_and_coat_anisotropy_stretches_highlights() {
+    let (ctx, gl) = context();
+    let mut scene = Scene::new(&ctx).expect("scene");
+    let camera = scene.spawn();
+    scene.insert_camera(camera, Camera::orthographic(2.0, 1.0, 0.1, 100.0));
+    scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
+    let root = scene.add_model(load_model(&ctx, &splayed_mirror_url()).await.expect("load"));
+    scene.set_environment_intensity(0.0, 0.0, 0.0);
+    let light = scene.spawn();
+    let opts = js_sys::JSON::parse(r#"{ "type": "directional", "intensity": 3 }"#).unwrap();
+    scene.set_light(light, opts).unwrap();
+    scene.look_at(light, &[1.0, 0.0, 0.0], &[0.0, 0.0, 0.0]);
+    let m = rswebgl::ids::ParamGroupId::from_raw(scene.materials(root)[0]);
+    let set = |scene: &mut Scene, name: &str, v: &str| {
+        scene
+            .set_material_property(m, name, js_sys::JSON::parse(v).unwrap())
+            .unwrap();
+    };
+    set(&mut scene, "base_metalness", "0");
+    set(&mut scene, "specular_roughness", "1");
+
+    let mut row = |scene: &mut Scene| -> Vec<u8> {
+        let mut pass = Pass::to_default();
+        pass.set_clear(&ClearMask::color_depth());
+        scene.render(camera, &mut pass);
+        pass.sort();
+        ctx.render(&pass);
+        let mut row = vec![0u8; SIZE as usize * 4];
+        gl.read_pixels_with_opt_u8_array(
+            0,
+            SIZE / 2,
+            SIZE,
+            1,
+            Gl::RGBA,
+            Gl::UNSIGNED_BYTE,
+            Some(&mut row),
+        )
+        .unwrap();
+        row.chunks(4).map(|p| p[0]).collect()
+    };
+    // The quad spans pixels 24..40; its left quarter faces away from the
+    // light.
+    let away = |r: &[u8]| r[24..28].iter().map(|&v| v as u32).sum::<u32>();
+    ready(&scene).await;
+    let plain = row(&mut scene);
+    set(&mut scene, "subsurface_weight", "1");
+    set(&mut scene, "subsurface_color", "[1, 1, 1]");
+    ready(&scene).await;
+    let sss = row(&mut scene);
+    assert!(away(&plain) <= 4, "dark without subsurface: {plain:?}");
+    assert!(
+        away(&sss) > away(&plain) + 40,
+        "wrapped light: {sss:?} vs {plain:?}"
+    );
+
+    // A dark base under a coat, lit from the eye: the coat's highlight.
+    set(&mut scene, "subsurface_weight", "0");
+    set(&mut scene, "base_color", "[0, 0, 0]");
+    set(&mut scene, "coat_weight", "1");
+    set(&mut scene, "coat_roughness", "0.3");
+    scene.look_at(light, &[0.0, 0.0, 1.0], &[0.0, 0.0, 0.0]);
+    let bright = js_sys::JSON::parse(r#"{ "type": "directional", "intensity": 40 }"#).unwrap();
+    scene.set_light(light, bright).unwrap();
+    ready(&scene).await;
+    let round = row(&mut scene);
+    set(&mut scene, "coat_roughness_anisotropy", "0.9");
+    ready(&scene).await;
+    let stretched = row(&mut scene);
+    let diff: u32 = round
+        .iter()
+        .zip(&stretched)
+        .map(|(a, b)| a.abs_diff(*b) as u32)
+        .sum();
+    assert!(diff > 100, "{round:?} vs {stretched:?}");
+    scene.destroy();
+}
