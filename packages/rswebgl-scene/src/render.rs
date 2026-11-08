@@ -570,13 +570,14 @@ impl SceneRenderer {
 
     /// Rebuilds the GPU side after a context loss (`Context::generation`
     /// moved on), keeping the settings: environment intensity and rotation,
-    /// exposure, background. The environment itself is back to the default
+    /// exposure, specular antialiasing, background. The environment itself is back to the default
     /// white one: set it again (`set_environment`, which resets the
     /// intensity to 1). Object groups are rewritten as meshes are drawn.
     pub fn rebuild(&mut self, ctx: &Context) -> Result<(), Error> {
         let mut fresh = Self::new(ctx)?;
         fresh.env_intensity = self.env_intensity;
         fresh.exposure = self.exposure;
+        fresh.specular_aa = self.specular_aa;
         fresh.env_rotation = self.env_rotation;
         fresh.background = self.background;
         fresh.display_output = self.display_output;

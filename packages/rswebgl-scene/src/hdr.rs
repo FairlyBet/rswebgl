@@ -9,9 +9,45 @@ pub struct HdrImage {
     pub rgb: Vec<f32>,
 }
 
+/// A Radiance image with its run-length coding undone but its pixels still
+/// RGBE (a shared exponent per pixel: value = byte × 2^(e − 136)), rows top
+/// to bottom. A quarter the size of the decoded floats; the environment bake
+/// uploads it as is and decodes on the GPU.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RgbeImage {
+    pub width: u32,
+    pub height: u32,
+    /// `width * height` RGBE quadruples.
+    pub rgbe: Vec<u8>,
+}
+
 /// Decodes a Radiance `.hdr` file (`32-bit_rle_rgbe`; new-style RLE, old-style
 /// RLE or flat scanlines). Only the standard `-Y h +X w` orientation.
 pub fn decode_hdr(bytes: &[u8]) -> Result<HdrImage, String> {
+    let RgbeImage {
+        width,
+        height,
+        rgbe,
+    } = decode_hdr_rgbe(bytes)?;
+    let rgb = rgbe
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|p| {
+            if p[3] == 0 {
+                [0.0; 3]
+            } else {
+                let f = f32::powi(2.0, p[3] as i32 - 136);
+                [p[0] as f32 * f, p[1] as f32 * f, p[2] as f32 * f]
+            }
+        })
+        .collect();
+    Ok(HdrImage { width, height, rgb })
+}
+
+/// `decode_hdr` up to the RGBE pixels: the run-length coding undone, no
+/// floats made.
+pub fn decode_hdr_rgbe(bytes: &[u8]) -> Result<RgbeImage, String> {
     let mut pos = 0;
     let mut line = || -> Result<&[u8], String> {
         let start = pos;
@@ -61,20 +97,11 @@ pub fn decode_hdr(bytes: &[u8]) -> Result<HdrImage, String> {
     for row in rgbe.chunks_exact_mut(w * 4) {
         at = read_scanline(data, at, row, w)?;
     }
-    let rgb = rgbe
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .flat_map(|p| {
-            if p[3] == 0 {
-                [0.0; 3]
-            } else {
-                let f = f32::powi(2.0, p[3] as i32 - 136);
-                [p[0] as f32 * f, p[1] as f32 * f, p[2] as f32 * f]
-            }
-        })
-        .collect();
-    Ok(HdrImage { width, height, rgb })
+    Ok(RgbeImage {
+        width,
+        height,
+        rgbe,
+    })
 }
 
 // One scanline of `w` RGBE pixels into `out`; returns the read position after

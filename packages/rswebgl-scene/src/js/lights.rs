@@ -8,8 +8,8 @@ use wasm_bindgen::prelude::*;
 
 use super::{Scene, options};
 use crate::camera::Camera;
-use crate::environment::Environment;
-use crate::hdr::decode_hdr;
+use crate::environment::{EnvBaker, PendingEnvironment};
+use crate::hdr::{RgbeImage, decode_hdr_rgbe};
 use crate::light::Light;
 
 #[wasm_bindgen]
@@ -133,24 +133,30 @@ impl Scene {
 
     /// Scales the environment's light (linear RGB). Without an environment
     /// (the default white one) it's a flat ambient light: default 0.2.
-    /// `setEnvironmentHdr` resets it to 1.
+    /// `setEnvironmentHdr` resets it to 1 (an intensity set while that bakes
+    /// is kept).
     #[wasm_bindgen(js_name = setEnvironmentIntensity)]
     pub fn set_environment_intensity(&mut self, r: f32, g: f32, b: f32) {
-        self.renderer.set_environment_intensity(Vec3::new(r, g, b));
+        let rgb = Vec3::new(r, g, b);
+        self.renderer.set_environment_intensity(rgb);
+        if self.env_pending.is_some() {
+            self.env_intensity_after_bake = Some(rgb);
+        }
     }
 
     /// Lights the scene with an HDR environment: the bytes of a Radiance
-    /// `.hdr` equirectangular image (fetch it yourself). Baked on the GPU into
-    /// cube maps `size` texels per face (256 is a good default). Replaces the
-    /// previous environment; throws if the file can't be read or the device
-    /// can't render to half-float textures.
+    /// `.hdr` equirectangular image (fetch it yourself), baked on the GPU into
+    /// cube maps `size` texels per face (256 is a good default). The file is
+    /// read and uploaded now (throws if it can't be read); the bake runs in
+    /// the background over the next few frames — the previous environment
+    /// shows until it's done, and `whenReady` waits for it. A bake that fails
+    /// (no half-float render targets) is reported on the console.
     /// The bytes are kept (a copy) to bake it again after a context loss.
     #[wasm_bindgen(js_name = setEnvironmentHdr)]
     pub fn set_environment_hdr(&mut self, bytes: &[u8], size: u32) -> Result<(), Error> {
         self.sync_context();
-        let image = decode_hdr(bytes)?;
-        let env = Environment::from_equirect(&self.ctx, &image, size)?;
-        self.renderer.set_environment(&self.ctx, env);
+        let image = decode_hdr_rgbe(bytes)?;
+        self.start_environment(&image, size)?;
         // Kept to bake again after a context loss.
         self.env_source = Some((bytes.to_vec(), size));
         Ok(())
@@ -161,12 +167,16 @@ impl Scene {
     pub fn clear_environment(&mut self) {
         self.sync_context();
         self.env_source = None;
+        if let Some(p) = self.env_pending.take() {
+            p.cancel();
+        }
         self.renderer.clear_environment(&self.ctx);
     }
 
+    /// Whether an HDR environment is set (or baking).
     #[wasm_bindgen(js_name = hasEnvironment)]
     pub fn has_environment(&self) -> bool {
-        self.renderer.has_environment()
+        self.renderer.has_environment() || self.env_pending.is_some()
     }
 
     /// Turns the environment (light and background) about +Y, in radians.
@@ -199,5 +209,43 @@ impl Scene {
     /// `setLight` from Rust.
     pub fn insert_light(&mut self, e: Entity, light: Light) {
         self.insert(e, "setLight", light);
+    }
+}
+
+impl Scene {
+    // Starts baking `image` in the background (the bake shaders made on
+    // first use), cancelling a bake still running.
+    pub(crate) fn start_environment(&mut self, image: &RgbeImage, size: u32) -> Result<(), Error> {
+        if let Some(p) = self.env_pending.take() {
+            p.cancel();
+        }
+        self.env_intensity_after_bake = None;
+        let baker = match &self.env_baker {
+            Some(b) => b.clone(),
+            None => {
+                let b = std::rc::Rc::new(EnvBaker::new(&self.ctx)?);
+                self.env_baker = Some(b.clone());
+                b
+            }
+        };
+        self.env_pending = Some(PendingEnvironment::start(&self.ctx, baker, image, size)?);
+        Ok(())
+    }
+
+    // Swaps in a bake that has finished (at most once a frame).
+    pub(crate) fn apply_environment(&mut self) {
+        let Some(result) = self.env_pending.as_ref().and_then(|p| p.take()) else {
+            return;
+        };
+        self.env_pending = None;
+        match result {
+            Ok(env) => {
+                self.renderer.set_environment(&self.ctx, env);
+                if let Some(rgb) = self.env_intensity_after_bake.take() {
+                    self.renderer.set_environment_intensity(rgb);
+                }
+            }
+            Err(e) => console::error(&format!("[rswebgl-scene] environment: {e}")),
+        }
     }
 }

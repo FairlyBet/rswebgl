@@ -47,8 +47,8 @@ mod transform;
 
 pub use camera::{Camera, Projection};
 pub use culling::{Bounds, Frustum};
-pub use environment::Environment;
-pub use hdr::{HdrImage, decode_hdr, encode_hdr};
+pub use environment::{BakeJob, EnvBaker, Environment, PendingEnvironment};
+pub use hdr::{HdrImage, RgbeImage, decode_hdr, decode_hdr_rgbe, encode_hdr};
 pub use hierarchy::{
     HierarchyError, TransformSystem, children, descendants, despawn_recursive, set_parent,
 };

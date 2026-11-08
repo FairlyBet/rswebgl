@@ -233,8 +233,10 @@ FBO blit). Done. Deferred polish:
 - PBR (E5a): lights are capped at 8 per frame (all lights reach every draw;
   no per-object light lists); spot lights untested by pixels; no shadows.
   A glTF file's lights count toward the 8.
-- IBL (E5b): the bake is synchronous (a few dozen draws at load: a stall of
-  a frame or two on mobile); no progressive / async bake. `.hdr` only — no
+- IBL (E5b): `setEnvironmentHdr` only undoes the RLE (RGBE bytes, uploaded
+  as RGBA8 and decoded on the GPU) and bakes in the background, a stage per
+  frame (~130 ms; 2.4 ms on the main thread for a 1k HDRI, 11 for 2k, from
+  30 / 80). The RLE decode itself is still on the main thread. `.hdr` only — no
   EXR, no KTX2 prebaked cubes. One environment per scene. The specular cube
   is also the background, so a sharp background is only as sharp as its
   `size`. A device without half-float render targets gets an error, no

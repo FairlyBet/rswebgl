@@ -772,6 +772,14 @@ impl Context {
         !p.ready
     }
 
+    /// Resolves at the context's next poll round (its one shared timer, a few
+    /// milliseconds away): for spreading work over ticks without a timer of
+    /// one's own.
+    pub fn next_poll_round(&self) -> impl Future<Output = ()> + use<> {
+        let poller = self.core.poller.clone();
+        async move { poller.tick().await }
+    }
+
     /// Resolves once none of `programs` is still linking (each linked,
     /// failed — reported — or gone). Without `KHR_parallel_shader_compile`
     /// that's at once. Polls on the context's shared timer.

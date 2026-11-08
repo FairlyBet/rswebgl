@@ -84,6 +84,13 @@ pub struct Scene {
     // The `.hdr` bytes and cube size of the environment, baked again after
     // a loss.
     env_source: Option<(Vec<u8>, u32)>,
+    // The environment bake's shaders (made on first use) and the bake in
+    // progress, swapped in at the first frame after it finishes.
+    env_baker: Option<std::rc::Rc<crate::environment::EnvBaker>>,
+    env_pending: Option<crate::environment::PendingEnvironment>,
+    // An intensity set while a bake runs, kept over its swap (which resets
+    // to 1).
+    env_intensity_after_bake: Option<Vec3>,
     // Models reloaded after a loss, applied at the next frame.
     reloads: Reloads,
     // HDR output: wanted (and supported), its target once made, how it is
@@ -144,6 +151,9 @@ impl Scene {
             generation: ctx.generation(),
             scene_programs: Vec::new(),
             env_source: None,
+            env_baker: None,
+            env_pending: None,
+            env_intensity_after_bake: None,
             reloads: Reloads::default(),
             hdr_wanted: crate::output::HdrOutput::supported(ctx),
             hdr: None,
@@ -589,7 +599,8 @@ impl Scene {
     /// switch under way) has finished compiling. Shaders compile in the
     /// background (`KHR_parallel_shader_compile`); until then frames leave
     /// those meshes out rather than stall. Await it after `addModel` to show
-    /// a model whole; resolves at once where compiles are synchronous.
+    /// a model whole; resolves at once where compiles are synchronous. Also
+    /// waits for an environment bake under way (`setEnvironmentHdr`).
     #[wasm_bindgen(js_name = whenReady)]
     pub fn when_ready(&self) -> js_sys::Promise {
         let mut programs: Vec<ProgramId> = self
@@ -602,8 +613,12 @@ impl Scene {
         programs.sort_unstable_by_key(|p| p.to_raw());
         programs.dedup();
         let ready = self.ctx.programs_ready(programs);
+        let environment = self.env_pending.as_ref().map(|p| p.finished());
         wasm_bindgen_futures::future_to_promise(async move {
             ready.await;
+            if let Some(environment) = environment {
+                environment.await;
+            }
             Ok(JsValue::UNDEFINED)
         })
     }
@@ -678,6 +693,14 @@ impl Scene {
     /// the textures `loadTexture` made.
     /// Handles you passed in (`setMesh`) stay yours.
     pub fn destroy(self) {
+        if let Some(p) = &self.env_pending {
+            p.cancel();
+        }
+        if let Some(baker) = &self.env_baker
+            && self.generation == self.ctx.generation()
+        {
+            baker.destroy();
+        }
         for (g, record) in &self.materials {
             if record.cloned {
                 self.ctx.destroy_param_group(*g);
@@ -750,6 +773,7 @@ impl Scene {
             return 0; // lost: nothing to draw with
         }
         self.apply_reloads();
+        self.apply_environment();
         self.apply_pending_variants();
         self.transforms.update(&mut self.world);
         self.stats = self

@@ -242,6 +242,7 @@ async fn a_baked_uniform_environment_lights_like_the_constant_one() {
     // …and a baked environment that is 0.5 everywhere.
     let flat = encode_hdr(16, 8, &[0.5; 16 * 8 * 3]);
     scene.set_environment_hdr(&flat, 64).expect("bake");
+    ready(&scene).await;
     let baked = frame(&mut scene);
     for (c, b) in constant.iter().zip(&baked) {
         for i in 0..3 {
@@ -265,6 +266,8 @@ async fn a_baked_uniform_environment_lights_like_the_constant_one() {
         .set_environment_hdr(&encode_hdr(16, 8, &sunny), 64)
         .expect("bake");
     scene.set_environment_intensity(0.01, 0.01, 0.01);
+    // Set while it bakes: kept over the swap.
+    ready(&scene).await;
     let sun = frame(&mut scene);
     assert!(sun[0][0] > 60 && sun[1][0] > 30, "{sun:?}");
     for p in &sun {
@@ -380,5 +383,40 @@ async fn specular_antialiasing_spreads_highlights_on_turning_normals() {
     let on = lit(&mut scene);
     assert!(off > 0 && on > off + 2, "lit pixels: off {off}, on {on}");
     assert_eq!(scene.specular_antialiasing(), vec![5.0, 1.0]);
+    scene.destroy();
+}
+
+// setEnvironmentHdr returns at once and bakes over the next frames: until
+// then the old environment shows; a second call cancels the first; an
+// intensity set meanwhile survives the swap.
+#[wasm_bindgen_test]
+async fn environments_bake_in_the_background() {
+    let (ctx, gl) = context();
+    let mut scene = Scene::new(&ctx).expect("scene");
+    let camera = scene.spawn();
+    scene.insert_camera(camera, Camera::perspective(1.0, 1.0, 0.1, 100.0));
+    scene.set_background(0.0);
+    ready(&scene).await;
+    let flat = |v: f32| encode_hdr(8, 4, &[v; 8 * 4 * 3]);
+    let mut sky = |scene: &mut Scene| look(scene, &ctx, &gl, camera, [0.0, 0.0, -1.0]);
+    let before = sky(&mut scene); // the default: white at 0.2
+
+    scene.set_environment_hdr(&flat(0.05), 32).expect("start");
+    assert!(scene.has_environment());
+    assert_eq!(sky(&mut scene), before, "the old one shows while baking");
+    scene.set_environment_hdr(&flat(0.8), 32).expect("start");
+    scene.set_environment_intensity(0.5, 0.5, 0.5);
+    ready(&scene).await;
+    let after = sky(&mut scene);
+
+    // The same as 0.4 at intensity 1.
+    scene.set_environment_hdr(&flat(0.4), 32).expect("start");
+    ready(&scene).await;
+    let expected = sky(&mut scene);
+    assert!(after[0] > before[0] + 20, "{after:?} vs before {before:?}");
+    assert!(
+        after[0].abs_diff(expected[0]) <= 2,
+        "{after:?} vs {expected:?}"
+    );
     scene.destroy();
 }

@@ -30,8 +30,8 @@ use rswebgl_gltf::{Model, load_model};
 use wasm_bindgen::prelude::*;
 
 use super::Scene;
-use crate::environment::Environment;
-use crate::hdr::decode_hdr;
+
+use crate::hdr::decode_hdr_rgbe;
 use crate::hierarchy::descendants;
 use crate::model::Primitive;
 use crate::pbr::PbrShaders;
@@ -70,16 +70,19 @@ impl Scene {
         if let Err(e) = self.renderer.rebuild(&ctx) {
             console::error(&format!("[rswebgl-scene] restore: the renderer: {e}"));
         }
-        if let Some((bytes, size)) = &self.env_source {
+        // The bake shaders went with the old context; a bake in progress too.
+        if let Some(p) = self.env_pending.take() {
+            p.cancel();
+        }
+        self.env_baker = None;
+        if let Some((bytes, size)) = self.env_source.clone() {
             let intensity = self.renderer.environment_intensity();
-            let env = decode_hdr(bytes)
+            let started = decode_hdr_rgbe(&bytes)
                 .map_err(Error::from)
-                .and_then(|img| Environment::from_equirect(&ctx, &img, *size));
-            match env {
-                Ok(env) => {
-                    self.renderer.set_environment(&ctx, env);
-                    self.renderer.set_environment_intensity(intensity);
-                }
+                .and_then(|img| self.start_environment(&img, size));
+            match started {
+                // Baked over the next frames; the intensity survives its swap.
+                Ok(()) => self.env_intensity_after_bake = Some(intensity),
                 Err(e) => console::error(&format!("[rswebgl-scene] restore: the environment: {e}")),
             }
         }

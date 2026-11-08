@@ -1,4 +1,6 @@
 // Environment baking, one cube face (u_face) per draw. Modes (`#define`):
+//   DECODE      the RGBE image as uploaded (u_rgbe, RGBA8) → linear radiance,
+//               one texel per pixel, into the equirect texture
 //   EQUIRECT    an equirectangular image (u_equirect) → the source cube
 //   SPECULAR    the source cube (u_source) prefiltered for u_roughness by GGX
 //               importance sampling (filtered: each sample reads the mip that
@@ -16,7 +18,9 @@ in vec2 v_ndc;
 out vec4 frag_color;
 
 uniform int u_face;
-#ifdef EQUIRECT
+#ifdef DECODE
+uniform sampler2D u_rgbe;
+#elif defined(EQUIRECT)
 uniform sampler2D u_equirect;
 #else
 uniform samplerCube u_source;
@@ -41,7 +45,7 @@ vec3 face_direction(vec2 st) {
     return vec3(-s, -t, -1.0);
 }
 
-#ifndef EQUIRECT
+#if !defined(EQUIRECT) && !defined(DECODE)
 vec2 hammersley(uint i, uint n) {
     uint b = i;
     b = (b << 16u) | (b >> 16u);
@@ -68,7 +72,19 @@ float sample_lod(float pdf, uint count) {
 #endif
 
 void main() {
+#ifdef DECODE
+    // value = byte × 2^(e − 136); bytes come back as /255.
+    vec4 p = floor(texelFetch(u_rgbe, ivec2(gl_FragCoord.xy), 0) * 255.0 + 0.5);
+    vec3 c = p.a > 0.0 ? p.rgb * exp2(p.a - 136.0) : vec3(0.0);
+    // Half float tops out at 65504; brighter texels (a sun in a real HDRI
+    // can reach 2e5) would become infinities, which filtering turns into NaN
+    // (∞·0) that the prefilter spreads over whole faces. Scale such a texel
+    // down to the limit, keeping its hue.
+    c *= min(1.0, 65504.0 / max(max(c.r, max(c.g, c.b)), 1e-30));
+    frag_color = vec4(c, 1.0);
+#else
     vec3 n = normalize(face_direction(v_ndc));
+#endif
 
 #ifdef EQUIRECT
     vec2 uv = vec2(atan(n.z, n.x) / (2.0 * PI) + 0.5, acos(clamp(n.y, -1.0, 1.0)) / PI);
