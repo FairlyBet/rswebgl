@@ -91,6 +91,7 @@ impl Scene {
     // Recompiles PBR variants and scene shaders and switches meshes to them.
     fn restore_programs(&mut self) {
         let old_pbr = std::mem::replace(&mut self.pbr, PbrShaders::new());
+        self.pbr.set_model(old_pbr.model());
         self.pending_variants.clear();
         let mut remap: HashMap<ProgramId, ProgramId> = HashMap::new();
         let in_use: Vec<ProgramId> = self

@@ -5,6 +5,8 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
+use wasm_bindgen::prelude::*;
+
 use crate::shader::shader_sources;
 use rswebgl::context::Context;
 use rswebgl::error::Error;
@@ -45,7 +47,15 @@ const EXTENSIONS: [(u32, &str); 4] = [
     (1 << 20, "HAS_CLEARCOAT"),
     (1 << 21, "HAS_DISPERSION"),
 ];
-const TOP_BIT: u32 = 1 << 21;
+// The shading model: OpenPBR unless set (the glTF reference).
+const MODEL_GLTF: u32 = 1 << 22;
+// EON diffuse (base_diffuse_roughness > 0); Lambert otherwise.
+const DIFFUSE_ROUGHNESS: u32 = 1 << 23;
+// Layers: glTF sheen / OpenPBR fuzz, thin film, specular anisotropy.
+const SHEEN: u32 = 1 << 24;
+const IRIDESCENCE: u32 = 1 << 25;
+const ANISOTROPY: u32 = 1 << 26;
+const TOP_BIT: u32 = 1 << 26;
 
 /// A shader variant: which features one program is compiled with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -91,6 +101,18 @@ impl PbrKey {
                 key |= bit;
             }
         }
+        if material.diffuse_roughness() > 0.0 {
+            key |= DIFFUSE_ROUGHNESS;
+        }
+        if material.sheen_color().iter().any(|&c| c > 0.0) {
+            key |= SHEEN;
+        }
+        if material.iridescence() > 0.0 {
+            key |= IRIDESCENCE;
+        }
+        if material.anisotropy_strength() != 0.0 {
+            key |= ANISOTROPY;
+        }
         Self(key)
     }
 
@@ -105,6 +127,14 @@ impl PbrKey {
 
     pub fn bits(&self) -> u32 {
         self.0
+    }
+
+    /// This variant shaded by `model`.
+    pub fn with_model(self, model: ShadingModel) -> Self {
+        match model {
+            ShadingModel::OpenPbr => Self(self.0 & !MODEL_GLTF),
+            ShadingModel::Gltf => Self(self.0 | MODEL_GLTF),
+        }
     }
 
     /// The `#define` lines for this variant.
@@ -140,6 +170,21 @@ impl PbrKey {
                 let _ = writeln!(s, "#define {name}");
             }
         }
+        if k & DIFFUSE_ROUGHNESS != 0 {
+            s.push_str("#define HAS_DIFFUSE_ROUGHNESS\n");
+        }
+        for (bit, name) in [
+            (SHEEN, "HAS_SHEEN"),
+            (IRIDESCENCE, "HAS_IRIDESCENCE"),
+            (ANISOTROPY, "HAS_ANISOTROPY"),
+        ] {
+            if k & bit != 0 {
+                let _ = writeln!(s, "#define {name}");
+            }
+        }
+        if k & MODEL_GLTF != 0 {
+            s.push_str("#define MODEL_GLTF\n");
+        }
         s
     }
 
@@ -153,11 +198,23 @@ impl PbrKey {
 /// variant can't silently overflow its two bits.
 const _: () = assert!(AlphaMode::Blend as u32 <= 3);
 
+/// Which shading model PBR variants use.
+#[wasm_bindgen]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ShadingModel {
+    /// OpenPBR Surface (the default).
+    #[default]
+    OpenPbr = 0,
+    /// The glTF reference (what Khronos' sample renderer shows), to compare.
+    Gltf = 1,
+}
+
 /// Compiled PBR programs by variant. Programs are created on first use and
 /// kept until `destroy`.
 #[derive(Default)]
 pub struct PbrShaders {
     programs: HashMap<PbrKey, ProgramId>,
+    model: ShadingModel,
 }
 
 impl PbrShaders {
@@ -165,8 +222,19 @@ impl PbrShaders {
         Self::default()
     }
 
-    /// The program for `key`, compiling it on first use.
+    /// The shading model new programs use (`program` applies it to keys).
+    pub fn set_model(&mut self, model: ShadingModel) {
+        self.model = model;
+    }
+
+    pub fn model(&self) -> ShadingModel {
+        self.model
+    }
+
+    /// The program for `key` under the current shading model, compiling it
+    /// on first use.
     pub fn program(&mut self, ctx: &Context, key: PbrKey) -> Result<ProgramId, Error> {
+        let key = key.with_model(self.model);
         if let Some(&p) = self.programs.get(&key) {
             return Ok(p);
         }

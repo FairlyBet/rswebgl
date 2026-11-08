@@ -1,25 +1,27 @@
-// glTF 2.0 metallic-roughness — fragment stage: the BRDF of the glTF spec
-// (appendix B: GGX distribution, height-correlated Smith visibility, Schlick
-// Fresnel, Lambert diffuse), punctual lights (KHR_lights_punctual units),
-// image-based light from the scene's environment (split sum), emissive,
-// alpha modes, then `scene_output`. Everything the scene binds (camera,
-// lights, environment, object) comes from the prelude, `scene.frag.glsl`.
+// The built-in material shader: glTF metallic-roughness inputs (factors,
+// maps, extensions) and OpenPBR's own parameters, shaded by one of two
+// models — OpenPBR Surface (`surface_openpbr.glsl`, the default) or the glTF
+// reference (`surface_gltf.glsl`, MODEL_GLTF) — then alpha modes and
+// `scene_output`. The scene prelude (camera, lights, environment, object)
+// comes first.
 //
 // Defines (`PbrShaders` adds the ones that apply):
+//   model      MODEL_GLTF (else OpenPBR)
 //   geometry   HAS_NORMAL HAS_UV0 HAS_TANGENT HAS_COLOR HAS_UV1
 //   maps       HAS_BASE_COLOR_MAP HAS_METALLIC_ROUGHNESS_MAP HAS_NORMAL_MAP
 //              HAS_OCCLUSION_MAP HAS_EMISSIVE_MAP, each with <MAP>_UV set to
 //              v_uv0 or v_uv1
 //   alpha      ALPHAMODE_OPAQUE | ALPHAMODE_MASK | ALPHAMODE_BLEND
 //   shading    MATERIAL_UNLIT (KHR_materials_unlit)
-//   extensions HAS_TRANSMISSION, HAS_VOLUME, HAS_CLEARCOAT, HAS_DISPERSION
-//              (their factors; KHR_materials_ior and _specular are uniforms
-//              every variant reads)
-//
-// Transmission refracts the environment, not the scene behind the surface:
-// light enters along the refracted ray (straight through when thin-walled,
-// bent by the IOR inside a volume), is absorbed over the volume's thickness,
-// and with dispersion each color channel bends by its own IOR.
+//   layers     HAS_TRANSMISSION HAS_VOLUME HAS_CLEARCOAT HAS_DISPERSION
+//              HAS_DIFFUSE_ROUGHNESS — a layer the material doesn't use isn't
+//              compiled at all
+
+#include "brdf.glsl"
+#include "eon.glsl"
+#include "surface.glsl"
+#include "surface_gltf.glsl"
+#include "surface_openpbr.glsl"
 
 in vec3 v_world;
 in vec2 v_uv0;
@@ -58,10 +60,14 @@ uniform sampler2D u_occlusion_tex; // R
 #ifdef HAS_EMISSIVE_MAP
 uniform sampler2D u_emissive_tex;
 #endif
-// Extension factors (KHR_materials_*).
+// KHR_materials_ior, _specular; OpenPBR base_weight.
 uniform float u_ior;
 uniform float u_specular_factor;
 uniform vec3 u_specular_color;
+uniform float u_base_weight;
+#ifdef HAS_DIFFUSE_ROUGHNESS
+uniform float u_diffuse_roughness;
+#endif
 #ifdef HAS_TRANSMISSION
 uniform float u_transmission;
 #endif
@@ -73,13 +79,15 @@ uniform float u_attenuation_distance; // 0 = no absorption
 #ifdef HAS_CLEARCOAT
 uniform float u_clearcoat;
 uniform float u_clearcoat_roughness;
+uniform float u_coat_ior;
+uniform vec3 u_coat_color;
+uniform float u_coat_darkening;
 #endif
 #ifdef HAS_DISPERSION
 uniform float u_dispersion;
 #endif
 
 out vec4 frag_color;
-
 
 vec4 base_color() {
     vec4 c = u_base_color_factor;
@@ -129,57 +137,6 @@ vec3 shading_normal() {
     return n;
 }
 
-float d_ggx(float n_h, float a2) {
-    float f = n_h * n_h * (a2 - 1.0) + 1.0;
-    return a2 / (PI * f * f);
-}
-
-float v_smith(float n_l, float n_v, float a2) {
-    float gv = n_l * sqrt(n_v * n_v * (1.0 - a2) + a2);
-    float gl = n_v * sqrt(n_l * n_l * (1.0 - a2) + a2);
-    float g = gv + gl;
-    return g > 0.0 ? 0.5 / g : 0.0;
-}
-
-vec3 f_schlick(vec3 f0, float v_h) {
-    return f0 + (1.0 - f0) * pow(1.0 - v_h, 5.0);
-}
-
-// Radiance arriving through the surface from the environment (before the
-// Fresnel and tint the caller applies).
-#ifdef HAS_TRANSMISSION
-vec3 refracted_dir(vec3 n, vec3 v, float ior) {
-#ifdef HAS_VOLUME
-    vec3 t = refract(-v, n, 1.0 / ior);
-    return dot(t, t) > 0.0 ? t : reflect(-v, n);
-#else
-    return -v; // thin-walled: in and out again, no net bend
-#endif
-}
-
-vec3 transmitted(vec3 n, vec3 v, float roughness, float ior) {
-    // Rougher with a higher IOR (Khronos: roughness scaled by ior·2 − 2).
-    float lod = roughness * clamp(ior * 2.0 - 2.0, 0.0, 1.0) * u_lighting.w;
-#ifdef HAS_DISPERSION
-    float spread = (ior - 1.0) * 0.025 * u_dispersion;
-    vec3 c = vec3(
-        textureLod(u_env_specular, env_dir(refracted_dir(n, v, ior - spread), u_lighting.z), lod).r,
-        textureLod(u_env_specular, env_dir(refracted_dir(n, v, ior), u_lighting.z), lod).g,
-        textureLod(u_env_specular, env_dir(refracted_dir(n, v, ior + spread), u_lighting.z), lod).b);
-#else
-    vec3 c = textureLod(u_env_specular, env_dir(refracted_dir(n, v, ior), u_lighting.z), lod).rgb;
-#endif
-#ifdef HAS_VOLUME
-    if (u_attenuation_distance > 0.0) {
-        float scale = length(vec3(u_model[0]));
-        float path = u_thickness * scale;
-        c *= pow(u_attenuation_color, vec3(path / u_attenuation_distance));
-    }
-#endif
-    return c;
-}
-#endif
-
 void main() {
     vec4 base = base_color();
 #ifdef ALPHAMODE_MASK
@@ -193,120 +150,77 @@ void main() {
 #ifdef MATERIAL_UNLIT
     frag_color = vec4(scene_output_unlit(base.rgb), base.a);
 #else
-    float metallic = u_metallic_factor;
+    Surface s;
+    s.position = v_world;
+    s.v = normalize(u_camera_pos.xyz - v_world);
+    s.n = shading_normal();
+#ifdef HAS_NORMAL
+    s.n_coat = normalize(v_normal);
+#else
+    s.n_coat = normalize(cross(dFdx(v_world), dFdy(v_world)));
+#endif
+    if (!gl_FrontFacing) s.n_coat = -s.n_coat;
+    s.base_color = base.rgb;
+    s.opacity = base.a;
+    s.base_weight = u_base_weight;
+    s.metallic = u_metallic_factor;
     float roughness = u_roughness_factor;
 #ifdef HAS_METALLIC_ROUGHNESS_MAP
     vec4 mr = texture(u_metallic_roughness_tex, METALLIC_ROUGHNESS_UV);
     roughness *= mr.g;
-    metallic *= mr.b;
+    s.metallic *= mr.b;
 #endif
-    metallic = clamp(metallic, 0.0, 1.0);
-    roughness = clamp(roughness, 0.03, 1.0);
-    float a2 = roughness * roughness * roughness * roughness;
-
-    // The glTF layering (spec appendix B): a dielectric — Fresnel from the
-    // IOR, tinted and weighted by KHR_materials_specular, over diffuse and
-    // transmission — mixed with a metal whose Fresnel is the base color.
-    float ior = u_ior;
-    float r0 = (ior - 1.0) / (ior + 1.0);
-    vec3 f0_dielectric = min(vec3(r0 * r0) * u_specular_color, vec3(1.0));
-    float specular_weight = u_specular_factor;
-    float transmission = 0.0;
+    s.metallic = clamp(s.metallic, 0.0, 1.0);
+    s.roughness = specular_aa(s.n_coat, clamp(roughness, 0.0, 1.0));
+    s.diffuse_roughness = 0.0;
+#ifdef HAS_DIFFUSE_ROUGHNESS
+    s.diffuse_roughness = clamp(u_diffuse_roughness, 0.0, 1.0);
+#endif
+    s.ior = u_ior;
+    s.specular_weight = u_specular_factor;
+    s.specular_color = u_specular_color;
+    s.transmission = 0.0;
 #ifdef HAS_TRANSMISSION
-    transmission = u_transmission;
+    s.transmission = u_transmission;
 #endif
-
-    vec3 n = shading_normal();
-    vec3 v = normalize(u_camera_pos.xyz - v_world);
-    float n_v = clamp(abs(dot(n, v)), 1e-4, 1.0);
+    s.thickness = 0.0;
+    s.attenuation_color = vec3(1.0);
+    s.attenuation_distance = 0.0;
+#ifdef HAS_VOLUME
+    s.thickness = u_thickness;
+    s.attenuation_color = u_attenuation_color;
+    s.attenuation_distance = u_attenuation_distance;
+#endif
+    s.dispersion = 0.0;
+#ifdef HAS_DISPERSION
+    s.dispersion = u_dispersion;
+#endif
+    s.coat = 0.0;
+    s.coat_roughness = 0.0;
+    s.coat_ior = 1.5;
+    s.coat_color = vec3(1.0);
+    s.coat_darkening = 0.0;
 #ifdef HAS_CLEARCOAT
-    // The coat follows the geometry, not the base layer's normal map.
-#ifdef HAS_NORMAL
-    vec3 n_coat = normalize(v_normal);
-#else
-    vec3 n_coat = normalize(cross(dFdx(v_world), dFdy(v_world)));
+    s.coat = u_clearcoat;
+    s.coat_roughness = specular_aa(s.n_coat, clamp(u_clearcoat_roughness, 0.0, 1.0));
+    s.coat_ior = u_coat_ior;
+    s.coat_color = u_coat_color;
+    s.coat_darkening = u_coat_darkening;
 #endif
-    if (!gl_FrontFacing) n_coat = -n_coat;
-    float coat_roughness = clamp(u_clearcoat_roughness, 0.03, 1.0);
-    float coat_a2 = coat_roughness * coat_roughness * coat_roughness * coat_roughness;
-    float coat_n_v = clamp(abs(dot(n_coat, v)), 1e-4, 1.0);
-    // Light the coat reflects away from the layers under it.
-    float coat_fresnel = u_clearcoat * (0.04 + 0.96 * pow(1.0 - coat_n_v, 5.0));
-#endif
-
-    vec3 color = vec3(0.0);
-    int count = int(u_lighting.x);
-    for (int i = 0; i < MAX_LIGHTS; i++) {
-        if (i >= count) break;
-        Light light = u_lights[i];
-        vec3 to_light = light.params.w < 0.5
-            ? -light.direction.xyz
-            : light.position.xyz - v_world;
-        vec3 l = normalize(to_light);
-        float n_l = clamp(dot(n, l), 0.0, 1.0);
-        vec3 radiance = light.color.rgb * light.color.w * light_attenuation(light, to_light);
-        vec3 h = normalize(l + v);
-        float v_h = clamp(dot(v, h), 0.0, 1.0);
-        if (n_l > 0.0) {
-            float n_h = clamp(dot(n, h), 0.0, 1.0);
-            float dv = d_ggx(n_h, a2) * v_smith(n_l, n_v, a2);
-            vec3 f_dielectric = specular_weight * f_schlick(f0_dielectric, v_h);
-            vec3 dielectric = (1.0 - f_dielectric) * (1.0 - transmission) * base.rgb / PI
-                + f_dielectric * dv;
-            vec3 metal = f_schlick(base.rgb, v_h) * dv;
-            vec3 lobe = mix(dielectric, metal, metallic);
-#ifdef HAS_CLEARCOAT
-            lobe *= 1.0 - coat_fresnel;
-#endif
-            color += lobe * radiance * n_l;
-        }
-#ifdef HAS_CLEARCOAT
-        float coat_n_l = clamp(dot(n_coat, l), 0.0, 1.0);
-        if (coat_n_l > 0.0) {
-            float coat_n_h = clamp(dot(n_coat, h), 0.0, 1.0);
-            float coat_f = 0.04 + 0.96 * pow(1.0 - v_h, 5.0);
-            color += u_clearcoat * coat_f * d_ggx(coat_n_h, coat_a2)
-                * v_smith(coat_n_l, coat_n_v, coat_a2) * radiance * coat_n_l;
-        }
-#endif
-    }
-
-    float ao = 1.0;
+    s.ao = 1.0;
 #ifdef HAS_OCCLUSION_MAP
-    ao = 1.0 + u_occlusion_strength * (texture(u_occlusion_tex, OCCLUSION_UV).r - 1.0);
+    s.ao = 1.0 + u_occlusion_strength * (texture(u_occlusion_tex, OCCLUSION_UV).r - 1.0);
 #endif
-    // Image-based light (split sum): irradiance for diffuse, the specular
-    // cube at the mip of this roughness for specular (and, refracted, for
-    // transmission).
-    vec3 r = reflect(-v, n);
-    vec2 brdf = texture(u_env_brdf, vec2(n_v, roughness)).rg;
-    vec3 irradiance = texture(u_env_diffuse, env_dir(n, u_lighting.z)).rgb;
-    vec3 prefiltered = textureLod(u_env_specular, env_dir(r, u_lighting.z),
-                                  roughness * u_lighting.w).rgb;
-    vec3 specular_albedo = specular_weight * (f0_dielectric * brdf.x + brdf.y);
-    vec3 dielectric = specular_albedo * prefiltered
-        + (1.0 - specular_albedo) * (1.0 - transmission) * irradiance * base.rgb;
-#ifdef HAS_TRANSMISSION
-    dielectric += (1.0 - specular_albedo) * transmission * base.rgb
-        * transmitted(n, v, roughness, ior);
-#endif
-    vec3 metal = (base.rgb * brdf.x + brdf.y) * prefiltered;
-    vec3 ambient = mix(dielectric, metal, metallic) * ao;
-#ifdef HAS_CLEARCOAT
-    vec2 coat_brdf = texture(u_env_brdf, vec2(coat_n_v, coat_roughness)).rg;
-    vec3 coat = textureLod(u_env_specular, env_dir(reflect(-v, n_coat), u_lighting.z),
-                           coat_roughness * u_lighting.w).rgb
-        * (0.04 * coat_brdf.x + coat_brdf.y);
-    ambient = ambient * (1.0 - coat_fresnel) + u_clearcoat * coat;
-#endif
-    color += u_environment.rgb * ambient;
-
-    vec3 emissive = u_emissive_factor * u_emissive_strength;
+    s.emission = u_emissive_factor * u_emissive_strength;
 #ifdef HAS_EMISSIVE_MAP
-    emissive *= texture(u_emissive_tex, EMISSIVE_UV).rgb;
+    s.emission *= texture(u_emissive_tex, EMISSIVE_UV).rgb;
 #endif
-    color += emissive;
 
+#ifdef MODEL_GLTF
+    vec3 color = shade_gltf(s);
+#else
+    vec3 color = shade_openpbr(s);
+#endif
     frag_color = vec4(scene_output(color), base.a);
 #endif
 }

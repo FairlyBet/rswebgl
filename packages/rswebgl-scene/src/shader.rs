@@ -56,6 +56,22 @@ pub const CHUNKS: &[(&str, &str)] = &[
         include_str!("../shaders/lib/environment.glsl"),
     ),
     ("tonemap.glsl", include_str!("../shaders/lib/tonemap.glsl")),
+    ("brdf.glsl", include_str!("../shaders/lib/brdf.glsl")),
+    ("eon.glsl", include_str!("../shaders/lib/eon.glsl")),
+    ("surface.glsl", include_str!("../shaders/lib/surface.glsl")),
+    ("sheen.glsl", include_str!("../shaders/lib/sheen.glsl")),
+    (
+        "iridescence.glsl",
+        include_str!("../shaders/lib/iridescence.glsl"),
+    ),
+    (
+        "surface_gltf.glsl",
+        include_str!("../shaders/lib/surface_gltf.glsl"),
+    ),
+    (
+        "surface_openpbr.glsl",
+        include_str!("../shaders/lib/surface_openpbr.glsl"),
+    ),
 ];
 
 /// The chunk named `name`, if the library has it.

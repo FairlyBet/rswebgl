@@ -496,3 +496,43 @@ impl TextureSpec {
         Ok(tex)
     }
 }
+
+#[wasm_bindgen]
+impl Scene {
+    /// The shading model of the built-in PBR: "openpbr" (OpenPBR Surface,
+    /// the default) or "gltf" (the glTF reference, as Khronos' sample
+    /// renderer shades it) — to compare them on the same materials. Meshes
+    /// switch as their new shaders finish compiling. Throws on another name.
+    #[wasm_bindgen(js_name = setShadingModel)]
+    pub fn set_shading_model(&mut self, name: &str) -> Result<(), Error> {
+        let model = match name {
+            "openpbr" => crate::pbr::ShadingModel::OpenPbr,
+            "gltf" => crate::pbr::ShadingModel::Gltf,
+            other => {
+                return Err(format!("setShadingModel: \"{other}\" isn't openpbr or gltf").into());
+            }
+        };
+        if model == self.pbr.model() {
+            return Ok(());
+        }
+        self.pbr.set_model(model);
+        let meshes: Vec<Entity> = self
+            .world
+            .storage::<MeshRenderer>()
+            .map(|m| m.iter().map(|(e, _)| e).collect())
+            .unwrap_or_default();
+        for e in meshes {
+            self.update_variant(e);
+        }
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = shadingModel)]
+    pub fn shading_model(&self) -> String {
+        match self.pbr.model() {
+            crate::pbr::ShadingModel::OpenPbr => "openpbr",
+            crate::pbr::ShadingModel::Gltf => "gltf",
+        }
+        .to_string()
+    }
+}

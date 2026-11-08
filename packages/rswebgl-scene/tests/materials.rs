@@ -158,6 +158,28 @@ async fn extensions_shade_as_specified() {
         .set_environment_hdr(&red_front_blue_back(), 64)
         .expect("bake");
 
+    for model in ["openpbr", "gltf"] {
+        scene.set_shading_model(model).unwrap();
+        check_extensions(&mut scene, &ctx, &gl, camera, n, h, model).await;
+    }
+    // Per model: plain, transmission, transmission + volume, clearcoat (the
+    // IOR is a uniform, not a variant).
+    assert_eq!(scene.shader_variant_count(), 8);
+    scene.destroy();
+}
+
+async fn check_extensions(
+    scene: &mut Scene,
+    ctx: &Context,
+    gl: &Gl,
+    camera: rswebgl_ecs::Entity,
+    n: i32,
+    h: i32,
+    model: &str,
+) {
+    wasm_bindgen_futures::JsFuture::from(scene.when_ready())
+        .await
+        .unwrap();
     let mut pass = Pass::to_default();
     pass.set_clear(&ClearMask::color_depth());
     scene.render(camera, &mut pass);
@@ -182,26 +204,22 @@ async fn extensions_shade_as_specified() {
 
     assert!(
         rough[0] > rough[2] + 60,
-        "diffuse sees the red side: {rough:?}"
+        "{model}: diffuse sees the red side: {rough:?}"
     );
     assert!(
         glass[2] > glass[0] + 100,
-        "glass shows the blue behind: {glass:?}"
+        "{model}: glass shows the blue behind: {glass:?}"
     );
     assert!(
         ior24[0] > ior15[0] + 30,
-        "higher IOR reflects more: {ior15:?} → {ior24:?}"
+        "{model}: higher IOR reflects more: {ior15:?} → {ior24:?}"
     );
     assert!(
         coat[0] > no_coat[0] + 20,
-        "the coat reflects: {no_coat:?} → {coat:?}"
+        "{model}: the coat reflects: {no_coat:?} → {coat:?}"
     );
     assert!(
         absorbing[2] + 100 < glass[2],
-        "the volume absorbs blue: {glass:?} → {absorbing:?}"
+        "{model}: the volume absorbs blue: {glass:?} → {absorbing:?}"
     );
-    // Four variants: plain, transmission, transmission + volume, clearcoat
-    // (the IOR is a uniform, not a variant).
-    assert_eq!(scene.shader_variant_count(), 4);
-    scene.destroy();
 }

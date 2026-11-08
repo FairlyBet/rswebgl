@@ -126,7 +126,7 @@ pub(crate) fn brdf_lut_texture(ctx: &Context) -> Result<TextureId, Error> {
     ctx.texture_storage_2d(tex, 1, &TextureFormat::rgba16f(), n, n);
     let data: Vec<u8> = brdf_lut()
         .into_iter()
-        .flat_map(|[a, b]| [a, b, 0.0, 1.0])
+        .flat_map(|[a, b, sheen]| [a, b, sheen, 1.0])
         .flat_map(f32::to_le_bytes)
         .collect();
     ctx.texture_sub_image_2d(tex, 0, 0, 0, n, n, &RGBA16F_FROM_F32, &data);

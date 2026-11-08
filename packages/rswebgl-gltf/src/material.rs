@@ -60,6 +60,23 @@ pub struct Material {
     pub(crate) clearcoat: f32,
     pub(crate) clearcoat_roughness: f32,
     pub(crate) dispersion: f32,
+    // OpenPBR parameters glTF doesn't have (OpenPBR's defaults, except coat_ior
+    // 1.5 to match glTF's clearcoat).
+    pub(crate) base_weight: f32,
+    pub(crate) diffuse_roughness: f32,
+    pub(crate) coat_ior: f32,
+    pub(crate) coat_color: [f32; 3],
+    pub(crate) coat_darkening: f32,
+    // KHR_materials_sheen (OpenPBR fuzz), _iridescence (thin film; thickness
+    // in nm, the extension's maximum without a thickness texture),
+    // _anisotropy (strength, rotation in radians).
+    pub(crate) sheen_color: [f32; 3],
+    pub(crate) sheen_roughness: f32,
+    pub(crate) iridescence: f32,
+    pub(crate) iridescence_ior: f32,
+    pub(crate) iridescence_thickness: f32,
+    pub(crate) anisotropy_strength: f32,
+    pub(crate) anisotropy_rotation: f32,
 }
 
 #[wasm_bindgen]
@@ -205,6 +222,26 @@ impl Material {
     pub fn clearcoat_roughness(&self) -> f32 {
         self.clearcoat_roughness
     }
+    /// `KHR_materials_sheen` color (black: no sheen / fuzz).
+    #[wasm_bindgen(getter, js_name = sheenColor)]
+    pub fn sheen_color(&self) -> Vec<f32> {
+        self.sheen_color.to_vec()
+    }
+    /// `KHR_materials_iridescence` factor (0: no thin film).
+    #[wasm_bindgen(getter)]
+    pub fn iridescence(&self) -> f32 {
+        self.iridescence
+    }
+    /// `KHR_materials_anisotropy` strength (0: isotropic).
+    #[wasm_bindgen(getter, js_name = anisotropyStrength)]
+    pub fn anisotropy_strength(&self) -> f32 {
+        self.anisotropy_strength
+    }
+    /// OpenPBR `base_diffuse_roughness` (0: Lambert).
+    #[wasm_bindgen(getter, js_name = diffuseRoughness)]
+    pub fn diffuse_roughness(&self) -> f32 {
+        self.diffuse_roughness
+    }
     /// `KHR_materials_dispersion` (0: none; 20/Abbe number otherwise).
     #[wasm_bindgen(getter)]
     pub fn dispersion(&self) -> f32 {
@@ -227,7 +264,7 @@ const fn prop(name: &'static str, uniform: &'static str, len: usize) -> Property
 }
 
 /// Every numeric property a material group carries, by glTF name.
-pub const PROPERTIES: [Property; 18] = [
+pub const PROPERTIES: [Property; 30] = [
     prop("baseColorFactor", "u_base_color_factor", 4),
     prop("metallicFactor", "u_metallic_factor", 1),
     prop("roughnessFactor", "u_roughness_factor", 1),
@@ -246,11 +283,23 @@ pub const PROPERTIES: [Property; 18] = [
     prop("clearcoatFactor", "u_clearcoat", 1),
     prop("clearcoatRoughnessFactor", "u_clearcoat_roughness", 1),
     prop("dispersion", "u_dispersion", 1),
+    prop("baseWeight", "u_base_weight", 1),
+    prop("diffuseRoughness", "u_diffuse_roughness", 1),
+    prop("coatIor", "u_coat_ior", 1),
+    prop("coatColor", "u_coat_color", 3),
+    prop("coatDarkening", "u_coat_darkening", 1),
+    prop("sheenColorFactor", "u_sheen_color", 3),
+    prop("sheenRoughnessFactor", "u_sheen_roughness", 1),
+    prop("iridescenceFactor", "u_iridescence", 1),
+    prop("iridescenceIor", "u_iridescence_ior", 1),
+    prop("iridescenceThickness", "u_iridescence_thickness", 1),
+    prop("anisotropyStrength", "u_anisotropy_strength", 1),
+    prop("anisotropyRotation", "u_anisotropy_rotation", 1),
 ];
 
 impl Material {
     // The storage of each of `PROPERTIES`, in the same order.
-    fn values_mut(&mut self) -> [&mut [f32]; 18] {
+    fn values_mut(&mut self) -> [&mut [f32]; 30] {
         [
             &mut self.base_color_factor,
             std::slice::from_mut(&mut self.metallic),
@@ -270,6 +319,18 @@ impl Material {
             std::slice::from_mut(&mut self.clearcoat),
             std::slice::from_mut(&mut self.clearcoat_roughness),
             std::slice::from_mut(&mut self.dispersion),
+            std::slice::from_mut(&mut self.base_weight),
+            std::slice::from_mut(&mut self.diffuse_roughness),
+            std::slice::from_mut(&mut self.coat_ior),
+            &mut self.coat_color,
+            std::slice::from_mut(&mut self.coat_darkening),
+            &mut self.sheen_color,
+            std::slice::from_mut(&mut self.sheen_roughness),
+            std::slice::from_mut(&mut self.iridescence),
+            std::slice::from_mut(&mut self.iridescence_ior),
+            std::slice::from_mut(&mut self.iridescence_thickness),
+            std::slice::from_mut(&mut self.anisotropy_strength),
+            std::slice::from_mut(&mut self.anisotropy_rotation),
         ]
     }
 
@@ -419,6 +480,23 @@ pub fn translate(mat: &gltf::Material) -> Material {
             0.0,
         ),
         dispersion: ext_f32(mat, "KHR_materials_dispersion", "dispersion", 0.0),
+        base_weight: 1.0,
+        diffuse_roughness: 0.0,
+        coat_ior: 1.5,
+        coat_color: [1.0; 3],
+        coat_darkening: 1.0,
+        sheen_color: ext_vec3(mat, "KHR_materials_sheen", "sheenColorFactor", [0.0; 3]),
+        sheen_roughness: ext_f32(mat, "KHR_materials_sheen", "sheenRoughnessFactor", 0.0),
+        iridescence: ext_f32(mat, "KHR_materials_iridescence", "iridescenceFactor", 0.0),
+        iridescence_ior: ext_f32(mat, "KHR_materials_iridescence", "iridescenceIor", 1.3),
+        iridescence_thickness: ext_f32(
+            mat,
+            "KHR_materials_iridescence",
+            "iridescenceThicknessMaximum",
+            400.0,
+        ),
+        anisotropy_strength: ext_f32(mat, "KHR_materials_anisotropy", "anisotropyStrength", 0.0),
+        anisotropy_rotation: ext_f32(mat, "KHR_materials_anisotropy", "anisotropyRotation", 0.0),
     }
 }
 
@@ -476,6 +554,18 @@ pub fn default_material() -> Material {
         clearcoat: 0.0,
         clearcoat_roughness: 0.0,
         dispersion: 0.0,
+        base_weight: 1.0,
+        diffuse_roughness: 0.0,
+        coat_ior: 1.5,
+        coat_color: [1.0; 3],
+        coat_darkening: 1.0,
+        sheen_color: [0.0; 3],
+        sheen_roughness: 0.0,
+        iridescence: 0.0,
+        iridescence_ior: 1.3,
+        iridescence_thickness: 400.0,
+        anisotropy_strength: 0.0,
+        anisotropy_rotation: 0.0,
     }
 }
 
@@ -513,6 +603,22 @@ fn ext_f32(mat: &gltf::Material, ext: &str, key: &str, default: f32) -> f32 {
         .and_then(|e| e.get(key))
         .and_then(|v| v.as_f64())
         .map_or(default, |v| v as f32)
+}
+
+fn ext_vec3(mat: &gltf::Material, ext: &str, key: &str, default: [f32; 3]) -> [f32; 3] {
+    mat.extension_value(ext)
+        .and_then(|e| e.get(key))
+        .and_then(|v| v.as_array())
+        .filter(|a| a.len() == 3)
+        .and_then(|a| {
+            let c: Vec<f32> = a
+                .iter()
+                .filter_map(|x| x.as_f64())
+                .map(|x| x as f32)
+                .collect();
+            <[f32; 3]>::try_from(c).ok()
+        })
+        .unwrap_or(default)
 }
 
 fn tex_index(t: Option<gltf::Texture>) -> i32 {
@@ -661,5 +767,38 @@ mod tests {
         let s = render_state_for(m, false);
         assert!(!s.blend); // MASK uses discard, not blending
         assert!(s.depth_mask);
+    }
+
+    #[test]
+    fn sheen_iridescence_anisotropy_are_read() {
+        let doc = r#"{
+            "asset": { "version": "2.0" },
+            "materials": [{
+                "extensions": {
+                    "KHR_materials_sheen": { "sheenColorFactor": [1, 0.5, 0.25], "sheenRoughnessFactor": 0.3 },
+                    "KHR_materials_iridescence": { "iridescenceFactor": 1, "iridescenceIor": 1.8,
+                                                   "iridescenceThicknessMaximum": 550 },
+                    "KHR_materials_anisotropy": { "anisotropyStrength": 0.6, "anisotropyRotation": 1.5 }
+                }
+            }, {}]
+        }"#;
+        let gltf = gltf::Gltf::from_slice(doc.as_bytes()).unwrap();
+        let mats: Vec<Material> = gltf.document.materials().map(|m| translate(&m)).collect();
+        let m = &mats[0];
+        assert_eq!(m.sheen_color, [1.0, 0.5, 0.25]);
+        assert_eq!(m.sheen_roughness, 0.3);
+        assert_eq!(
+            (m.iridescence, m.iridescence_ior, m.iridescence_thickness),
+            (1.0, 1.8, 550.0)
+        );
+        assert_eq!((m.anisotropy_strength, m.anisotropy_rotation), (0.6, 1.5));
+        // Absent: the extensions' defaults.
+        let d = &mats[1];
+        assert_eq!(d.sheen_color, [0.0; 3]);
+        assert_eq!(
+            (d.iridescence, d.iridescence_ior, d.iridescence_thickness),
+            (0.0, 1.3, 400.0)
+        );
+        assert_eq!(d.anisotropy_strength, 0.0);
     }
 }

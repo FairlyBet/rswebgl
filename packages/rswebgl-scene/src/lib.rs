@@ -56,7 +56,7 @@ pub use js::Scene;
 pub use light::{Light, LightKind};
 pub use model::{Name, Primitive, find_by_name, spawn_model};
 pub use output::{HdrOutput, ToneMapping};
-pub use pbr::{PbrKey, PbrShaders};
+pub use pbr::{PbrKey, PbrShaders, ShadingModel};
 pub use pick::{Hit, Ray, pick_bounds, ray_aabb};
 pub use render::{
     FRAME_BLOCK, FRAME_SLOT, LIGHTING_BLOCK, MATERIAL_SLOT, MAX_LIGHTS, MODEL_UNIFORM,
