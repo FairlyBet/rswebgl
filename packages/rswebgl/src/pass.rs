@@ -261,6 +261,14 @@ impl Pass {
         Self::with_target(FramebufferId::NULL)
     }
 
+    /// Points the pass at another target (keeping its draws and settings) —
+    /// to reuse one pass, and its allocations, across frames whose target
+    /// changes.
+    #[wasm_bindgen(js_name = setTarget)]
+    pub fn set_target(&mut self, target: FramebufferId) {
+        self.target = target;
+    }
+
     /// Restricts rendering to a sub-region; defaults to the target's full size.
     #[wasm_bindgen(js_name = setViewport)]
     pub fn set_viewport(&mut self, viewport: &Viewport) {

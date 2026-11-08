@@ -109,6 +109,9 @@ async fn setup() -> Setup {
         .dyn_into()
         .unwrap();
     let mut scene = Scene::new(&ctx).expect("scene");
+    // Unlit colors read back exactly: no tone curve, no dither.
+    scene.set_tone_mapping("none").unwrap();
+    scene.set_dither(false);
     let camera = scene.spawn();
     // Orthographic, 1 unit tall: with the canvas's 3:1 aspect (set by
     // renderFrame) x spans −1.5…1.5 — quad centers at pixels 16, 48, 80.
@@ -835,4 +838,94 @@ fn textured_quad_url(rgba: [u8; 4]) -> String {
         png = png_url(rgba),
     );
     format!("data:model/gltf+json;base64,{}", b64(json.as_bytes()))
+}
+
+// A quad in front of everything, 50% white, blended — through `program`
+// (vertex code from the scene shader test).
+fn half_white_overlay(s: &mut Setup) -> Entity {
+    let vert = "layout(location = 0) in vec3 a_position;\n\
+                void main() { gl_Position = u_view_proj * u_model * vec4(a_position, 1.0); }";
+    let frag = "out vec4 frag_color;\n\
+                void main() { frag_color = vec4(scene_output(vec3(1.0)), 0.5); }";
+    let program = s.scene.create_program(vert, frag).unwrap();
+    let mut vb = VaoBuilder::new(&s.ctx);
+    #[rustfmt::skip]
+    vb.add_f32(0, AttrKind::F32x3, &[
+        -2.0, -1.0, 1.0, 2.0, -1.0, 1.0, 2.0, 1.0, 1.0,
+        -2.0, -1.0, 1.0, 2.0, 1.0, 1.0, -2.0, 1.0, 1.0,
+    ]);
+    let vao = vb.build().unwrap();
+    let mut state = RenderState::new();
+    state.blend = true;
+    state.blend_src_rgb = rswebgl::render_state::BlendFactor::SrcAlpha;
+    state.blend_dst_rgb = rswebgl::render_state::BlendFactor::OneMinusSrcAlpha;
+    state.blend_src_alpha = rswebgl::render_state::BlendFactor::One;
+    state.blend_dst_alpha = rswebgl::render_state::BlendFactor::OneMinusSrcAlpha;
+    let state = s.ctx.render_state(&state);
+    let e = s.scene.spawn();
+    let opts = format!(
+        r#"{{ "program": {}, "state": {}, "vao": {}, "transparent": true }}"#,
+        program.to_raw(),
+        state.to_raw(),
+        vao.to_raw()
+    );
+    s.scene
+        .set_mesh(
+            e,
+            json(&opts),
+            &DrawCommand::arrays(DrawMode::Triangles, 0, 6),
+        )
+        .unwrap();
+    e
+}
+
+// HDR blends radiance: half white over black is 0.5 of the light, sRGB 188.
+// Straight to the canvas the blend mixes encoded colors: 128.
+#[wasm_bindgen_test]
+async fn hdr_blends_light_and_direct_blends_colors() {
+    let mut s = setup().await;
+    s.scene.set_visible(s.root, false);
+    half_white_overlay(&mut s);
+    assert!(s.scene.is_hdr());
+    let hdr = s.frame().await[1];
+    assert!((hdr[0] as i32 - 188).abs() <= 1, "{hdr:?}");
+    assert!(!s.scene.set_hdr(false));
+    let direct = s.frame().await[1];
+    assert!((direct[0] as i32 - 128).abs() <= 1, "{direct:?}");
+    // And back.
+    assert!(s.scene.set_hdr(true));
+    assert_eq!(s.frame().await[1], hdr);
+    s.scene.destroy();
+}
+
+// Each tone mapper compiles and maps a bright light differently; unknown
+// names throw. A transparent clear color leaves the canvas transparent where
+// nothing is drawn.
+#[wasm_bindgen_test]
+async fn tone_mappers_and_a_transparent_canvas() {
+    let mut s = setup().await;
+    s.scene.set_exposure(4.0); // yellow band ×4: well past white
+    let mut seen = Vec::new();
+    for name in ["none", "neutral", "aces", "agx"] {
+        s.scene.set_tone_mapping(name).unwrap();
+        let px = s.frame().await[0];
+        assert!(
+            !seen.contains(&px),
+            "{name} looks like another mapper: {px:?}"
+        );
+        seen.push(px);
+    }
+    assert!(s.scene.set_tone_mapping("filmic").is_err());
+
+    s.scene.set_exposure(1.0);
+    s.scene.set_tone_mapping("none").unwrap();
+    s.ctx
+        .default_framebuffer()
+        .set_clear_color(0.0, 0.0, 0.0, 0.0);
+    s.scene
+        .set_visible(s.scene.find_by_name(s.root, "stone_b"), false);
+    let [band, _, empty] = s.frame().await;
+    assert_eq!(band, YELLOW);
+    assert_eq!(empty, [0, 0, 0, 0]);
+    s.scene.destroy();
 }

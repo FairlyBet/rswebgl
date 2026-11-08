@@ -237,7 +237,8 @@ impl DefaultFramebuffer {
         self.inner.borrow().viewport
     }
 
-    pub(crate) fn clear_color_rgba(&self) -> [f32; 4] {
+    /// The clear color (RGBA, as set with `set_clear_color`).
+    pub fn clear_color_rgba(&self) -> [f32; 4] {
         self.inner.borrow().clear_color
     }
 

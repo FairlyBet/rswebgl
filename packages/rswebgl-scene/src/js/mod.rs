@@ -27,6 +27,7 @@
 mod lights;
 mod materials;
 mod options;
+mod output;
 mod restore;
 
 use std::collections::HashMap;
@@ -84,6 +85,13 @@ pub struct Scene {
     env_source: Option<(Vec<u8>, u32)>,
     // Models reloaded after a loss, applied at the next frame.
     reloads: Reloads,
+    // HDR output: wanted (and supported), its target once made, how it is
+    // displayed.
+    hdr_wanted: bool,
+    hdr: Option<crate::output::HdrOutput>,
+    samples: i32,
+    tone_mapping: crate::output::ToneMapping,
+    dither: bool,
     // The canvas pass `renderFrame` reuses.
     frame_pass: Pass,
     stats: RenderStats,
@@ -134,6 +142,11 @@ impl Scene {
             scene_programs: Vec::new(),
             env_source: None,
             reloads: Reloads::default(),
+            hdr_wanted: crate::output::HdrOutput::supported(ctx),
+            hdr: None,
+            samples: 4,
+            tone_mapping: crate::output::ToneMapping::Neutral,
+            dither: true,
             frame_pass,
             stats: RenderStats::default(),
             pending_variants: Vec::new(),
@@ -476,15 +489,28 @@ impl Scene {
     #[wasm_bindgen(js_name = renderFrame)]
     pub fn render_frame(&mut self, camera: Entity) -> usize {
         let fb = self.ctx.default_framebuffer();
-        let aspect = fb.width().max(1) as f32 / fb.height().max(1) as f32;
+        let (w, h) = (fb.width(), fb.height());
+        let aspect = w.max(1) as f32 / h.max(1) as f32;
         if let Some(mut c) = self.world.get_mut::<crate::camera::Camera>(camera) {
             c.set_if_neq(crate::camera::Camera { aspect, ..*c });
         }
+        if !self.sync_context() {
+            return 0; // lost: nothing to draw with
+        }
         let mut pass = std::mem::replace(&mut self.frame_pass, Pass::to_default());
         pass.clear_draws();
+        let hdr = self.prepare_output(&mut pass, w, h);
         let drawn = self.render(camera, &mut pass);
         pass.sort();
         self.ctx.render(&pass);
+        if hdr && let Some(out) = &self.hdr {
+            out.present(
+                &self.ctx,
+                self.renderer.exposure(),
+                self.tone_mapping,
+                self.dither,
+            );
+        }
         self.frame_pass = pass;
         drawn
     }
@@ -616,6 +642,9 @@ impl Scene {
         }
         for model in self.models.into_values() {
             model.destroy(&self.ctx);
+        }
+        if let Some(out) = self.hdr {
+            out.destroy(&self.ctx);
         }
         // GPU objects of a context lost since are gone already.
         let current = self.generation == self.ctx.generation();

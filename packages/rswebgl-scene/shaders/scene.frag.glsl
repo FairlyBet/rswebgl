@@ -18,7 +18,17 @@ precision highp samplerCube;
 #include "object.glsl"
 #include "tonemap.glsl"
 
-// Linear scene radiance → the canvas: exposure, tone mapping, sRGB.
+// What a shader writes for linear scene radiance `linear`: to an HDR target,
+// the radiance itself (the display pass applies exposure, tone mapping and
+// sRGB); drawing straight to an 8-bit target, the displayed color.
 vec3 scene_output(vec3 linear) {
-    return linear_to_srgb(tone_map_neutral(linear * u_lighting.y));
+    if (u_output.x < 0.5) return linear;
+    return linear_to_srgb(tone_map(linear * u_lighting.y, int(u_output.y)));
+}
+
+// `scene_output` for a color meant as is (unlit materials): drawing straight
+// to an 8-bit target it's only sRGB-encoded, not exposed or tone mapped. To
+// an HDR target it goes through the display pass like everything else.
+vec3 scene_output_unlit(vec3 linear) {
+    return u_output.x < 0.5 ? linear : linear_to_srgb(linear);
 }

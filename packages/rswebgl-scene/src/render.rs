@@ -24,6 +24,7 @@ use crate::culling::{Bounds, Frustum};
 use crate::environment::{Environment, FULLSCREEN_VERT, brdf_lut_texture};
 use crate::gpu_pick::{GpuPicker, PickView};
 use crate::light::Light;
+use crate::output::ToneMapping;
 use crate::pick::Hit;
 use crate::shader::create_scene_program;
 use crate::transform::{Parent, WorldMatrix};
@@ -186,6 +187,11 @@ pub struct SceneRenderer {
     picker: Option<GpuPicker>,
     // The context generation its GPU objects belong to.
     generation: u32,
+    // Whether scene_output applies exposure, tone mapping and sRGB itself
+    // (drawing straight to an 8-bit target) or leaves linear radiance for a
+    // display pass.
+    display_output: bool,
+    tone_mapping: ToneMapping,
     stats: RenderStats,
 }
 
@@ -208,7 +214,8 @@ impl SceneRenderer {
             &UboLayout::new()
                 .struct_array("u_lights", &light, MAX_LIGHTS as u32)
                 .field("u_environment", UniformType::Vec4)
-                .field("u_lighting", UniformType::Vec4),
+                .field("u_lighting", UniformType::Vec4)
+                .field("u_output", UniformType::Vec4),
             BufferUsage::DynamicDraw,
         )?;
         let frame_layout = ctx.create_param_layout(
@@ -258,6 +265,8 @@ impl SceneRenderer {
             objects: HashMap::new(),
             picker: None,
             generation: ctx.generation(),
+            display_output: true,
+            tone_mapping: ToneMapping::Neutral,
             stats: RenderStats::default(),
         };
         renderer.bind_environment(ctx);
@@ -388,6 +397,15 @@ impl SceneRenderer {
         );
     }
 
+    /// Where `scene_output` sends shaded colors: `display` true (the default)
+    /// applies exposure, `tone_mapping` and sRGB in each shader, for drawing
+    /// straight to the canvas; false leaves linear radiance (HDR) for a
+    /// display pass to finish (`HdrOutput`).
+    pub fn set_output(&mut self, display: bool, tone_mapping: ToneMapping) {
+        self.display_output = display;
+        self.tone_mapping = tone_mapping;
+    }
+
     /// Scales scene radiance before tone mapping. Default 1.
     pub fn set_exposure(&mut self, exposure: f32) {
         self.exposure = exposure;
@@ -495,6 +513,8 @@ impl SceneRenderer {
         fresh.exposure = self.exposure;
         fresh.env_rotation = self.env_rotation;
         fresh.background = self.background;
+        fresh.display_output = self.display_output;
+        fresh.tone_mapping = self.tone_mapping;
         if matches!(self.skybox, Some(Ok(_))) {
             fresh.background_program(ctx);
         }
@@ -572,6 +592,12 @@ impl SceneRenderer {
             self.env_rotation,
             last_mip,
         ));
+        data.push(Vec4::new(
+            if self.display_output { 1.0 } else { 0.0 },
+            self.tone_mapping as u32 as f32,
+            0.0,
+            0.0,
+        ));
         if data == self.lighting {
             return;
         }
@@ -583,9 +609,10 @@ impl SceneRenderer {
                 ctx.ubo_set_vec4(ubo, &path, v.x, v.y, v.z, v.w);
             }
         }
-        let [env, params] = [data[count * 4], data[count * 4 + 1]];
+        let [env, params, output] = [data[count * 4], data[count * 4 + 1], data[count * 4 + 2]];
         ctx.ubo_set_vec4(ubo, "u_environment", env.x, env.y, env.z, 0.0);
         ctx.ubo_set_vec4(ubo, "u_lighting", params.x, params.y, params.z, params.w);
+        ctx.ubo_set_vec4(ubo, "u_output", output.x, output.y, output.z, output.w);
         self.lighting = data;
     }
 

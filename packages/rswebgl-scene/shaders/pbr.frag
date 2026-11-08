@@ -191,7 +191,7 @@ void main() {
 #endif
 
 #ifdef MATERIAL_UNLIT
-    frag_color = vec4(linear_to_srgb(base.rgb), base.a);
+    frag_color = vec4(scene_output_unlit(base.rgb), base.a);
 #else
     float metallic = u_metallic_factor;
     float roughness = u_roughness_factor;

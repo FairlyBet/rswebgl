@@ -38,6 +38,7 @@ mod hierarchy;
 mod js;
 mod light;
 mod model;
+mod output;
 mod pbr;
 mod pick;
 mod render;
@@ -54,6 +55,7 @@ pub use hierarchy::{
 pub use js::Scene;
 pub use light::{Light, LightKind};
 pub use model::{Name, Primitive, find_by_name, spawn_model};
+pub use output::{HdrOutput, ToneMapping};
 pub use pbr::{PbrKey, PbrShaders};
 pub use pick::{Hit, Ray, pick_bounds, ray_aabb};
 pub use render::{
