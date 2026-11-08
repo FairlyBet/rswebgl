@@ -1,13 +1,18 @@
 // The glTF 2.0 reference shading model: what the Khronos sample renderer
 // computes, for comparing against OpenPBR on the same material. Base
 // metallic-roughness (glTF spec appendix B), KHR_materials_ior, _specular,
-// _clearcoat, _transmission, _volume, _dispersion, _emissive_strength.
-// Needs brdf.glsl, surface.glsl, lights.glsl, environment.glsl.
+// _clearcoat, _sheen, _iridescence, _anisotropy, _transmission, _volume,
+// _dispersion, _emissive_strength. Needs brdf.glsl, sheen.glsl,
+// iridescence.glsl, surface.glsl, lights.glsl, environment.glsl.
 //
 // Ported from the Khronos glTF-Sample-Renderer (Apache-2.0),
 // source/Renderer/shaders/pbr.frag, ibl.glsl, punctual.glsl,
-// material_info.glsl. Differences: the environment's transmission stands in
-// for the transmission framebuffer (the scene behind isn't seen yet).
+// material_info.glsl. Differences:
+// - the environment's transmission stands in for the transmission
+//   framebuffer (the scene behind isn't seen yet);
+// - sheen's image-based light reads the GGX-prefiltered environment at the
+//   sheen roughness (no Charlie-prefiltered map), scaled by the sheen
+//   albedo the BRDF table integrates from the same punctual BRDF.
 
 // Roughness-dependent Fresnel for image-based light, with multiple
 // scattering (Fdez-Agüera 2019; Khronos getIBLGGXFresnel).
@@ -45,17 +50,46 @@ vec3 shade_gltf(Surface s) {
     clearcoat_fresnel = F_Schlick(coat_f0, 1.0, clamp(dot(s.n_coat, v), 0.0, 1.0));
 #endif
 
+#ifdef HAS_IRIDESCENCE
+    // The film's Fresnel over each base, seen along the view.
+    float iridescence = s.iridescence_thickness > 0.0 ? s.iridescence : 0.0;
+    vec3 irid_dielectric = gltf_iridescence(1.0, s.iridescence_ior, NdotV,
+                                            s.iridescence_thickness, f0_dielectric);
+    vec3 irid_metal = gltf_iridescence(1.0, s.iridescence_ior, NdotV,
+                                       s.iridescence_thickness, base);
+#endif
+
+#ifdef HAS_SHEEN
+    float sheen_max = max3(s.sheen_color);
+    float sheen_scaling = 1.0 - sheen_max * gltf_sheen_albedo(NdotV, s.sheen_roughness);
+#endif
+
     // Image-based light.
     vec3 f_diffuse = scene_irradiance(n) * base;
 #ifdef HAS_TRANSMISSION
     vec3 f_transmission = env_transmission(s, s.ior, roughness) * base;
     f_diffuse = mix(f_diffuse, f_transmission, s.transmission);
 #endif
+#ifdef HAS_ANISOTROPY
+    vec3 f_specular = scene_reflection(
+        aniso_reflection(n, v, roughness, s.anisotropy, s.anisotropy_b), roughness);
+#else
     vec3 f_specular = scene_reflection(reflect(-v, n), roughness);
+#endif
     vec3 metal_ibl = gltf_ibl_fresnel(NdotV, roughness, base, 1.0) * f_specular;
     vec3 dielectric_fresnel_ibl = gltf_ibl_fresnel(NdotV, roughness, f0_dielectric, specular_weight);
     vec3 dielectric_ibl = mix(f_diffuse, f_specular, dielectric_fresnel_ibl);
+#ifdef HAS_IRIDESCENCE
+    metal_ibl = mix(metal_ibl, f_specular * irid_metal, iridescence);
+    dielectric_ibl = mix(dielectric_ibl, rgb_mix(f_diffuse, f_specular, irid_dielectric),
+                         iridescence);
+#endif
     vec3 color = mix(dielectric_ibl, metal_ibl, s.metallic);
+#ifdef HAS_SHEEN
+    vec3 sheen_ibl = scene_reflection(reflect(-v, n), s.sheen_roughness) * s.sheen_color
+        * gltf_sheen_albedo(NdotV, s.sheen_roughness);
+    color = sheen_ibl + color * sheen_scaling;
+#endif
 #ifdef HAS_CLEARCOAT
     vec3 clearcoat_ibl = scene_reflection(reflect(-v, s.n_coat), s.coat_roughness);
     color = mix(color, clearcoat_ibl, clearcoat * clearcoat_fresnel);
@@ -94,10 +128,34 @@ vec3 shade_gltf(Surface s) {
 #endif
         l_diffuse = mix(l_diffuse, transmitted, s.transmission);
 #endif
+#ifdef HAS_ANISOTROPY
+        // Khronos BRDF_specularGGXAnisotropy: the tangent roughness grows
+        // with the strength, the bitangent keeps the material's.
+        float at = mix(alpha, 1.0, s.anisotropy * s.anisotropy);
+        float ab = clamp(alpha, 0.001, 1.0);
+        vec3 t = s.anisotropy_t;
+        vec3 b = s.anisotropy_b;
+        float spec = V_GGX_aniso(NdotL, NdotV, dot(b, v), dot(t, v), dot(t, l), dot(b, l), at, ab)
+            * D_GGX_aniso(clamp(NdotH, 0.001, 1.0), dot(t, h), dot(b, h), at, ab);
+        vec3 l_specular = intensity * NdotL * vec3(spec);
+#else
         vec3 l_specular = intensity * NdotL * vec3(V_GGX(NdotL, NdotV, alpha) * D_GGX(NdotH, alpha));
+#endif
         vec3 l_metal = metal_fresnel * l_specular;
         vec3 l_dielectric = mix(l_diffuse, l_specular, dielectric_fresnel);
+#ifdef HAS_IRIDESCENCE
+        l_metal = mix(l_metal, l_specular * irid_metal, iridescence);
+        l_dielectric = mix(l_dielectric, rgb_mix(l_diffuse, l_specular, irid_dielectric),
+                           iridescence);
+#endif
         vec3 l_color = mix(l_dielectric, l_metal, s.metallic);
+#ifdef HAS_SHEEN
+        vec3 l_sheen = intensity * NdotL * s.sheen_color
+            * D_Charlie(s.sheen_roughness, NdotH) * V_Sheen(NdotL, NdotV, s.sheen_roughness);
+        float l_scaling = min(1.0 - sheen_max * gltf_sheen_albedo(NdotV, s.sheen_roughness),
+                              1.0 - sheen_max * gltf_sheen_albedo(NdotL, s.sheen_roughness));
+        l_color = l_sheen + l_color * l_scaling;
+#endif
 #ifdef HAS_CLEARCOAT
         float c_NdotL = clamp(dot(s.n_coat, l), 0.0, 1.0);
         float c_NdotV = clamp(dot(s.n_coat, v), 0.0, 1.0);

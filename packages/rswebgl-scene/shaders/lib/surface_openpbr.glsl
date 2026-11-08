@@ -1,8 +1,8 @@
 // The OpenPBR Surface shading model (OpenPBR spec v1.1, Academy Software
-// Foundation): coat over a base substrate that mixes a dielectric
-// (specular over diffuse or transmission) with an F82-tint metal, layered
-// by albedo scaling. Needs brdf.glsl, eon.glsl, surface.glsl, lights.glsl,
-// environment.glsl.
+// Foundation): fuzz over a coat over a base substrate that mixes a
+// dielectric (specular over diffuse or transmission) with an F82-tint metal,
+// thin film on both, layered by albedo scaling. Needs brdf.glsl, eon.glsl,
+// sheen.glsl, iridescence.glsl, surface.glsl, lights.glsl, environment.glsl.
 //
 // Follows the spec where it is explicit and MaterialX's reference graph
 // (libraries/bxdf/open_pbr_surface.mtlx, Apache-2.0) where it leaves room:
@@ -11,23 +11,36 @@
 // - every layer passes on (1 − its directional albedo), from MaterialX's
 //   analytic GGX fit with Turquin's multiple-scattering compensation;
 // - diffuse is EON (energy-preserving Oren-Nayar), Lambert at roughness 0;
+// - anisotropy: α_t = α √(2 / (1 + (1 − a)²)), α_b = (1 − a) α_t, the
+//   albedo at their geometric mean; image-based light along a bent normal;
+// - thin film (Belcour-Barla, MaterialX's Airy form) on the dielectric's
+//   and the metal's reflection, its albedo blended from the mirror value
+//   to the rough fit by √α (MaterialX), not on transmission;
 // - the coat roughens the base (min(1, r⁴ + 2r_c⁴)^¼), absorbs with a
 //   view-dependent path (spec "view-dependent absorption", unlike
 //   MaterialX's constant), and darkens it (spec Δ with the E_F fit);
+// - fuzz: Zeltner's LTC sheen on top of everything, gray albedo scaling,
+//   emission not attenuated (as MaterialX);
 // - image-based light: split-sum prefiltered specular × directional
-//   albedo, irradiance × EON albedo; ambient occlusion also occludes
+//   albedo, irradiance × EON / fuzz albedo; ambient occlusion also occludes
 //   specular (Lagarde).
-// Not yet: fuzz, thin film, anisotropy, subsurface (diffuse stands in).
+// glTF inputs map onto it: sheen → fuzz (weight = max of the color),
+// iridescence → thin film, anisotropy → specular anisotropy.
+// Not yet: subsurface (diffuse stands in), the coat's own anisotropy.
 
 struct OpenPbr {
-    float alpha;          // base specular α (roughened by the coat)
+    float alpha;          // base specular α (roughened by the coat; mean of the two below)
+    float alpha_t;        // along the anisotropy direction
+    float alpha_b;
     float roughness;      // its perceptual roughness
     float eta;            // the dielectric's IOR after specular_weight
     float f0_dielectric;
     vec3 comp_dielectric; // multiple-scattering compensation
-    float e_dielectric;   // directional albedo (compensated, untinted)
+    vec3 fg_dielectric;   // directional albedo (compensated, untinted, film blended in)
     vec3 f0_metal;
     vec3 comp_metal;
+    vec3 fg_metal;        // the metal's directional albedo (× specular_weight)
+    float film;           // thin-film weight (0 without a film)
     vec3 tint;            // translucent base: thin-walled tint
     float coat_alpha;
     float coat_eta;
@@ -36,6 +49,9 @@ struct OpenPbr {
     float coat_e;         // the coat's directional albedo (view)
     vec3 coat_t;          // single-pass coat transmittance at normal incidence
     vec3 darkening;       // the coat's darkening of the base, lerped in
+    float fuzz;           // fuzz weight
+    vec3 fuzz_color;
+    float fuzz_e;         // the fuzz's directional albedo (view)
 };
 
 // Hemispherical average of dielectric Fresnel (spec [^avg_fresnel] fit,
@@ -51,6 +67,17 @@ float refracted_cos(float mu, float eta) {
     return sqrt(max(1e-4, 1.0 - (1.0 - mu * mu) / (eta * eta)));
 }
 
+// The film's Fresnel over the dielectric or the metal at cosine `mu`.
+vec3 film_dielectric(Surface s, OpenPbr o, float mu) {
+    return openpbr_thin_film(mu, s.iridescence_ior, s.iridescence_thickness,
+                             vec3(o.f0_dielectric), vec3(1.0), true, o.eta);
+}
+
+vec3 film_metal(Surface s, OpenPbr o, float mu) {
+    return openpbr_thin_film(mu, s.iridescence_ior, s.iridescence_thickness,
+                             o.f0_metal, s.specular_color, false, 1.0);
+}
+
 OpenPbr openpbr_setup(Surface s, float NdotV, float coat_NdotV) {
     OpenPbr o;
     float r = s.roughness;
@@ -61,7 +88,16 @@ OpenPbr openpbr_setup(Surface s, float NdotV, float coat_NdotV) {
     r = mix(r, sqrt(sqrt(min(1.0, r4 + 2.0 * rc * rc * rc * rc))), s.coat);
 #endif
     o.roughness = r;
-    o.alpha = max(r * r, 1e-4);
+    float alpha = max(r * r, 1e-4);
+    o.alpha_t = alpha;
+    o.alpha_b = alpha;
+#ifdef HAS_ANISOTROPY
+    float a1 = 1.0 - s.anisotropy;
+    o.alpha_t = alpha * sqrt(2.0 / (1.0 + a1 * a1));
+    o.alpha_b = max(a1 * o.alpha_t, 1e-4);
+    alpha = sqrt(o.alpha_t * o.alpha_b);
+#endif
+    o.alpha = alpha;
 
     // The dielectric's IOR relative to what is above it (coat or air), with
     // the spec's TIR fix, then modulated by specular_weight.
@@ -75,12 +111,27 @@ OpenPbr openpbr_setup(Surface s, float NdotV, float coat_NdotV) {
     float eps = sign(eta_s - 1.0) * sqrt(xi_f);
     o.eta = (1.0 + eps) / (1.0 - eps);
     o.f0_dielectric = xi_f;
-    o.comp_dielectric = ggx_energy_compensation(NdotV, o.alpha, vec3(xi_f), vec3(1.0));
-    o.e_dielectric = ggx_dir_albedo(NdotV, o.alpha, vec3(xi_f), vec3(1.0)).x
-        * o.comp_dielectric.x;
+    o.comp_dielectric = ggx_energy_compensation(NdotV, alpha, vec3(xi_f), vec3(1.0));
+    o.fg_dielectric = ggx_dir_albedo(NdotV, alpha, vec3(xi_f), vec3(1.0)) * o.comp_dielectric;
 
     o.f0_metal = s.base_weight * s.base_color;
-    o.comp_metal = ggx_energy_compensation(NdotV, o.alpha, o.f0_metal, vec3(1.0));
+    o.comp_metal = ggx_energy_compensation(NdotV, alpha, o.f0_metal, vec3(1.0));
+    o.fg_metal = s.specular_weight * ggx_dir_albedo(NdotV, alpha, o.f0_metal, vec3(1.0))
+        * o.comp_metal;
+
+    o.film = 0.0;
+#ifdef HAS_IRIDESCENCE
+    o.film = s.iridescence_thickness > 0.0 ? s.iridescence : 0.0;
+    // Mirror albedo = the film's Fresnel at the view; rough = the fit with
+    // its normal-incidence value; blended by √α (MaterialX).
+    float blend = sqrt(alpha);
+    vec3 fg_film_d = mix(film_dielectric(s, o, NdotV),
+                         ggx_dir_albedo(NdotV, alpha, film_dielectric(s, o, 1.0), vec3(1.0)), blend);
+    vec3 fg_film_m = mix(film_metal(s, o, NdotV),
+                         ggx_dir_albedo(NdotV, alpha, film_metal(s, o, 1.0), vec3(1.0)), blend);
+    o.fg_dielectric = mix(o.fg_dielectric, fg_film_d * o.comp_dielectric, o.film);
+    o.fg_metal = mix(o.fg_metal, s.specular_weight * fg_film_m * o.comp_metal, o.film);
+#endif
 
     // Thin-walled transmission is tinted by the base color (glTF's
     // convention, the spec's depth = 0 tint); a volume absorbs instead.
@@ -111,6 +162,17 @@ OpenPbr openpbr_setup(Surface s, float NdotV, float coat_NdotV) {
     vec3 delta = (1.0 - k) / (1.0 - e_base * k);
     o.darkening = mix(vec3(1.0), delta, s.coat * s.coat_darkening);
 #endif
+
+    o.fuzz = 0.0;
+    o.fuzz_color = vec3(1.0);
+    o.fuzz_e = 0.0;
+#ifdef HAS_SHEEN
+    // glTF's sheen color as OpenPBR fuzz: its strongest channel the weight,
+    // the color normalized.
+    o.fuzz = max3(s.sheen_color);
+    o.fuzz_color = o.fuzz > 0.0 ? s.sheen_color / o.fuzz : vec3(1.0);
+    o.fuzz_e = fuzz_albedo(NdotV, s.sheen_roughness);
+#endif
     return o;
 }
 
@@ -137,21 +199,28 @@ vec3 shade_openpbr(Surface s) {
 
     // Image-based light.
     float spec_ao = specular_occlusion(NdotV, s.ao, o.alpha);
-    vec3 prefiltered = scene_reflection(reflect(-v, n), o.roughness) * spec_ao;
-    vec3 dielectric = prefiltered * s.specular_color * o.comp_dielectric
-        * ggx_dir_albedo(NdotV, o.alpha, vec3(o.f0_dielectric), vec3(1.0));
+#ifdef HAS_ANISOTROPY
+    vec3 r_dir = aniso_reflection(n, v, o.roughness, s.anisotropy, s.anisotropy_b);
+#else
+    vec3 r_dir = reflect(-v, n);
+#endif
+    vec3 prefiltered = scene_reflection(r_dir, o.roughness) * spec_ao;
+    vec3 dielectric = prefiltered * s.specular_color * o.fg_dielectric;
     vec3 under = diffuse_weight * scene_irradiance(n)
         * diffuse_albedo(s.base_color, s.diffuse_roughness, NdotV) * s.ao;
 #ifdef HAS_TRANSMISSION
     under += s.transmission * o.tint * env_transmission(s, o.eta, o.roughness);
 #endif
-    dielectric += (1.0 - o.e_dielectric) * under;
-    vec3 metal = prefiltered * s.specular_weight * o.comp_metal
-        * ggx_dir_albedo(NdotV, o.alpha, o.f0_metal, vec3(1.0));
+    dielectric += (1.0 - o.fg_dielectric) * under;
+    vec3 metal = prefiltered * o.fg_metal;
     vec3 color = mix(dielectric, metal, s.metallic) * openpbr_coat_filter(s, o, c_NdotV, c_NdotV);
 #ifdef HAS_CLEARCOAT
     color += s.coat * o.coat_e * specular_occlusion(c_NdotV, s.ao, o.coat_alpha)
         * scene_reflection(reflect(-v, s.n_coat), s.coat_roughness);
+#endif
+#ifdef HAS_SHEEN
+    color = o.fuzz * o.fuzz_color * o.fuzz_e * scene_irradiance(n) * s.ao
+        + (1.0 - o.fuzz * o.fuzz_e) * color;
 #endif
 
     // Punctual lights.
@@ -167,14 +236,28 @@ vec3 shade_openpbr(Surface s) {
         vec3 lit = vec3(0.0);
         if (NdotL > 0.0) {
             float NdotH = clamp(dot(n, h), 0.0, 1.0);
+#ifdef HAS_ANISOTROPY
+            vec3 t = s.anisotropy_t;
+            vec3 b = s.anisotropy_b;
+            float dv = D_GGX_aniso(NdotH, dot(t, h), dot(b, h), o.alpha_t, o.alpha_b)
+                * V_GGX_aniso(NdotL, NdotV, dot(b, v), dot(t, v), dot(t, l), dot(b, l),
+                              o.alpha_t, o.alpha_b);
+#else
             float dv = D_GGX(NdotH, o.alpha) * V_GGX(NdotL, NdotV, o.alpha);
-            vec3 spec_d = dv * fresnel_dielectric(VdotH, o.eta) * s.specular_color
-                * o.comp_dielectric;
+#endif
+            vec3 f_d = vec3(fresnel_dielectric(VdotH, o.eta));
+            vec3 f_m = fresnel_f82(VdotH, o.f0_metal, s.specular_color);
+#ifdef HAS_IRIDESCENCE
+            if (o.film > 0.0) {
+                f_d = mix(f_d, film_dielectric(s, o, VdotH), o.film);
+                f_m = mix(f_m, film_metal(s, o, VdotH), o.film);
+            }
+#endif
+            vec3 spec_d = dv * f_d * s.specular_color * o.comp_dielectric;
             vec3 diff = diffuse_weight
                 * diffuse_brdf(s.base_color, s.diffuse_roughness, NdotL, NdotV, dot(l, v));
-            vec3 spec_m = s.specular_weight * dv
-                * fresnel_f82(VdotH, o.f0_metal, s.specular_color) * o.comp_metal;
-            lit = mix(spec_d + (1.0 - o.e_dielectric) * diff, spec_m, s.metallic) * NdotL;
+            vec3 spec_m = s.specular_weight * dv * f_m * o.comp_metal;
+            lit = mix(spec_d + (1.0 - o.fg_dielectric) * diff, spec_m, s.metallic) * NdotL;
         }
 #ifdef HAS_TRANSMISSION
         // Light from behind, through the surface (as glTF's reference does).
@@ -183,11 +266,12 @@ vec3 shade_openpbr(Surface s) {
         vec3 ray = volume_ray(n, v, s.thickness, o.eta);
         if (light.params.w > 0.5) to_exit -= ray; // a directional light is infinitely far
 #endif
-        vec3 t = o.tint * punctual_transmission(n, v, normalize(to_exit), o.alpha, o.eta);
+        vec3 t_light = o.tint * punctual_transmission(n, v, normalize(to_exit), o.alpha, o.eta);
 #ifdef HAS_VOLUME
-        t = volume_attenuation(t, length(ray), s.attenuation_color, s.attenuation_distance);
+        t_light = volume_attenuation(t_light, length(ray), s.attenuation_color,
+                                     s.attenuation_distance);
 #endif
-        lit += (1.0 - s.metallic) * (1.0 - o.e_dielectric) * s.transmission * t;
+        lit += (1.0 - s.metallic) * (1.0 - o.fg_dielectric) * s.transmission * t_light;
 #endif
         float c_NdotL = clamp(dot(s.n_coat, l), 1e-4, 1.0);
         lit *= openpbr_coat_filter(s, o, c_NdotL, c_NdotV);
@@ -198,10 +282,16 @@ vec3 shade_openpbr(Surface s) {
                 * fresnel_dielectric(VdotH, o.coat_eta) * o.coat_comp * c_NdotL;
         }
 #endif
+#ifdef HAS_SHEEN
+        // The fuzz lobe already includes the cosine.
+        lit = o.fuzz * o.fuzz_color * o.fuzz_e * fuzz_lobe(l, v, n, NdotV, s.sheen_roughness)
+            + (1.0 - o.fuzz * o.fuzz_e) * lit;
+#endif
         color += lit * radiance;
     }
 
-    // Emission from the base, through the coat on the way out.
+    // Emission from the base, through the coat on the way out (the fuzz
+    // doesn't dim it, as in MaterialX).
     vec3 emission = s.emission;
 #ifdef HAS_CLEARCOAT
     emission *= mix(vec3(1.0), pow(o.coat_t, vec3(1.0 / refracted_cos(c_NdotV, o.coat_eta))), s.coat);

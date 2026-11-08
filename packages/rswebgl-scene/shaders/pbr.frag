@@ -14,11 +14,13 @@
 //   alpha      ALPHAMODE_OPAQUE | ALPHAMODE_MASK | ALPHAMODE_BLEND
 //   shading    MATERIAL_UNLIT (KHR_materials_unlit)
 //   layers     HAS_TRANSMISSION HAS_VOLUME HAS_CLEARCOAT HAS_DISPERSION
-//              HAS_DIFFUSE_ROUGHNESS — a layer the material doesn't use isn't
+//              HAS_DIFFUSE_ROUGHNESS HAS_SHEEN HAS_IRIDESCENCE HAS_ANISOTROPY — a layer the material doesn't use isn't
 //              compiled at all
 
 #include "brdf.glsl"
 #include "eon.glsl"
+#include "sheen.glsl"
+#include "iridescence.glsl"
 #include "surface.glsl"
 #include "surface_gltf.glsl"
 #include "surface_openpbr.glsl"
@@ -86,6 +88,19 @@ uniform float u_coat_darkening;
 #ifdef HAS_DISPERSION
 uniform float u_dispersion;
 #endif
+#ifdef HAS_SHEEN
+uniform vec3 u_sheen_color;
+uniform float u_sheen_roughness;
+#endif
+#ifdef HAS_IRIDESCENCE
+uniform float u_iridescence;
+uniform float u_iridescence_ior;
+uniform float u_iridescence_thickness; // nm
+#endif
+#ifdef HAS_ANISOTROPY
+uniform float u_anisotropy_strength;
+uniform float u_anisotropy_rotation;  // radians, from the tangent
+#endif
 
 out vec4 frag_color;
 
@@ -100,41 +115,59 @@ vec4 base_color() {
     return c;
 }
 
-// World-space shading normal: the vertex normal (or the face normal without
-// one), the normal map through the tangent frame (derived from screen-space
-// derivatives when the primitive has no tangents), flipped on back faces.
-vec3 shading_normal() {
-#ifdef HAS_NORMAL
-    vec3 n = normalize(v_normal);
-#else
-    vec3 n = normalize(cross(dFdx(v_world), dFdy(v_world)));
-#endif
-    if (!gl_FrontFacing) n = -n;
-#ifdef HAS_NORMAL_MAP
+// The shading frame in world space, facing the eye's side: the geometric
+// normal `ng` (vertex normal, or the face normal without one), the tangent
+// and bitangent (from TANGENT, else from UV derivatives — Mikkelsen's
+// derivative frame — else any perpendicular pair), and `n`, the normal map
+// applied through them.
+struct ShadingFrame {
     vec3 t;
     vec3 b;
-#if defined(HAS_NORMAL) && defined(HAS_TANGENT)
-    t = normalize(v_tangent.xyz);
-    b = cross(normalize(v_normal), t) * v_tangent.w;
-    if (!gl_FrontFacing) { t = -t; b = -b; }
+    vec3 n;
+    vec3 ng;
+};
+
+ShadingFrame shading_frame() {
+    ShadingFrame f;
+#ifdef HAS_NORMAL
+    f.ng = normalize(v_normal);
 #else
+    f.ng = normalize(cross(dFdx(v_world), dFdy(v_world)));
+#endif
+    if (!gl_FrontFacing) f.ng = -f.ng;
+#if defined(HAS_NORMAL) && defined(HAS_TANGENT)
+    f.t = normalize(v_tangent.xyz);
+    f.b = cross(normalize(v_normal), f.t) * v_tangent.w;
+    if (!gl_FrontFacing) { f.t = -f.t; f.b = -f.b; }
+#elif defined(HAS_NORMAL_MAP) || defined(HAS_UV0)
+#ifdef HAS_NORMAL_MAP
+    vec2 uv = NORMAL_UV;
+#else
+    vec2 uv = v_uv0;
+#endif
     vec3 dp1 = dFdx(v_world);
     vec3 dp2 = dFdy(v_world);
-    vec2 duv1 = dFdx(NORMAL_UV);
-    vec2 duv2 = dFdy(NORMAL_UV);
-    vec3 dp2perp = cross(dp2, n);
-    vec3 dp1perp = cross(n, dp1);
-    t = dp2perp * duv1.x + dp1perp * duv2.x;
-    b = dp2perp * duv1.y + dp1perp * duv2.y;
-    float inv = inversesqrt(max(dot(t, t), dot(b, b)) + 1e-12);
-    t *= inv;
-    b *= inv;
+    vec2 duv1 = dFdx(uv);
+    vec2 duv2 = dFdy(uv);
+    vec3 dp2perp = cross(dp2, f.ng);
+    vec3 dp1perp = cross(f.ng, dp1);
+    f.t = dp2perp * duv1.x + dp1perp * duv2.x;
+    f.b = dp2perp * duv1.y + dp1perp * duv2.y;
+    float inv = inversesqrt(max(dot(f.t, f.t), dot(f.b, f.b)) + 1e-12);
+    f.t *= inv;
+    f.b *= inv;
+#else
+    f.t = normalize(abs(f.ng.y) < 0.999 ? cross(vec3(0.0, 1.0, 0.0), f.ng)
+                                        : cross(vec3(1.0, 0.0, 0.0), f.ng));
+    f.b = cross(f.ng, f.t);
 #endif
+    f.n = f.ng;
+#ifdef HAS_NORMAL_MAP
     vec3 m = texture(u_normal_tex, NORMAL_UV).xyz * 2.0 - 1.0;
     m.xy *= u_normal_scale;
-    n = normalize(mat3(t, b, n) * m);
+    f.n = normalize(mat3(f.t, f.b, f.ng) * m);
 #endif
-    return n;
+    return f;
 }
 
 void main() {
@@ -153,13 +186,9 @@ void main() {
     Surface s;
     s.position = v_world;
     s.v = normalize(u_camera_pos.xyz - v_world);
-    s.n = shading_normal();
-#ifdef HAS_NORMAL
-    s.n_coat = normalize(v_normal);
-#else
-    s.n_coat = normalize(cross(dFdx(v_world), dFdy(v_world)));
-#endif
-    if (!gl_FrontFacing) s.n_coat = -s.n_coat;
+    ShadingFrame frame = shading_frame();
+    s.n = frame.n;
+    s.n_coat = frame.ng;
     s.base_color = base.rgb;
     s.opacity = base.a;
     s.base_weight = u_base_weight;
@@ -210,6 +239,31 @@ void main() {
     s.ao = 1.0;
 #ifdef HAS_OCCLUSION_MAP
     s.ao = 1.0 + u_occlusion_strength * (texture(u_occlusion_tex, OCCLUSION_UV).r - 1.0);
+#endif
+    s.sheen_color = vec3(0.0);
+    s.sheen_roughness = 0.0;
+#ifdef HAS_SHEEN
+    s.sheen_color = u_sheen_color;
+    s.sheen_roughness = clamp(u_sheen_roughness, 0.0, 1.0);
+#endif
+    s.iridescence = 0.0;
+    s.iridescence_ior = 1.3;
+    s.iridescence_thickness = 0.0;
+#ifdef HAS_IRIDESCENCE
+    s.iridescence = u_iridescence;
+    s.iridescence_ior = u_iridescence_ior;
+    s.iridescence_thickness = u_iridescence_thickness;
+#endif
+    s.anisotropy = 0.0;
+    s.anisotropy_t = frame.t;
+    s.anisotropy_b = frame.b;
+#ifdef HAS_ANISOTROPY
+    // The direction: the tangent turned by the rotation, in the surface
+    // (Khronos getAnisotropyInfo).
+    vec2 dir = vec2(cos(u_anisotropy_rotation), sin(u_anisotropy_rotation));
+    s.anisotropy_t = normalize(mat3(frame.t, frame.b, frame.n) * vec3(dir, 0.0));
+    s.anisotropy_b = cross(frame.ng, s.anisotropy_t);
+    s.anisotropy = clamp(u_anisotropy_strength, 0.0, 1.0);
 #endif
     s.emission = u_emissive_factor * u_emissive_strength;
 #ifdef HAS_EMISSIVE_MAP

@@ -32,6 +32,14 @@ struct Surface {
     float coat_darkening;   // OpenPBR coat_darkening
     float ao;
     vec3 emission;          // radiance
+    vec3 sheen_color;       // glTF sheen; OpenPBR fuzz = its max as weight
+    float sheen_roughness;
+    float iridescence;      // thin-film weight
+    float iridescence_ior;
+    float iridescence_thickness; // nm
+    float anisotropy;       // strength 0..1
+    vec3 anisotropy_t;      // the stretch direction
+    vec3 anisotropy_b;
 };
 
 // The roughness a refraction blurs with: none at IOR 1 (Khronos

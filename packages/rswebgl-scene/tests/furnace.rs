@@ -19,7 +19,7 @@ use rswebgl_scene::{Camera, Scene};
 wasm_bindgen_test_configure!(run_in_browser);
 
 // One white material per row.
-const MATERIALS: [(&str, &str); 6] = [
+const MATERIALS: [(&str, &str); 9] = [
     (
         "glossy dielectric",
         r#"{ "pbrMetallicRoughness": { "metallicFactor": 0, "roughnessFactor": 0.3 } }"#,
@@ -45,11 +45,27 @@ const MATERIALS: [(&str, &str); 6] = [
         "rough diffuse (EON)",
         r#"{ "pbrMetallicRoughness": { "metallicFactor": 0, "roughnessFactor": 0.6 } }"#,
     ),
+    (
+        "fuzz (sheen) over white",
+        r#"{ "pbrMetallicRoughness": { "metallicFactor": 0, "roughnessFactor": 0.5 },
+          "extensions": { "KHR_materials_sheen": { "sheenColorFactor": [1, 1, 1], "sheenRoughnessFactor": 0.5 } } }"#,
+    ),
+    (
+        "anisotropic metal",
+        r#"{ "pbrMetallicRoughness": { "metallicFactor": 1, "roughnessFactor": 0.4 },
+          "extensions": { "KHR_materials_anisotropy": { "anisotropyStrength": 0.8 } } }"#,
+    ),
+    (
+        "thin film over white",
+        r#"{ "pbrMetallicRoughness": { "metallicFactor": 0, "roughnessFactor": 0.3 },
+          "extensions": { "KHR_materials_iridescence": { "iridescenceFactor": 1, "iridescenceThicknessMaximum": 300 } } }"#,
+    ),
 ];
 // Turns about +Y per column: n·v = 1, 0.5, 0.2.
 const ANGLES: [f32; 3] = [0.0, std::f32::consts::FRAC_PI_3, 1.3694384];
 
-fn asset_url() -> String {
+// A grid of unit quads: one row per material, one column per `ANGLES` turn.
+fn grid_url(materials: &[&str]) -> String {
     let mut bin = Vec::new();
     #[rustfmt::skip]
     let floats = [-0.5f32, -0.5, 0.0, 0.5, -0.5, 0.0, 0.5, 0.5, 0.0, -0.5, 0.5, 0.0,
@@ -61,8 +77,8 @@ fn asset_url() -> String {
         bin.extend_from_slice(&i.to_le_bytes());
     }
     let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
-    let rows = MATERIALS.len();
-    let materials: Vec<&str> = MATERIALS.iter().map(|(_, m)| *m).collect();
+    let rows = materials.len();
+
     let meshes: Vec<String> = (0..rows)
         .map(|i| {
             format!(
@@ -85,7 +101,7 @@ fn asset_url() -> String {
     let json = format!(
         r#"{{
   "asset": {{ "version": "2.0" }},
-  "extensionsUsed": ["KHR_materials_clearcoat"],
+  "extensionsUsed": ["KHR_materials_clearcoat", "KHR_materials_sheen", "KHR_materials_anisotropy", "KHR_materials_iridescence"],
   "buffers": [{{ "byteLength": {len}, "uri": "data:application/octet-stream;base64,{bin}" }}],
   "bufferViews": [
     {{ "buffer": 0, "byteOffset": 0, "byteLength": 48 }},
@@ -152,8 +168,8 @@ async fn white_furnace() {
     );
     scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
     let root = scene.add_model(load_model(&ctx, &asset_url()).await.expect("load"));
-    // The last row: EON at full diffuse roughness.
-    let eon = scene.materials(root)[MATERIALS.len() - 1];
+    // Row 5: EON at full diffuse roughness.
+    let eon = scene.materials(root)[5];
     scene
         .set_material_property(
             rswebgl::ids::ParamGroupId::from_raw(eon),
@@ -173,8 +189,10 @@ async fn white_furnace() {
             scene.render_frame(camera);
         }
         for (row, (name, _)) in MATERIALS.iter().enumerate() {
-            if model == "gltf" && row == MATERIALS.len() - 1 {
-                continue; // glTF has no rough diffuse
+            if model == "gltf" && (row == 5 || row == 8) {
+                // glTF has no rough diffuse; its thin film (Khronos rgb_mix)
+                // isn't energy-conserving by construction.
+                continue;
             }
             for col in 0..ANGLES.len() {
                 let mut px = [0u8; 4];
@@ -265,9 +283,13 @@ async fn a_mirror_lit_head_on_is_bright_not_nan() {
     // For each checked pixel P (column 0, rows 0 and 2) a point light at the
     // mirror of the eye (0, 0, 5) about the surface: L = (2P.x, 2P.y, 5), so
     // h = n exactly there.
-    for y in [2.5f32, 0.5] {
+    for row in [0, 2] {
+        let y = (rows as f32 - 1.0) / 2.0 - row as f32;
         let lamp = scene.spawn();
-        scene.insert_light(lamp, rswebgl_scene::Light::point(glam::Vec3::ONE, 300.0, 0.0));
+        scene.insert_light(
+            lamp,
+            rswebgl_scene::Light::point(glam::Vec3::ONE, 300.0, 0.0),
+        );
         scene.set_translation(lamp, -2.0, 2.0 * y, 5.0);
     }
     for model in ["openpbr", "gltf"] {
@@ -292,6 +314,137 @@ async fn a_mirror_lit_head_on_is_bright_not_nan() {
             .unwrap();
             assert!(px[0] > 200, "{model} row {row}: {px:?}");
         }
+    }
+    scene.destroy();
+}
+
+fn asset_url() -> String {
+    let materials: Vec<&str> = MATERIALS.iter().map(|(_, m)| *m).collect();
+    grid_url(&materials)
+}
+
+// Layers show as what they are, in both models: sheen brightens a dark
+// surface at grazing angles, a thin film colors a reflection, anisotropy
+// reshapes a highlight.
+#[wasm_bindgen_test]
+async fn layers_show() {
+    const LAYERS: [&str; 6] = [
+        r#"{ "pbrMetallicRoughness": { "baseColorFactor": [0, 0, 0, 1], "metallicFactor": 0, "roughnessFactor": 0.6 } }"#,
+        r#"{ "pbrMetallicRoughness": { "baseColorFactor": [0, 0, 0, 1], "metallicFactor": 0, "roughnessFactor": 0.6 },
+             "extensions": { "KHR_materials_sheen": { "sheenColorFactor": [1, 1, 1], "sheenRoughnessFactor": 0.5 } } }"#,
+        r#"{ "pbrMetallicRoughness": { "baseColorFactor": [0, 0, 0, 1], "metallicFactor": 0, "roughnessFactor": 0.1 } }"#,
+        r#"{ "pbrMetallicRoughness": { "baseColorFactor": [0, 0, 0, 1], "metallicFactor": 0, "roughnessFactor": 0.1 },
+             "extensions": { "KHR_materials_iridescence": { "iridescenceFactor": 1, "iridescenceIor": 1.8,
+                                                            "iridescenceThicknessMaximum": 350 } } }"#,
+        r#"{ "pbrMetallicRoughness": { "metallicFactor": 1, "roughnessFactor": 0.3 } }"#,
+        r#"{ "pbrMetallicRoughness": { "metallicFactor": 1, "roughnessFactor": 0.3 },
+             "extensions": { "KHR_materials_anisotropy": { "anisotropyStrength": 0.9 } } }"#,
+    ];
+    let rows = LAYERS.len() as i32;
+    let (w, h) = (96, 32 * rows);
+    let canvas: HtmlCanvasElement = web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .create_element("canvas")
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    canvas.set_width(w as u32);
+    canvas.set_height(h as u32);
+    let mut options = ContextOptions::new();
+    options.antialias = false;
+    let ctx = Context::from_canvas(&canvas, &options).expect("ctx");
+    let gl: Gl = canvas
+        .get_context("webgl2")
+        .unwrap()
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    let mut scene = Scene::new(&ctx).expect("scene");
+    scene.set_environment_intensity(1.0, 1.0, 1.0);
+    scene.set_tone_mapping("none").unwrap();
+    scene.set_dither(false);
+    let camera = scene.spawn();
+    scene.insert_camera(
+        camera,
+        Camera::orthographic(rows as f32 / 2.0, 0.5, 0.1, 100.0),
+    );
+    scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
+    scene.add_model(load_model(&ctx, &grid_url(&LAYERS)).await.expect("load"));
+    // A lamp off to the side for the anisotropic highlight.
+    let lamp = scene.spawn();
+    scene.insert_light(
+        lamp,
+        rswebgl_scene::Light::point(glam::Vec3::ONE, 40.0, 0.0),
+    );
+    scene.set_translation(lamp, 1.0, -0.5, 3.0);
+
+    for model in ["openpbr", "gltf"] {
+        scene.set_shading_model(model).unwrap();
+        for _ in 0..2 {
+            wasm_bindgen_futures::JsFuture::from(scene.when_ready())
+                .await
+                .unwrap();
+            scene.render_frame(camera);
+        }
+        let px = |row: i32, col: i32| {
+            let mut p = [0u8; 4];
+            gl.read_pixels_with_opt_u8_array(
+                16 + 32 * col,
+                h - 16 - 32 * row,
+                1,
+                1,
+                Gl::RGBA,
+                Gl::UNSIGNED_BYTE,
+                Some(&mut p[..]),
+            )
+            .unwrap();
+            p
+        };
+        let (plain, sheen) = (px(0, 2), px(1, 2));
+        assert!(
+            sheen[0] as i32 > plain[0] as i32 + 20,
+            "{model}: sheen at grazing {plain:?} → {sheen:?}"
+        );
+        let (bare, film) = (px(2, 0), px(3, 0));
+        let spread = |p: [u8; 4]| p[..3].iter().max().unwrap() - p[..3].iter().min().unwrap();
+        assert!(
+            spread(bare) <= 2,
+            "{model}: a bare reflection is gray: {bare:?}"
+        );
+        assert!(spread(film) > 15, "{model}: the film colors it: {film:?}");
+        // Anisotropy, lit by the lamp alone (the white environment would
+        // saturate the metals): the highlight's shape changes what the cells
+        // gather, summed over a 5×5 sample of each.
+        scene.set_environment_intensity(0.0, 0.0, 0.0);
+        scene.render_frame(camera);
+        let cell = |row: i32| -> i32 {
+            let mut sum = 0;
+            for dy in -2..=2 {
+                for dx in -2..=2 {
+                    let mut p = [0u8; 4];
+                    gl.read_pixels_with_opt_u8_array(
+                        16 + dx * 5,
+                        h - 16 - 32 * row + dy * 5,
+                        1,
+                        1,
+                        Gl::RGBA,
+                        Gl::UNSIGNED_BYTE,
+                        Some(&mut p[..]),
+                    )
+                    .unwrap();
+                    sum += p[0] as i32;
+                }
+            }
+            sum
+        };
+        let (iso, aniso) = (cell(4), cell(5));
+        assert!(
+            iso > 0 && (iso - aniso).abs() * 10 > iso,
+            "{model}: anisotropy {iso} → {aniso}"
+        );
+        scene.set_environment_intensity(1.0, 1.0, 1.0);
     }
     scene.destroy();
 }

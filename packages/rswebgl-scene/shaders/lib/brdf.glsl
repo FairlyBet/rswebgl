@@ -115,3 +115,35 @@ float specular_aa(vec3 n, float perceptual_roughness) {
 float specular_occlusion(float NdotV, float ao, float alpha) {
     return clamp(pow(NdotV + ao, exp2(-16.0 * alpha - 1.0)) - 1.0 + ao, 0.0, 1.0);
 }
+
+// Anisotropic GGX (Burley 2012 addendum; Khronos D_GGX_anisotropic): `at`
+// along the anisotropy tangent, `ab` along the bitangent.
+float D_GGX_aniso(float NdotH, float TdotH, float BdotH, float at, float ab) {
+    at = max(at, 0.002);
+    ab = max(ab, 0.002);
+    float a2 = at * ab;
+    vec3 f = vec3(ab * TdotH, at * BdotH, a2 * NdotH);
+    float w2 = a2 / dot(f, f);
+    return a2 * w2 * w2 * INV_PI;
+}
+
+// Anisotropic height-correlated Smith visibility (Heitz 2014; Khronos
+// V_GGX_anisotropic).
+float V_GGX_aniso(float NdotL, float NdotV, float BdotV, float TdotV, float TdotL, float BdotL,
+                  float at, float ab) {
+    float ggx_v = NdotL * length(vec3(at * TdotV, ab * BdotV, NdotV));
+    float ggx_l = NdotV * length(vec3(at * TdotL, ab * BdotL, NdotL));
+    return clamp(0.5 / max(ggx_v + ggx_l, 1e-8), 0.0, 1.0);
+}
+
+// The reflection direction for image-based light on an anisotropic
+// surface: reflected about a normal bent toward the grooves, the more the
+// stronger and smoother (Khronos getIBLRadianceAnisotropy, after
+// McAuley's / Filament's bent-normal approximation).
+vec3 aniso_reflection(vec3 n, vec3 v, float roughness, float anisotropy, vec3 dir_b) {
+    vec3 aniso_t = cross(dir_b, v);
+    vec3 aniso_n = cross(aniso_t, dir_b);
+    float bend = 1.0 - anisotropy * (1.0 - roughness);
+    vec3 bent = normalize(mix(aniso_n, n, bend * bend * bend * bend));
+    return reflect(-v, bent);
+}
