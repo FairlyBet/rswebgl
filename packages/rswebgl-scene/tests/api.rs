@@ -568,3 +568,28 @@ async fn material_textures_from_js() {
         "the scene's textures go with it"
     );
 }
+
+// Under reverse-Z the scene draws and picks the same (projection, culling
+// and the picked depth all follow).
+#[wasm_bindgen_test]
+async fn reverse_z_draws_and_picks_the_same() {
+    let mut s = setup().await;
+    if !s.scene.set_reverse_z(true) {
+        return; // EXT_clip_control unavailable
+    }
+    assert_eq!(s.frame(), [YELLOW, WHITE, WHITE]);
+    let stone_b = s.scene.find_by_name(s.root, "stone_b");
+    // In front of the band now: the nearer one still wins.
+    s.scene.set_translation(stone_b, -1.0, 0.0, 0.5);
+    assert_eq!(s.frame(), [WHITE, WHITE, [0, 0, 0, 255]]);
+    let p = s.scene.pick(s.camera, -2.0 / 3.0, 0.0).unwrap();
+    let hit = wasm_bindgen_futures::JsFuture::from(p).await.unwrap();
+    let get = |k: &str| js_sys::Reflect::get(&hit, &k.into()).unwrap();
+    let entity = Entity::from_raw(get("entity").as_f64().unwrap() as u32);
+    assert_eq!(s.scene.parent(entity), stone_b);
+    let point = js_sys::Float32Array::from(get("point")).to_vec();
+    assert!((point[2] - 0.5).abs() < 1e-3, "{point:?}");
+    s.scene.set_reverse_z(false);
+    assert_eq!(s.frame(), [WHITE, WHITE, [0, 0, 0, 255]], "and back");
+    s.scene.destroy();
+}

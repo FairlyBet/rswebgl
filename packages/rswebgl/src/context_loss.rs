@@ -98,6 +98,9 @@ pub(crate) fn install(core: &Rc<Core>) {
             for ext in core.loss.extensions.borrow().iter() {
                 let _ = core.gl.get_extension(ext.name());
             }
+            if core.reverse_z.get() {
+                crate::depth_range::apply(&core);
+            }
             let ctx = Context { core };
             invoke(&ctx.core.loss.on_restored, &ctx);
             // Only now: rebuilding in `on_restored` (dropping old handles) stays

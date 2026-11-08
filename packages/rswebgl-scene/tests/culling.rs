@@ -79,3 +79,24 @@ fn bounds_from_points() {
     );
     assert_eq!(Bounds::from_points(&[]), None);
 }
+
+// Reverse-Z (zero-to-one, near = 1): the frustum has no far plane for a
+// perspective camera, and keeps near and side planes.
+#[test]
+fn reverse_z_frustums_reach_to_infinity() {
+    let cam = Camera::perspective(90f32.to_radians(), 1.0, 1.0, 10.0);
+    let f = Frustum::from_view_proj_depth(&cam.projection_for(true), true);
+    let at = |x, y, z| Mat4::from_translation(Vec3::new(x, y, z));
+    assert!(inside(&f, at(0.0, 0.0, -5.0)));
+    assert!(inside(&f, at(0.0, 0.0, -1.0e6)), "no far plane");
+    assert!(!inside(&f, at(0.0, 0.0, 5.0)), "behind");
+    assert!(!inside(&f, at(0.0, 0.0, -0.4)), "before near");
+    assert!(!inside(&f, at(6.2, 0.0, -5.0)), "beside");
+
+    // Orthographic keeps both planes, swapped.
+    let cam = Camera::orthographic(2.0, 1.0, 0.1, 10.0);
+    let f = Frustum::from_view_proj_depth(&cam.projection_for(true), true);
+    assert!(inside(&f, at(0.0, 0.0, -5.0)));
+    assert!(!inside(&f, at(0.0, 0.0, -11.0)), "past far");
+    assert!(!inside(&f, at(0.0, 0.0, 5.0)), "behind");
+}

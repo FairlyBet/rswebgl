@@ -22,6 +22,19 @@ pub enum DepthFunc {
 }
 
 impl DepthFunc {
+    // The comparison under reverse-Z (`Context::set_reverse_z`): depth 1 is
+    // near, so "nearer" flips from less to greater.
+    pub(crate) fn as_gl_for(&self, reverse_z: bool) -> u32 {
+        let f = match (self, reverse_z) {
+            (DepthFunc::Less, true) => DepthFunc::Greater,
+            (DepthFunc::LessEqual, true) => DepthFunc::GreaterEqual,
+            (DepthFunc::Greater, true) => DepthFunc::Less,
+            (DepthFunc::GreaterEqual, true) => DepthFunc::LessEqual,
+            (f, _) => *f,
+        };
+        f.as_gl()
+    }
+
     pub(crate) fn as_gl(&self) -> u32 {
         *self as u32
     }
@@ -373,14 +386,14 @@ impl Default for RenderState {
 impl RenderState {
     // Every parameter is set, enabled or not: `apply_diff` compares them all,
     // so a parameter skipped here would be assumed set by the next diff.
-    pub(crate) fn apply(&self, gl: &WebGl2RenderingContext) {
+    pub(crate) fn apply(&self, gl: &WebGl2RenderingContext, reverse_z: bool) {
         type Gl = WebGl2RenderingContext;
         let toggle = |cap: u32, on: bool| {
             if on { gl.enable(cap) } else { gl.disable(cap) }
         };
 
         toggle(Gl::DEPTH_TEST, self.depth_test);
-        gl.depth_func(self.depth_func.as_gl());
+        gl.depth_func(self.depth_func.as_gl_for(reverse_z));
         gl.depth_mask(self.depth_mask);
 
         toggle(Gl::BLEND, self.blend);
@@ -520,7 +533,7 @@ impl RenderState {
             || self.targets != prev.targets
     }
 
-    pub(crate) fn apply_diff(&self, prev: &Self, gl: &WebGl2RenderingContext) {
+    pub(crate) fn apply_diff(&self, prev: &Self, gl: &WebGl2RenderingContext, reverse_z: bool) {
         // With per-target overrides on either side, blending is reset for every
         // attachment and the overrides laid on again: field-by-field diffs
         // can't tell which attachment an earlier override left changed.
@@ -539,7 +552,7 @@ impl RenderState {
             }
         }
         if self.depth_func != prev.depth_func {
-            gl.depth_func(self.depth_func.as_gl());
+            gl.depth_func(self.depth_func.as_gl_for(reverse_z));
         }
         if self.depth_mask != prev.depth_mask {
             gl.depth_mask(self.depth_mask);

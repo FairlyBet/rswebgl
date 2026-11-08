@@ -57,6 +57,18 @@ const R32UI: TextureFormat = TextureFormat {
     data_type: 0x1405, // UNSIGNED_INT
 };
 
+/// What a pick sees: the narrowed view-projection it draws through, and the
+/// camera's own `view_proj` at `ndc` the hit is unprojected with (clip depth
+/// in [0, 1] when `zero_to_one`); distances are from `eye`.
+#[derive(Clone, Copy)]
+pub(crate) struct PickView {
+    pub(crate) pick_view_proj: Mat4,
+    pub(crate) view_proj: Mat4,
+    pub(crate) ndc: Vec2,
+    pub(crate) eye: Vec3,
+    pub(crate) zero_to_one: bool,
+}
+
 /// The GPU objects of picking, made on the first pick.
 pub(crate) struct GpuPicker {
     fb: FramebufferId,
@@ -135,18 +147,21 @@ impl GpuPicker {
         ])
     }
 
-    /// Draws `meshes` (with their object groups) through `pick_view_proj`
-    /// and starts reading the pixel back. The hit's point is unprojected with
-    /// the camera's own `view_proj` at `ndc`; its distance is from `eye`.
+    /// Draws `meshes` (with their object groups) as `view` sees them and
+    /// starts reading the pixel back.
     pub(crate) fn pick(
         &self,
         ctx: &Context,
         meshes: &[(MeshRenderer, ParamGroupId)],
-        pick_view_proj: &Mat4,
-        view_proj: &Mat4,
-        ndc: Vec2,
-        eye: Vec3,
+        view: &PickView,
     ) -> impl Future<Output = Result<Option<Hit>, Error>> + use<> {
+        let PickView {
+            pick_view_proj,
+            view_proj,
+            ndc,
+            eye,
+            zero_to_one,
+        } = *view;
         ctx.param_set_floats(
             self.group,
             self.f_view_proj,
@@ -172,7 +187,14 @@ impl GpuPicker {
             if id == 0 {
                 return Ok(None);
             }
-            let z = f32::from_bits(word(&depth)) * 2.0 - 1.0;
+            // Window depth back to clip-space depth: [0, 1] is the clip range
+            // itself under reverse-Z, else it maps from [-1, 1].
+            let window = f32::from_bits(word(&depth));
+            let z = if zero_to_one {
+                window
+            } else {
+                window * 2.0 - 1.0
+            };
             let point = unproject.project_point3(ndc.extend(z));
             Ok(Some(Hit {
                 entity: Entity::from_raw(id),

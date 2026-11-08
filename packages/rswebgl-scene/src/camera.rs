@@ -44,6 +44,30 @@ impl Camera {
         }
     }
 
+    /// `projection_matrix`, or under reverse-Z (`Context::set_reverse_z`) its
+    /// reverse zero-to-one form: depth 1 at the near plane; a perspective one
+    /// reaches to infinity (`far` unused).
+    pub fn projection_for(&self, reverse_z: bool) -> Mat4 {
+        if !reverse_z {
+            return self.projection_matrix();
+        }
+        let aspect = if self.aspect > 0.0 { self.aspect } else { 1.0 };
+        match self.projection {
+            Projection::Perspective { fov_y, near, .. } => {
+                Mat4::perspective_infinite_reverse_rh(fov_y, aspect, near)
+            }
+            Projection::Orthographic {
+                half_height,
+                near,
+                far,
+            } => {
+                let hw = half_height * aspect;
+                // Zero-to-one, near and far swapped: near maps to 1.
+                Mat4::orthographic_rh(-hw, hw, -half_height, half_height, far, near)
+            }
+        }
+    }
+
     pub fn projection_matrix(&self) -> Mat4 {
         // A zero or negative aspect (a 0×0 canvas) would make NaNs.
         let aspect = if self.aspect > 0.0 { self.aspect } else { 1.0 };

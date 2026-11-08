@@ -654,7 +654,8 @@ impl FramebufferObj {
 
     // Clears this FBO's attachments per the mask, using each attachment's typed
     // clear value. The FBO must already be bound (the renderer ensures this).
-    pub(crate) fn clear(&self, gl: &WebGl2RenderingContext, mask: ClearMask) {
+    pub(crate) fn clear(&self, gl: &WebGl2RenderingContext, mask: ClearMask, reverse_z: bool) {
+        let depth = crate::renderer::depth_clear_value(self.clear_depth, reverse_z);
         if mask.color {
             for (i, slot) in self.color.iter().enumerate() {
                 if slot.is_none() {
@@ -686,11 +687,11 @@ impl FramebufferObj {
             gl.clear_bufferfi(
                 WebGl2RenderingContext::DEPTH_STENCIL,
                 0,
-                self.clear_depth,
+                depth,
                 self.clear_stencil,
             );
         } else if mask.depth {
-            gl.clear_bufferfv_with_f32_array(WebGl2RenderingContext::DEPTH, 0, &[self.clear_depth]);
+            gl.clear_bufferfv_with_f32_array(WebGl2RenderingContext::DEPTH, 0, &[depth]);
         } else if mask.stencil {
             gl.clear_bufferiv_with_i32_array(
                 WebGl2RenderingContext::STENCIL,

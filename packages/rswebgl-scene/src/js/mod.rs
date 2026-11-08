@@ -465,6 +465,17 @@ impl Scene {
         self.stats.drawn
     }
 
+    /// Reverse-Z on or off (`EXT_clip_control`): depth precision spread
+    /// evenly over distance and an infinite far plane for perspective
+    /// cameras — no z-fighting on distant surfaces. Render states and clear
+    /// values keep their meaning; the scene's cameras switch projection
+    /// themselves. Pays off fully with a float depth buffer (an offscreen
+    /// `Depth32f` target; the canvas's is 24-bit). False where unavailable.
+    #[wasm_bindgen(js_name = setReverseZ)]
+    pub fn set_reverse_z(&mut self, on: bool) -> bool {
+        self.ctx.set_reverse_z(on)
+    }
+
     /// Draws added by the last frame.
     pub fn drawn(&self) -> usize {
         self.stats.drawn

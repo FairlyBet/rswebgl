@@ -32,6 +32,7 @@ pub mod console;
 pub mod context;
 pub(crate) mod context_loss;
 pub mod copy;
+pub mod depth_range;
 pub mod draw;
 pub mod error;
 pub mod extension;

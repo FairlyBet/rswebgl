@@ -22,7 +22,7 @@ use rswebgl_ecs::{Entity, Tick, World};
 use crate::camera::Camera;
 use crate::culling::{Bounds, Frustum};
 use crate::environment::{Environment, FULLSCREEN_VERT, brdf_lut_texture};
-use crate::gpu_pick::GpuPicker;
+use crate::gpu_pick::{GpuPicker, PickView};
 use crate::light::Light;
 use crate::pick::Hit;
 use crate::shader::create_scene_program;
@@ -385,7 +385,7 @@ impl SceneRenderer {
         };
         self.write_lighting(world, ctx);
         self.push_background(ctx, pass);
-        let frustum = Frustum::from_view_proj(&view_proj);
+        let frustum = Frustum::from_view_proj_depth(&view_proj, ctx.reverse_z());
 
         let (Some(meshes), Some(worlds)) = (
             world.storage::<MeshRenderer>(),
@@ -537,7 +537,7 @@ impl SceneRenderer {
             return None;
         };
         let view = cam_world.0.inverse();
-        let proj = cam.projection_matrix();
+        let proj = cam.projection_for(ctx.reverse_z());
         let view_proj = proj * view;
         let eye = cam_world.0.w_axis;
         ctx.ubo_set_mat(self.frame_ubo, "u_view", &view.to_cols_array());
@@ -621,10 +621,11 @@ impl SceneRenderer {
         ) else {
             return Err("pick: the camera entity needs a Camera and a WorldMatrix".into());
         };
-        let view_proj = cam.projection_matrix() * cam_world.0.inverse();
+        let reverse_z = ctx.reverse_z();
+        let view_proj = cam.projection_for(reverse_z) * cam_world.0.inverse();
         let pick_view_proj =
             GpuPicker::narrowing(ndc, width.max(1) as f32, height.max(1) as f32) * view_proj;
-        let frustum = Frustum::from_view_proj(&pick_view_proj);
+        let frustum = Frustum::from_view_proj_depth(&pick_view_proj, reverse_z);
         let eye = cam_world.0.w_axis.truncate();
 
         let mut meshes = Vec::new();
@@ -660,7 +661,14 @@ impl SceneRenderer {
             self.picker = Some(GpuPicker::new(ctx)?);
         }
         let picker = self.picker.as_ref().expect("just made");
-        Ok(picker.pick(ctx, &meshes, &pick_view_proj, &view_proj, ndc, eye))
+        let view = PickView {
+            pick_view_proj,
+            view_proj,
+            ndc,
+            eye,
+            zero_to_one: reverse_z,
+        };
+        Ok(picker.pick(ctx, &meshes, &view))
     }
 
     // Groups of entities that no longer have a MeshRenderer. Seen through the

@@ -93,9 +93,12 @@ resources is the app's job (see the cube example). Possible follow-ups:
 
 ### Niche — note for completeness, not soon
 
-- **`EXT_clip_control`.** Zero-to-one depth + reverse-Z (like D3D/Vulkan);
-  strongly mitigates z-fighting at distance. Powerful but the user must know what
-  they're doing.
+- ~~**`EXT_clip_control`.**~~ Done: `Context::set_reverse_z` (`depth_range.rs`).
+  Depth funcs and depth clears flip in the renderer, so states keep meaning
+  "nearer"; the scene's cameras switch to reverse (infinite) projections and
+  culling / picking follow. Gains most with a float depth buffer: the
+  canvas's is 24-bit (no way to ask for a float one), so a scene that needs
+  it renders offscreen into `Depth32f` and resolves to the canvas.
 - **`EXT_depth_clamp`.** Disable near/far clipping (shadow volumes).
 - **`EXT_float_blend`.** Blending into 32F targets (16F already blends).
 

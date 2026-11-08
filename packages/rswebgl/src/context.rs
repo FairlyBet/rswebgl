@@ -234,6 +234,9 @@ pub(crate) struct Core {
     // Whether this context counts in `LOST_CONTEXTS` (lost, not yet past
     // `on_restored`): taken back when the context is restored or dropped.
     pub(crate) counted_lost: Cell<bool>,
+    // Reverse-Z (`Context::set_reverse_z`): kept here to re-apply after a
+    // restore, copied into the renderer's state each `render`.
+    pub(crate) reverse_z: Cell<bool>,
 }
 
 impl Drop for Core {
@@ -459,6 +462,7 @@ impl Context {
             state_stale: Cell::new(false),
             epoch: Cell::new(0),
             counted_lost: Cell::new(false),
+            reverse_z: Cell::new(false),
         });
         context_loss::install(&core);
         let ctx = Context { core };

@@ -125,6 +125,7 @@ impl Context {
         }
         let res = &mut *self.res();
         let st = &mut *self.gl_state();
+        st.reverse_z = self.core.reverse_z.get();
         for pass in passes {
             execute_pass(gl, &self.core.default_fb, res, pass, st);
         }
@@ -206,8 +207,8 @@ fn run_pass(
         let cur = st.render_state.and_then(|id| render_states.get(id.0));
         let opened = open_for_clear(gl, pass.clear, cur);
         match target {
-            Some(f) => f.clear(gl, pass.clear),
-            None => clear_default(default_fb, gl, pass.clear),
+            Some(f) => f.clear(gl, pass.clear, st.reverse_z),
+            None => clear_default(default_fb, gl, pass.clear, st.reverse_z),
         }
         match cur {
             Some(rs) => opened.restore(gl, rs),
@@ -399,13 +400,18 @@ fn run_pass(
     }
 }
 
-fn clear_default(default_fb: &DefaultFramebuffer, gl: &WebGl2RenderingContext, mask: ClearMask) {
+fn clear_default(
+    default_fb: &DefaultFramebuffer,
+    gl: &WebGl2RenderingContext,
+    mask: ClearMask,
+    reverse_z: bool,
+) {
     if mask.color {
         let c = default_fb.clear_color_rgba();
         gl.clear_color(c[0], c[1], c[2], c[3]);
     }
     if mask.depth {
-        gl.clear_depth(default_fb.clear_depth_value());
+        gl.clear_depth(depth_clear_value(default_fb.clear_depth_value(), reverse_z));
     }
     if mask.stencil {
         gl.clear_stencil(default_fb.clear_stencil_value());
@@ -495,6 +501,9 @@ pub(crate) struct GlState {
     // it's kept across program switches.
     bindings: GlBindings,
     stats: FrameStats,
+    // Copied from the context at each `render`: depth funcs and depth clears
+    // are flipped under reverse-Z.
+    pub(crate) reverse_z: bool,
 }
 
 impl GlState {
@@ -559,8 +568,8 @@ impl GlState {
             return false;
         };
         match self.render_state.and_then(|prev| states.get(prev.0)) {
-            Some(prev) => rs.apply_diff(prev, gl),
-            None => rs.apply(gl),
+            Some(prev) => rs.apply_diff(prev, gl, self.reverse_z),
+            None => rs.apply(gl, self.reverse_z),
         }
         self.render_state = Some(id);
         self.stats.states += 1;
@@ -809,4 +818,10 @@ impl GlBindings {
         self.blocks[idx] = Some((id, range));
         true
     }
+}
+
+// A depth clear value as the app means it ("1 = far"), as GL needs it: under
+// reverse-Z far is 0.
+pub(crate) fn depth_clear_value(d: f32, reverse_z: bool) -> f32 {
+    if reverse_z { 1.0 - d } else { d }
 }

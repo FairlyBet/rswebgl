@@ -45,13 +45,20 @@ pub struct Frustum {
 impl Frustum {
     /// From a GL-style view-projection (clip z in `[-w, w]`).
     pub fn from_view_proj(m: &Mat4) -> Self {
+        Self::from_view_proj_depth(m, false)
+    }
+
+    /// From a view-projection whose clip z is in `[0, w]` when
+    /// `zero_to_one` (reverse-Z, `EXT_clip_control`), `[-w, w]` otherwise.
+    pub fn from_view_proj_depth(m: &Mat4, zero_to_one: bool) -> Self {
         let r = [m.row(0), m.row(1), m.row(2), m.row(3)];
+        let low_z = if zero_to_one { r[2] } else { r[3] + r[2] };
         let planes = [
             r[3] + r[0],
             r[3] - r[0],
             r[3] + r[1],
             r[3] - r[1],
-            r[3] + r[2],
+            low_z,
             r[3] - r[2],
         ]
         .map(|p| {
