@@ -40,7 +40,13 @@ const MODELS = [
   ["BoomBox", "Boom box"],
   ["Lantern", "Lantern"],
   ["MaterialsVariantsShoe", "Shoe"],
-  ["Fox", "Fox"],
+  ["Fox", "Fox — skinned, animated"],
+  ["CesiumMan", "Cesium man — skinned, animated"],
+  ["BrainStem", "Brain stem — many skins"],
+  ["RecursiveSkeletons", "Recursive skeletons"],
+  ["AnimatedMorphCube", "Morph cube — animated morph targets"],
+  ["MorphStressTest", "Morph stress test"],
+  ["InterpolationTest", "Interpolation test — step, linear, cubic"],
   ["ABeautifulGame", "A beautiful game — chess set (large)"],
 ];
 const HDRS = "https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/textures/equirectangular";
@@ -172,6 +178,7 @@ function zoom(/** @type {number} */ factor) {
 // --- models --------------------------------------------------------------------
 
 let root = 0;
+Object.assign(/** @type {any} */ (globalThis).viewer, { root: () => root });
 let loading = 0;
 async function load(/** @type {string} */ url, /** @type {string} */ label) {
   const ticket = ++loading;
@@ -192,6 +199,7 @@ async function load(/** @type {string} */ url, /** @type {string} */ label) {
     setCameraLens();
     inspect(0, "");
     listCameras();
+    listAnimations();
     status(`Compiling shaders for ${label}…`);
     await scene.whenReady();
     if (ticket === loading) {
@@ -207,6 +215,23 @@ function resetView() {
   orbit.pitch = 0.25;
   orbit.distance = (orbit.radius / Math.sin(((orbit.fov / 2) * Math.PI) / 180)) * 1.15;
 }
+
+// The model's animations: the first plays (looping) on load.
+const animSelect = $("anim");
+function listAnimations() {
+  animSelect.length = 1;
+  scene.animations(root).forEach((/** @type {string} */ name, /** @type {number} */ i) => {
+    animSelect.add(new Option(name, String(i)));
+  });
+  animSelect.value = animSelect.length > 1 ? "0" : "-1";
+  playSelected();
+}
+function playSelected() {
+  const i = Number(animSelect.value);
+  if (i >= 0) scene.playAnimation(root, i, true);
+  else if (root) scene.stopAnimation(root);
+}
+animSelect.addEventListener("change", playSelected);
 
 // The model's own cameras (glTF `cameras`) as alternatives to the orbit.
 const viewSelect = $("view-camera");
@@ -466,6 +491,7 @@ function frame(/** @type {number} */ now) {
   if ($("spin").checked) orbit.yaw += dt * 0.0003;
   resize();
   placeCamera();
+  scene.advanceAnimations(Math.min(dt, 100) / 1000);
   const t0 = performance.now();
   scene.renderFrame(viewCamera());
   cpuTimes.push(performance.now() - t0);

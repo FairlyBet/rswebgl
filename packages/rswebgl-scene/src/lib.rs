@@ -28,6 +28,7 @@
 //! world.clear_trackers();
 //! ```
 
+mod animation;
 mod brdf_lut;
 mod camera;
 mod culling;
@@ -46,6 +47,7 @@ mod render;
 mod shader;
 mod transform;
 
+pub use animation::{ModelAnimations, MorphWeights, Playback};
 pub use camera::{Camera, Projection};
 pub use culling::{Bounds, Frustum};
 pub use environment::{BakeJob, EnvBaker, Environment, PendingEnvironment};
@@ -55,7 +57,7 @@ pub use hierarchy::{
 };
 pub use js::Scene;
 pub use light::{Light, LightKind};
-pub use model::{Name, Primitive, find_by_name, spawn_model};
+pub use model::{Morph, Name, Primitive, Skin, find_by_name, spawn_model};
 pub use output::{HdrOutput, ToneMapping};
 pub use pbr::{PbrKey, PbrShaders, ShadingModel};
 pub use pick::{Hit, Ray, pick_bounds, ray_aabb};

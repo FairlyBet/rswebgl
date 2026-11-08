@@ -149,6 +149,18 @@ impl Instances {
         i
     }
 
+    /// Appends `count` floats from `values` (zeros past its end), padded to
+    /// whole slots; returns the first slot.
+    pub fn push_floats(&mut self, values: &[f32], count: usize) -> i32 {
+        let i = self.len();
+        let slots = count.div_ceil(FLOATS).max(1);
+        let start = self.data.len();
+        self.data.resize(start + slots * FLOATS, 0.0);
+        let n = count.min(values.len());
+        self.data[start..start + n].copy_from_slice(&values[..n]);
+        i
+    }
+
     /// Uploads this frame's data (if it changed), growing the texture —
     /// rebound into `group`'s `field` — when it no longer fits.
     pub fn upload(

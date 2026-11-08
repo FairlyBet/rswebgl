@@ -13,8 +13,8 @@ use rswebgl::error::Error;
 use rswebgl::ids::ProgramId;
 use rswebgl::shader_source::ShaderSource;
 use rswebgl_gltf::{
-    ATTR_COLOR, ATTR_NORMAL, ATTR_TANGENT, ATTR_UV0, ATTR_UV1, AlphaMode, DrawItem, MAP_COUNT,
-    MAP_SLOTS, Material, Model,
+    ATTR_COLOR, ATTR_MORPH_NORMAL, ATTR_MORPH_POSITION, ATTR_MORPH_TANGENT, ATTR_NORMAL, ATTR_SKIN,
+    ATTR_TANGENT, ATTR_UV0, ATTR_UV1, AlphaMode, DrawItem, MAP_COUNT, MAP_SLOTS, Material, Model,
 };
 
 const VERT: &str = include_str!("../shaders/pbr.vert");
@@ -50,10 +50,21 @@ const MAP_SHIFT: u64 = 17;
 const UV1_SHIFT: u64 = MAP_SHIFT + MAP_COUNT as u64;
 // KHR_texture_transform on any map in use: its `_UV` goes through a matrix.
 const TEXTURE_TRANSFORM: u64 = 1 << (UV1_SHIFT + MAP_COUNT as u64);
-const TOP_BIT: u64 = TEXTURE_TRANSFORM;
+// Geometry the vertex stage deforms: skinning (JOINTS_0 / WEIGHTS_0) and
+// morph targets with position / normal / tangent deltas.
+const SKIN: u64 = TEXTURE_TRANSFORM << 1;
+const MORPH_POSITION: u64 = TEXTURE_TRANSFORM << 2;
+const MORPH_NORMAL: u64 = TEXTURE_TRANSFORM << 3;
+const MORPH_TANGENT: u64 = TEXTURE_TRANSFORM << 4;
+const MORPH: u64 = MORPH_POSITION | MORPH_NORMAL | MORPH_TANGENT;
+const TOP_BIT: u64 = MORPH_TANGENT;
 // Feature defines, by bit.
-const FEATURES: [(u64, &str); 11] = [
+const FEATURES: [(u64, &str); 15] = [
     (TEXTURE_TRANSFORM, "HAS_TEXTURE_TRANSFORM"),
+    (SKIN, "HAS_SKIN"),
+    (MORPH_POSITION, "HAS_MORPH_POSITION"),
+    (MORPH_NORMAL, "HAS_MORPH_NORMAL"),
+    (MORPH_TANGENT, "HAS_MORPH_TANGENT"),
     (UNLIT, "MATERIAL_UNLIT"),
     (TRANSMISSION, "HAS_TRANSMISSION"),
     (VOLUME, "HAS_VOLUME"),
@@ -105,6 +116,16 @@ impl PbrKey {
     /// with `material`.
     pub fn new(attributes: u32, material: &Material) -> Self {
         let mut key = (attributes & 0x1f) as u64;
+        for (attr, bit) in [
+            (ATTR_SKIN, SKIN),
+            (ATTR_MORPH_POSITION, MORPH_POSITION),
+            (ATTR_MORPH_NORMAL, MORPH_NORMAL),
+            (ATTR_MORPH_TANGENT, MORPH_TANGENT),
+        ] {
+            if attributes & attr != 0 {
+                key |= bit;
+            }
+        }
         key |= (material.alpha_mode() as u64) << ALPHA_SHIFT;
         if material.unlit() {
             key |= UNLIT;
@@ -232,6 +253,11 @@ impl PbrKey {
             if k & bit != 0 {
                 let _ = writeln!(s, "#define {name}");
             }
+        }
+        if k & MORPH != 0 {
+            let _ = writeln!(s, "#define HAS_MORPH");
+            let kinds = (k & MORPH).count_ones();
+            let _ = writeln!(s, "#define MORPH_KINDS {kinds}");
         }
         s
     }

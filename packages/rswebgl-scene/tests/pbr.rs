@@ -50,13 +50,15 @@ fn every_feature_compiles_and_links() {
     let mut shaders = PbrShaders::new();
     // Bits (see pbr.rs): 0..5 attributes, 5..7 alpha, 7 unlit, 8..12
     // transmission/volume/clearcoat/dispersion, 12 glTF model, 13 EON,
-    // 14..17 sheen/film/anisotropy, 17..34 maps, 34..51 maps on UV1.
+    // 14..17 sheen/film/anisotropy, 17..34 maps, 34..51 maps on UV1, 51
+    // texture transform, 52 skin, 53..56 morph position/normal/tangent.
     let attrs: u64 = 0x1f;
     let maps: u64 = 0x1ffff << 17;
     let uv1: u64 = 0x1ffff << 34;
     let layers: u64 = 0xf << 8 | 0xf << 13;
     // Each bit alone, every alpha mode, and everything at once.
-    let mut keys: Vec<u64> = (0..52).map(|b| 1u64 << b).collect();
+    let mut keys: Vec<u64> = (0..56).map(|b| 1u64 << b).collect();
+    let deform: u64 = 0xf << 52;
     keys.extend([
         0,
         2 << 5,
@@ -67,6 +69,8 @@ fn every_feature_compiles_and_links() {
         attrs | maps | layers | 2 << 5,
         attrs | maps | 1 << 51,
         attrs | maps | uv1 | layers | 1 << 51,
+        attrs | deform,
+        attrs | maps | layers | deform,
     ]);
     for model in [ShadingModel::OpenPbr, ShadingModel::Gltf] {
         shaders.set_model(model);

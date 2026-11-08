@@ -3,7 +3,10 @@
 //!
 //! Attribute locations follow a fixed convention the shaders agree on:
 //!   0 = POSITION (vec3), 1 = NORMAL (vec3), 2 = TEXCOORD_0 (vec2),
-//!   3 = TANGENT (vec4), 4 = COLOR_0 (vec4), 5 = TEXCOORD_1 (vec2).
+//!   3 = TANGENT (vec4), 4 = COLOR_0 (vec4), 5 = TEXCOORD_1 (vec2),
+//!   6 = JOINTS_0 (vec4 of joint indices, as floats), 7 = WEIGHTS_0 (vec4).
+//! Morph targets go into a texture per primitive (`MorphGpu`): the shader
+//! adds their weighted deltas before skinning.
 //! Which of them a primitive has is in `PrimitiveGpu::attributes` (`ATTR_*`).
 //!
 //! Sharing: one GPU buffer per glTF *accessor*, so primitives that reuse an
@@ -25,7 +28,26 @@ use rswebgl::draw::{DrawCommand, DrawMode, IndexType};
 use rswebgl::ids::{BufferId, VertexArrayId};
 use rswebgl::vao::VertexAttr;
 
-use crate::{ATTR_COLOR, ATTR_NORMAL, ATTR_TANGENT, ATTR_UV0, ATTR_UV1};
+use rswebgl::ids::TextureId;
+use rswebgl::texture::{TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget};
+
+use crate::{
+    ATTR_COLOR, ATTR_MORPH_NORMAL, ATTR_MORPH_POSITION, ATTR_MORPH_TANGENT, ATTR_NORMAL, ATTR_SKIN,
+    ATTR_TANGENT, ATTR_UV0, ATTR_UV1,
+};
+
+/// Texels per row of a morph texture; `MORPH_TEXTURE_WIDTH` in the shader.
+pub const MORPH_TEXTURE_WIDTH: i32 = 2048;
+
+/// A primitive's morph targets on the GPU: an RGBA32F texture of deltas —
+/// for vertex `v`, target `t` and kind `k` (position, normal, tangent, those
+/// present in that order) the texel `(v * targets + t) * kinds + k`,
+/// `MORPH_TEXTURE_WIDTH` texels a row.
+#[derive(Clone, Copy, Debug)]
+pub struct MorphGpu {
+    pub texture: TextureId,
+    pub targets: u32,
+}
 
 /// One primitive on the GPU, plus its local-space bounds.
 #[derive(Clone)]
@@ -38,6 +60,7 @@ pub struct PrimitiveGpu {
     pub attributes: u32,
     pub aabb_min: [f32; 3],
     pub aabb_max: [f32; 3],
+    pub morph: Option<MorphGpu>,
 }
 
 /// GPU buffers created so far, by accessor index, and the vertex arrays built
@@ -61,6 +84,14 @@ impl GeometryCache {
     /// Every vertex array created, one per primitive of each built mesh.
     pub fn vertex_arrays(&self) -> impl Iterator<Item = VertexArrayId> + '_ {
         self.meshes.values().flatten().map(|p| p.vao)
+    }
+
+    /// Every morph texture created (to destroy with the model).
+    pub fn morph_textures(&self) -> impl Iterator<Item = TextureId> + '_ {
+        self.meshes
+            .values()
+            .flatten()
+            .filter_map(|p| p.morph.map(|m| m.texture))
     }
 
     /// Number of distinct meshes built.
@@ -140,6 +171,22 @@ impl GeometryCache {
             ctx.vertex_array_attr(vao, loc, buf, &VertexAttr::float(size));
             attributes |= bit;
         }
+        // Skinning needs both: four joint indices and their weights.
+        let joints = primitive.get(&gltf::Semantic::Joints(0));
+        let weights = primitive.get(&gltf::Semantic::Weights(0));
+        if let (Some(j), Some(w)) = (joints, weights) {
+            let j = self.vertex_buffer(ctx, &reader, &j, &gltf::Semantic::Joints(0));
+            let w = self.vertex_buffer(ctx, &reader, &w, &gltf::Semantic::Weights(0));
+            if let (Some(j), Some(w)) = (j, w) {
+                ctx.vertex_array_attr(vao, 6, j, &VertexAttr::float(4));
+                ctx.vertex_array_attr(vao, 7, w, &VertexAttr::float(4));
+                attributes |= ATTR_SKIN;
+            }
+        }
+        let morph = morph_texture(ctx, &reader, vertex_count as usize, attributes);
+        if let Some((_, kinds)) = &morph {
+            attributes |= kinds;
+        }
 
         let mode = draw_mode(primitive.mode());
         let draw = match primitive.indices() {
@@ -164,6 +211,7 @@ impl GeometryCache {
             attributes,
             aabb_min,
             aabb_max,
+            morph: morph.map(|(m, _)| m),
         })
     }
 
@@ -187,6 +235,11 @@ impl GeometryCache {
             gltf::Semantic::TexCoords(n) => flatten(reader.read_tex_coords(*n)?.into_f32()),
             gltf::Semantic::Tangents => flatten(reader.read_tangents()?),
             gltf::Semantic::Colors(n) => flatten(reader.read_colors(*n)?.into_rgba_f32()),
+            // Indices as floats: exact up to 2^24, cast back in the shader.
+            gltf::Semantic::Joints(n) => {
+                flatten(reader.read_joints(*n)?.into_u16().map(|j| j.map(f32::from)))
+            }
+            gltf::Semantic::Weights(n) => flatten(reader.read_weights(*n)?.into_f32()),
             _ => return None,
         };
         match ctx.create_buffer(BufferUsage::StaticDraw, bytes_of(&data)) {
@@ -276,6 +329,105 @@ fn flatten<const N: usize>(v: impl Iterator<Item = [f32; N]>) -> Vec<f32> {
         out.extend_from_slice(&a);
     }
     out
+}
+
+// Displacements of one morph target: positions, normals, tangents.
+type TargetDeltas = (
+    Option<Vec<[f32; 3]>>,
+    Option<Vec<[f32; 3]>>,
+    Option<Vec<[f32; 3]>>,
+);
+
+// The primitive's morph targets as a texture of deltas (see `MorphGpu`), and
+// the `ATTR_MORPH_*` kinds it holds. Normal and tangent deltas only where the
+// primitive has normals and tangents (glTF 2.0 §3.7.2.2). None without
+// targets, or when they don't fit a texture.
+fn morph_texture<'a, 's, F>(
+    ctx: &Context,
+    reader: &gltf::mesh::Reader<'a, 's, F>,
+    vertices: usize,
+    attributes: u32,
+) -> Option<(MorphGpu, u32)>
+where
+    F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>,
+{
+    let targets: Vec<TargetDeltas> = reader
+        .read_morph_targets()
+        .map(|(p, n, t)| {
+            (
+                p.map(|i| i.collect()),
+                n.map(|i| i.collect()),
+                t.map(|i| i.collect()),
+            )
+        })
+        .collect();
+    if targets.is_empty() {
+        return None;
+    }
+    let mut kinds = 0;
+    if targets.iter().any(|t| t.0.is_some()) {
+        kinds |= ATTR_MORPH_POSITION;
+    }
+    if attributes & ATTR_NORMAL != 0 && targets.iter().any(|t| t.1.is_some()) {
+        kinds |= ATTR_MORPH_NORMAL;
+    }
+    if attributes & ATTR_TANGENT != 0 && targets.iter().any(|t| t.2.is_some()) {
+        kinds |= ATTR_MORPH_TANGENT;
+    }
+    if kinds == 0 {
+        return None;
+    }
+    let per = kinds.count_ones() as usize;
+    let width = MORPH_TEXTURE_WIDTH as usize;
+    let rows = (vertices * targets.len() * per).div_ceil(width);
+    if rows > rswebgl::limits::max_texture_size() as usize {
+        console::warn(&format!(
+            "[rswebgl-gltf] {} morph targets of {vertices} vertices don't fit a texture; \
+             left out",
+            targets.len()
+        ));
+        return None;
+    }
+    let mut data = vec![0.0f32; rows * width * 4];
+    for v in 0..vertices {
+        for (t, (p, n, tg)) in targets.iter().enumerate() {
+            let base = (v * targets.len() + t) * per;
+            let mut k = 0;
+            for (kind, deltas) in [
+                (ATTR_MORPH_POSITION, p),
+                (ATTR_MORPH_NORMAL, n),
+                (ATTR_MORPH_TANGENT, tg),
+            ] {
+                if kinds & kind == 0 {
+                    continue;
+                }
+                if let Some(d) = deltas.as_ref().and_then(|d| d.get(v)) {
+                    data[(base + k) * 4..][..3].copy_from_slice(d);
+                }
+                k += 1;
+            }
+        }
+    }
+    let texture = match ctx.create_texture(
+        TextureTarget::Texture2D,
+        TextureMinFilter::Nearest,
+        TextureMagFilter::Nearest,
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            console::error(&format!("[rswebgl-gltf] morph texture: {e}"));
+            return None;
+        }
+    };
+    let format = TextureFormat::rgba32f();
+    let (w, h) = (MORPH_TEXTURE_WIDTH, rows as i32);
+    ctx.texture_storage_2d(texture, 1, &format, w, h);
+    ctx.texture_sub_image_2d(texture, 0, 0, 0, w, h, &format, bytes_of(&data));
+    let morph = MorphGpu {
+        texture,
+        targets: targets.len() as u32,
+    };
+    Some((morph, kinds))
 }
 
 fn bytes_of(v: &[f32]) -> &[u8] {

@@ -22,6 +22,7 @@
 //! }
 //! ```
 
+mod animation;
 mod buffers;
 mod fetch;
 mod geometry;
@@ -30,6 +31,7 @@ mod pack;
 mod scene;
 mod textures;
 
+pub use animation::{Animation, AnimationChannel, AnimationPath, Interpolation};
 pub use material::{
     AlphaMode, EXTERNAL_TEXTURE, MAP_COUNT, MAP_NAMES, MAP_SLOTS, MapSlot, Material, PROPERTIES,
     Property, UV_IDENTITY, default_material, uv_matrix,
@@ -73,6 +75,14 @@ pub const ATTR_TANGENT: u32 = 1 << 2;
 pub const ATTR_COLOR: u32 = 1 << 3;
 /// TEXCOORD_1 at location 5.
 pub const ATTR_UV1: u32 = 1 << 4;
+/// JOINTS_0 at location 6 and WEIGHTS_0 at 7: skinned (`DrawItem::skin`).
+pub const ATTR_SKIN: u32 = 1 << 5;
+/// Morph targets with position deltas (`DrawItem::morph_texture`).
+pub const ATTR_MORPH_POSITION: u32 = 1 << 6;
+/// Morph targets with normal deltas.
+pub const ATTR_MORPH_NORMAL: u32 = 1 << 7;
+/// Morph targets with tangent deltas.
+pub const ATTR_MORPH_TANGENT: u32 = 1 << 8;
 
 /// One thing to draw: a primitive of a mesh, at one instance of it. Items of
 /// the same mesh share their vertex array.
@@ -96,6 +106,11 @@ pub struct DrawItem {
     // The primitive's POSITION bounds, in mesh space.
     pub(crate) aabb_min: [f32; 3],
     pub(crate) aabb_max: [f32; 3],
+    // The node's skin (index into `Model::skins`), or -1.
+    pub(crate) skin: i32,
+    // Morph target deltas (NULL without), and how many targets.
+    pub(crate) morph_texture: TextureId,
+    pub(crate) morph_targets: u32,
 }
 
 #[wasm_bindgen]
@@ -128,7 +143,8 @@ impl DrawItem {
         self.material_group
     }
     /// Optional vertex attributes present: bits 1 NORMAL, 2 TEXCOORD_0,
-    /// 4 TANGENT, 8 COLOR_0, 16 TEXCOORD_1 (`ATTR_*`).
+    /// 4 TANGENT, 8 COLOR_0, 16 TEXCOORD_1, 32 skin (JOINTS_0 + WEIGHTS_0),
+    /// 64 / 128 / 256 morph position / normal / tangent deltas (`ATTR_*`).
     pub fn attributes(&self) -> u32 {
         self.attributes
     }
@@ -168,6 +184,19 @@ impl DrawItem {
     pub fn local_bounds(&self) -> ([f32; 3], [f32; 3]) {
         (self.aabb_min, self.aabb_max)
     }
+
+    /// The skin (index into `Model::skins`) of a skinned item: its vertices
+    /// follow the skin's joints, and the node's own transform doesn't apply
+    /// (glTF 2.0 §3.7.3).
+    pub fn skin(&self) -> Option<usize> {
+        usize::try_from(self.skin).ok()
+    }
+
+    /// The morph target texture (see `geometry::MorphGpu` for its layout)
+    /// and the number of targets; None without targets.
+    pub fn morph(&self) -> Option<(TextureId, u32)> {
+        (!self.morph_texture.is_null()).then_some((self.morph_texture, self.morph_targets))
+    }
 }
 
 /// A node of the default scene: its local transform and parent, for whoever
@@ -185,6 +214,20 @@ pub struct SceneNode {
     pub camera: Option<NodeCamera>,
     /// The node's light (`KHR_lights_punctual`), shining down its local −Z.
     pub light: Option<NodeLight>,
+    /// Morph target weights of the node's mesh: the node's own, else the
+    /// mesh's defaults; None without (animations change them).
+    pub weights: Option<Vec<f32>>,
+}
+
+/// A glTF skin: the joint nodes a skinned mesh follows and, per joint, the
+/// inverse bind matrix (mesh space → the joint's space at bind time). A
+/// vertex lands at Σ weight × world(joint) × inverse_bind(joint) × position.
+#[derive(Clone, Debug)]
+pub struct Skin {
+    /// glTF node indices.
+    pub joints: Vec<u32>,
+    /// Column-major, one per joint (identity where the file has none).
+    pub inverse_bind: Vec<[f32; 16]>,
 }
 
 /// A glTF camera, as the file has it (angles in radians, lengths in meters).
@@ -258,6 +301,9 @@ pub struct Model {
     pub(crate) samplers: Vec<SamplerId>,
     pub(crate) vertex_arrays: Vec<VertexArrayId>,
     pub(crate) buffers: Vec<BufferId>,
+    pub(crate) morph_textures: Vec<TextureId>,
+    pub(crate) skins: Vec<Skin>,
+    pub(crate) animations: Vec<Animation>,
     pub(crate) mesh_count: usize,
     pub(crate) center: [f32; 3],
     pub(crate) radius: f32,
@@ -347,6 +393,9 @@ impl Model {
         for &buf in &self.buffers {
             ctx.destroy_buffer(buf);
         }
+        for &tex in &self.morph_textures {
+            ctx.destroy_texture(tex);
+        }
         for &tex in &self.textures {
             ctx.destroy_texture(tex);
         }
@@ -385,6 +434,7 @@ impl Model {
         for (mine, theirs) in self.items.iter_mut().zip(&fresh.items) {
             mine.vao = theirs.vao;
             mine.state_id = theirs.state_id;
+            mine.morph_texture = theirs.morph_texture;
         }
         for &g in &fresh.material_groups {
             ctx.destroy_param_group(g);
@@ -394,6 +444,7 @@ impl Model {
         self.samplers = fresh.samplers;
         self.vertex_arrays = fresh.vertex_arrays;
         self.buffers = fresh.buffers;
+        self.morph_textures = fresh.morph_textures;
         self.generation = fresh.generation;
         Ok(())
     }
@@ -432,6 +483,16 @@ impl Model {
     /// The default scene's nodes, parents before children.
     pub fn nodes(&self) -> &[SceneNode] {
         &self.nodes
+    }
+
+    /// The skins (`DrawItem::skin` indexes them).
+    pub fn skins(&self) -> &[Skin] {
+        &self.skins
+    }
+
+    /// The animations, in file order.
+    pub fn animations(&self) -> &[Animation] {
+        &self.animations
     }
 
     /// The GPU buffers the model created (one per distinct accessor).
@@ -531,6 +592,9 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
         samplers: set.samplers,
         vertex_arrays: geometry.vertex_arrays().collect(),
         buffers: geometry.buffers().collect(),
+        morph_textures: geometry.morph_textures().collect(),
+        skins: read_skins(&document, &buffers),
+        animations: animation::read_animations(&document, &buffers),
         mesh_count: geometry.mesh_count(),
         center,
         radius,
@@ -555,6 +619,29 @@ fn parse(bytes: &[u8]) -> Result<(gltf::Document, Option<Vec<u8>>), Error> {
         .retain(|e| !HANDLED_EXTENSIONS.contains(&e.as_str()));
     let document = gltf::Document::from_json(root).map_err(|e| format!("glTF invalid: {e}"))?;
     Ok((document, blob))
+}
+
+// Every skin: its joints and inverse bind matrices (identity where the file
+// gives none, glTF 2.0 §5.28).
+fn read_skins(doc: &gltf::Document, buffers: &[Vec<u8>]) -> Vec<Skin> {
+    doc.skins()
+        .map(|skin| {
+            let joints: Vec<u32> = skin.joints().map(|j| j.index() as u32).collect();
+            let reader = skin.reader(|b| buffers.get(b.index()).map(|v| v.as_slice()));
+            let mut inverse_bind: Vec<[f32; 16]> = reader
+                .read_inverse_bind_matrices()
+                .map(|m| {
+                    m.map(|c| glam::Mat4::from_cols_array_2d(&c).to_cols_array())
+                        .collect()
+                })
+                .unwrap_or_default();
+            inverse_bind.resize(joints.len(), glam::Mat4::IDENTITY.to_cols_array());
+            Skin {
+                joints,
+                inverse_bind,
+            }
+        })
+        .collect()
 }
 
 fn js_err(e: JsValue) -> Error {

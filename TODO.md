@@ -133,7 +133,10 @@ resources is the app's job (see the cube example). Possible follow-ups:
 v1 translates static meshes + PBR metallic-roughness (factors + base-color
 texture) into VAOs/textures/draw-list with spec-correct render state. Deferred:
 
-- **Skinning (JOINTS_n/WEIGHTS_n) & morph targets**, and **animation** (samplers/
+- **Skinning, morph targets, animation** — done (JOINTS_0/WEIGHTS_0; morph
+  deltas in a texture; animations as data, sampled by the scene). Left:
+  JOINTS_1/WEIGHTS_1 (8 influences), weights not renormalized. Was:
+  **Skinning (JOINTS_n/WEIGHTS_n) & morph targets**, and **animation** (samplers/
   channels). The biggest gap toward "real" glTF.
 - **JS entry point.** `load_model` is Rust-only async — an exported async fn
   can't hold the `&Context` borrow across `await`. Add a JS-facing wrapper (e.g.
@@ -216,7 +219,8 @@ FBO blit). Done. Deferred polish:
   Quantized instance attributes (normalized rotation) aren't read — such nodes are drawn once, with a warning.
 - Vertex attributes are dequantized to f32 on upload; keeping normalized
   u8/u16 (`KHR_mesh_quantization`) would cut memory on mobile.
-- Not handled yet: skins, morph targets, animations. Cameras and
+- Skins, morph targets and animations: done (a skinned mesh isn't culled —
+  its rest bounds don't hold; GPU picking sees the rest pose). Cameras and
   `KHR_lights_punctual` lights become `Camera` / `Light` entities
   (`Scene.cameras` / `lights`); a glTF camera's aspect yields to the canvas.
 

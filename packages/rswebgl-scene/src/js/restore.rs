@@ -33,7 +33,7 @@ use super::Scene;
 
 use crate::hdr::decode_hdr_rgbe;
 use crate::hierarchy::descendants;
-use crate::model::Primitive;
+use crate::model::{Morph, Primitive};
 use crate::pbr::PbrShaders;
 use crate::render::{MeshRenderer, Reloading};
 use crate::shader::create_scene_program;
@@ -255,17 +255,24 @@ impl Scene {
                     }
                 }
             }
-            let items: Vec<(rswebgl::ids::VertexArrayId, rswebgl::ids::StateId)> =
-                model.items().iter().map(|i| (i.vao(), i.state())).collect();
+            let items: Vec<_> = model
+                .items()
+                .iter()
+                .map(|i| (i.vao(), i.state(), i.morph()))
+                .collect();
             for e in descendants(&self.world, root) {
                 let Some(item) = self.world.get::<Primitive>(e).map(|p| p.item as usize) else {
                     continue;
                 };
-                if let (Some(&(vao, state)), Some(mut m)) =
-                    (items.get(item), self.world.get_mut::<MeshRenderer>(e))
-                {
+                let Some(&(vao, state, morph)) = items.get(item) else {
+                    continue;
+                };
+                if let Some(mut m) = self.world.get_mut::<MeshRenderer>(e) {
                     m.vao = vao;
                     m.state = state;
+                }
+                if let (Some((texture, _)), Some(mut m)) = (morph, self.world.get_mut::<Morph>(e)) {
+                    m.texture = texture;
                 }
                 self.world.remove::<Reloading>(e);
             }

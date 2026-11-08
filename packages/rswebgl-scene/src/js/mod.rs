@@ -24,6 +24,7 @@
 //! Setters on a dead entity report once in the console and do nothing;
 //! malformed option objects and unknown material properties throw.
 
+mod animation;
 mod lights;
 mod materials;
 mod openpbr;

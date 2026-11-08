@@ -2,12 +2,14 @@
 //! root entity, each primitive a child entity of its node that draws.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use glam::{Mat4, Vec3};
-use rswebgl::ids::ProgramId;
+use rswebgl::ids::{ProgramId, TextureId};
 use rswebgl_ecs::{Entity, World};
 use rswebgl_gltf::{DrawItem, Model, NodeCamera, NodeLight, NodeLightKind};
 
+use crate::animation::{ModelAnimations, MorphWeights};
 use crate::camera::Camera;
 use crate::culling::Bounds;
 use crate::light::Light;
@@ -22,6 +24,24 @@ use crate::transform::{Parent, Transform};
 pub struct Primitive {
     pub attributes: u32,
     pub item: u32,
+}
+
+/// A skinned primitive's skeleton: the joint entities its vertices follow and
+/// each joint's inverse bind matrix. The renderer hands the shader
+/// world(joint) × inverse_bind(joint) per joint; the primitive's own world
+/// matrix doesn't apply (glTF 2.0 §3.7.3).
+#[derive(Debug, Clone)]
+pub struct Skin {
+    pub joints: Vec<Entity>,
+    pub inverse_bind: Rc<[Mat4]>,
+}
+
+/// A primitive's morph targets on the GPU (the model owns the texture);
+/// their weights are its node's `MorphWeights`.
+#[derive(Debug, Clone, Copy)]
+pub struct Morph {
+    pub texture: TextureId,
+    pub targets: u32,
 }
 
 /// A name to find an entity by (glTF node names, or the app's own).
@@ -78,8 +98,24 @@ pub fn spawn_model(
         if let Some(light) = &node.light {
             world.insert(e, light_from(light));
         }
+        if let Some(w) = &node.weights {
+            world.insert(e, MorphWeights(w.clone()));
+        }
         by_index.insert(node.index, e);
     }
+    // Skins, with joints as entities (a joint outside the scene: the root).
+    let skins: Vec<Skin> = model
+        .skins()
+        .iter()
+        .map(|s| Skin {
+            joints: s
+                .joints
+                .iter()
+                .map(|j| by_index.get(j).copied().unwrap_or(root))
+                .collect(),
+            inverse_bind: s.inverse_bind.iter().map(Mat4::from_cols_array).collect(),
+        })
+        .collect();
     for (index, item) in model.items().iter().enumerate() {
         let Some(&node) = by_index.get(&item.node()) else {
             continue;
@@ -93,8 +129,20 @@ pub fn spawn_model(
             Transform::from_matrix(Mat4::from_cols_array(&item.instance_cols())),
         );
         world.insert(e, Parent(node));
-        let (min, max) = item.local_bounds();
-        world.insert(e, Bounds::new(Vec3::from(min), Vec3::from(max)));
+        // A skinned mesh moves with its joints: its rest bounds don't hold,
+        // so it isn't culled.
+        match item.skin().and_then(|s| skins.get(s)) {
+            Some(skin) => {
+                world.insert(e, skin.clone());
+            }
+            None => {
+                let (min, max) = item.local_bounds();
+                world.insert(e, Bounds::new(Vec3::from(min), Vec3::from(max)));
+            }
+        }
+        if let Some((texture, targets)) = item.morph() {
+            world.insert(e, Morph { texture, targets });
+        }
         world.insert(
             e,
             MeshRenderer {
@@ -115,6 +163,16 @@ pub fn spawn_model(
             Primitive {
                 attributes: item.attributes(),
                 item: index as u32,
+            },
+        );
+    }
+    if !model.animations().is_empty() {
+        world.insert(
+            root,
+            ModelAnimations {
+                clips: model.animations().into(),
+                nodes: by_index,
+                playing: None,
             },
         );
     }

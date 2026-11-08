@@ -17,6 +17,8 @@ use rswebgl::context::Context;
 
 use crate::geometry::GeometryCache;
 use crate::material::{self, Material};
+use rswebgl::ids::TextureId;
+
 use crate::{DrawItem, NodeCamera, NodeLight, NodeLightKind, SceneNode};
 
 /// Growing axis-aligned bounds in world space.
@@ -103,6 +105,10 @@ fn walk(
         name: node.name().map(str::to_owned),
         camera: node.camera().map(|c| node_camera(&c)),
         light: node.light().map(|l| node_light(&l)),
+        weights: node
+            .weights()
+            .or_else(|| node.mesh().and_then(|m| m.weights()))
+            .map(<[f32]>::to_vec),
     });
 
     if let Some(mesh) = node.mesh() {
@@ -134,6 +140,9 @@ fn walk(
                     attributes: geo.attributes,
                     aabb_min: geo.aabb_min,
                     aabb_max: geo.aabb_max,
+                    skin: node.skin().map_or(-1, |s| s.index() as i32),
+                    morph_texture: geo.morph.map_or(TextureId::NULL, |m| m.texture),
+                    morph_targets: geo.morph.map_or(0, |m| m.targets),
                 });
             }
         }

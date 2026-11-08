@@ -19,12 +19,14 @@ use rswebgl::render_state::RenderState;
 use rswebgl::uniform_buffer::{UboLayout, UniformType};
 use rswebgl_ecs::{Entity, Tick, World};
 
+use crate::animation::MorphWeights;
 use crate::camera::Camera;
 use crate::culling::{Bounds, Frustum};
 use crate::environment::{Environment, FULLSCREEN_VERT, brdf_lut_texture};
 use crate::gpu_pick::{GpuPicker, PickView};
 use crate::instances::{Batches, Instances, ProgramKind};
 use crate::light::Light;
+use crate::model::{Morph, Skin};
 use crate::output::ToneMapping;
 use crate::pick::Hit;
 use crate::shader::create_scene_program;
@@ -59,6 +61,12 @@ pub const OBJECT_ID_UNIFORM: &str = "u_object_id";
 /// instance texture (the scene prelude, `object_instanced.glsl`): where this
 /// draw's instances start.
 pub const INSTANCE_BASE_UNIFORM: &str = "u_instance_base";
+/// Per object, for a skinned mesh: the instance texture slot of its first
+/// joint matrix (world(joint) × inverse bind).
+pub const JOINT_BASE_UNIFORM: &str = "u_joint_base";
+/// Per object, for a mesh with morph targets: the slot its weights start at
+/// (four a texel), next to `u_morph_count` and the `u_morph_targets` texture.
+pub const MORPH_BASE_UNIFORM: &str = "u_morph_base";
 /// The frame's instance texture (slot 0): three RGBA32F texels per instance.
 pub const INSTANCES_TEXTURE: &str = "u_instances";
 
@@ -211,6 +219,10 @@ pub struct SceneRenderer {
     f_object_id: ParamField,
     objects: HashMap<Entity, Object>,
     f_instance_base: ParamField,
+    f_joint_base: ParamField,
+    f_morph_base: ParamField,
+    f_morph_count: ParamField,
+    f_morph_targets: ParamField,
     f_instances: ParamField,
     // This frame's instance data and batches; the batches' pooled object
     // groups; how each program gets its object.
@@ -276,7 +288,11 @@ impl SceneRenderer {
                 .uniform(MODEL_UNIFORM, UniformType::Mat4)
                 .uniform(NORMAL_MATRIX_UNIFORM, UniformType::Mat3)
                 .uniform(OBJECT_ID_UNIFORM, UniformType::U32)
-                .uniform(INSTANCE_BASE_UNIFORM, UniformType::I32),
+                .uniform(INSTANCE_BASE_UNIFORM, UniformType::I32)
+                .uniform(JOINT_BASE_UNIFORM, UniformType::I32)
+                .uniform(MORPH_BASE_UNIFORM, UniformType::I32)
+                .uniform("u_morph_count", UniformType::I32)
+                .texture("u_morph_targets"),
         )?;
         let instances = Instances::new(ctx)?;
         ctx.param_set_texture_by_name(frame_group, INSTANCES_TEXTURE, instances.texture());
@@ -311,6 +327,10 @@ impl SceneRenderer {
             f_object_id: ctx.param_field(object_layout, OBJECT_ID_UNIFORM)?,
             objects: HashMap::new(),
             f_instance_base: ctx.param_field(object_layout, INSTANCE_BASE_UNIFORM)?,
+            f_joint_base: ctx.param_field(object_layout, JOINT_BASE_UNIFORM)?,
+            f_morph_base: ctx.param_field(object_layout, MORPH_BASE_UNIFORM)?,
+            f_morph_count: ctx.param_field(object_layout, "u_morph_count")?,
+            f_morph_targets: ctx.param_field(object_layout, "u_morph_targets")?,
             f_instances: ctx.param_field(frame_layout, INSTANCES_TEXTURE)?,
             instances,
             batches: Batches::default(),
@@ -591,6 +611,7 @@ impl SceneRenderer {
                 // One instance of its own.
                 let base = self.instances.push(&m);
                 ctx.param_set_i32(group, self.f_instance_base, base);
+                self.write_deformers(world, ctx, e, group);
             }
 
             let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
@@ -671,7 +692,11 @@ impl SceneRenderer {
         }
         let names = ctx.program_active_uniform_names(program);
         let has = |n: &str| names.iter().any(|x| x == n);
-        let kind = if !has(INSTANCE_BASE_UNIFORM) {
+        // A deforming shader (skin, morph targets) reads this object's own
+        // joints or weights: one draw per object.
+        let kind = if has(JOINT_BASE_UNIFORM) || has(MORPH_BASE_UNIFORM) {
+            ProgramKind::Single
+        } else if !has(INSTANCE_BASE_UNIFORM) {
             ProgramKind::Uniforms
         } else if has(MODEL_UNIFORM) || has(NORMAL_MATRIX_UNIFORM) || has(OBJECT_ID_UNIFORM) {
             ProgramKind::Single
@@ -680,6 +705,34 @@ impl SceneRenderer {
         };
         self.program_kinds.insert(program, kind);
         kind
+    }
+
+    // A skinned or morphing mesh's joint matrices and morph weights into the
+    // instance texture, and where they start into its object group.
+    fn write_deformers(&mut self, world: &World, ctx: &Context, e: Entity, group: ParamGroupId) {
+        if let Some(skin) = world.get::<Skin>(e) {
+            let base = self.instances.len();
+            for (j, &joint) in skin.joints.iter().enumerate() {
+                let w = world
+                    .get::<WorldMatrix>(joint)
+                    .map_or(Mat4::IDENTITY, |w| w.0);
+                let ibm = skin.inverse_bind.get(j).copied().unwrap_or(Mat4::IDENTITY);
+                self.instances.push(&(w * ibm));
+            }
+            ctx.param_set_i32(group, self.f_joint_base, base);
+        }
+        if let Some(morph) = world.get::<Morph>(e) {
+            // The weights are the node's (the primitive's parent).
+            let node = world.get::<Parent>(e).map(|p| p.0);
+            let weights = node.and_then(|n| world.get::<MorphWeights>(n));
+            let base = self.instances.push_floats(
+                weights.map_or(&[][..], |w| &w.0[..]),
+                morph.targets as usize,
+            );
+            ctx.param_set_i32(group, self.f_morph_base, base);
+            ctx.param_set_i32(group, self.f_morph_count, morph.targets as i32);
+            ctx.param_set_texture(group, self.f_morph_targets, morph.texture);
+        }
     }
 
     // The `i`th pooled object group for a batch (made on first need).
