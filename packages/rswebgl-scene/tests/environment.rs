@@ -95,7 +95,7 @@ fn look(scene: &mut Scene, ctx: &Context, gl: &Gl, camera: Entity, dir: [f32; 3]
 }
 
 #[wasm_bindgen_test]
-fn baked_directions_match_the_equirect_map() {
+async fn baked_directions_match_the_equirect_map() {
     let (ctx, gl) = context();
     let mut scene = Scene::new(&ctx).expect("scene");
     let camera = scene.spawn();
@@ -105,6 +105,7 @@ fn baked_directions_match_the_equirect_map() {
         .expect("bake");
     assert!(scene.has_environment());
     scene.set_background(0.0);
+    ready(&scene).await;
 
     let red = |p: [u8; 4]| p[0] > 128;
     let green = |p: [u8; 4]| p[1] > 128;
@@ -211,6 +212,7 @@ async fn a_baked_uniform_environment_lights_like_the_constant_one() {
     scene.insert_camera(camera, Camera::orthographic(2.0, 1.0, 0.1, 100.0));
     scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
     scene.add_model(load_model(&ctx, &quads_url()).await.expect("load"));
+    ready(&scene).await;
 
     let frame = |scene: &mut Scene| -> [[u8; 4]; 3] {
         let mut pass = Pass::to_default();
@@ -253,4 +255,11 @@ async fn a_baked_uniform_environment_lights_like_the_constant_one() {
     // prefiltered specular.
     assert!(baked.iter().all(|p| p[0] > 60), "{baked:?}");
     scene.destroy();
+}
+
+// Shaders link in the background; wait for them before reading pixels.
+async fn ready(scene: &Scene) {
+    wasm_bindgen_futures::JsFuture::from(scene.when_ready())
+        .await
+        .unwrap();
 }

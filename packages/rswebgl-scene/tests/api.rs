@@ -131,7 +131,11 @@ async fn setup() -> Setup {
 }
 
 impl Setup {
-    fn frame(&mut self) -> [[u8; 4]; 3] {
+    // A frame once every shader has compiled (they link in the background).
+    async fn frame(&mut self) -> [[u8; 4]; 3] {
+        wasm_bindgen_futures::JsFuture::from(self.scene.when_ready())
+            .await
+            .unwrap();
         self.scene.render_frame(self.camera);
         let mut out = [[0u8; 4]; 3];
         for (i, px) in out.iter_mut().enumerate() {
@@ -161,7 +165,7 @@ const BLUE: [u8; 4] = [0, 0, 255, 255];
 async fn materials_by_name_property_and_per_part_clones() {
     let mut s = setup().await;
     // renderFrame gave the camera the canvas's aspect.
-    assert_eq!(s.frame(), [YELLOW, WHITE, WHITE]);
+    assert_eq!(s.frame().await, [YELLOW, WHITE, WHITE]);
     assert_eq!(s.scene.world().get::<Camera>(s.camera).unwrap().aspect, 3.0);
 
     let gold = s.scene.find_material(s.root, "Gold");
@@ -181,7 +185,7 @@ async fn materials_by_name_property_and_per_part_clones() {
     s.scene
         .set_material_property(stone, "baseColorFactor", json("[0, 0, 1, 1]"))
         .unwrap();
-    assert_eq!(s.frame(), [YELLOW, BLUE, BLUE]);
+    assert_eq!(s.frame().await, [YELLOW, BLUE, BLUE]);
     assert_eq!(
         s.scene.material_property(stone, "baseColorFactor"),
         Some(vec![0.0, 0.0, 1.0, 1.0])
@@ -193,11 +197,11 @@ async fn materials_by_name_property_and_per_part_clones() {
         .set_material_property(ruby, "baseColorFactor", json("[1, 0, 0, 1]"))
         .unwrap();
     s.scene.set_material(node, ruby);
-    assert_eq!(s.frame(), [YELLOW, BLUE, RED]);
+    assert_eq!(s.frame().await, [YELLOW, BLUE, RED]);
     assert_eq!(s.scene.material_name(ruby).as_deref(), Some("Stone"));
     s.scene.set_material(node, stone);
     s.scene.destroy_material(ruby);
-    assert_eq!(s.frame(), [YELLOW, BLUE, BLUE]);
+    assert_eq!(s.frame().await, [YELLOW, BLUE, BLUE]);
 
     // Bad input throws instead of half-applying.
     assert!(
@@ -226,7 +230,7 @@ async fn materials_by_name_property_and_per_part_clones() {
 #[wasm_bindgen_test]
 async fn turning_an_extension_on_switches_the_variant() {
     let mut s = setup().await;
-    s.frame();
+    s.frame().await;
     let stone = s.scene.find_material(s.root, "Stone");
     let mesh = |s: &Setup, name: &str| {
         let node = s.scene.find_by_name(s.root, name);
@@ -242,6 +246,8 @@ async fn turning_an_extension_on_switches_the_variant() {
         .set_material_property(stone, "clearcoatFactor", json("1"))
         .unwrap();
     assert_eq!(s.scene.shader_variant_count(), before.0 + 1);
+    // The switch lands once the new variant has linked.
+    s.frame().await;
     let coated = mesh(&s, "stone_a");
     assert_ne!(coated, before.1);
     assert_eq!(mesh(&s, "stone_b"), coated, "both users switch");
@@ -258,7 +264,7 @@ async fn turning_an_extension_on_switches_the_variant() {
 #[wasm_bindgen_test]
 async fn picking_on_the_gpu_finds_the_nearest_visible_part() {
     let mut s = setup().await;
-    s.frame();
+    s.frame().await;
     let band = s.scene.find_by_name(s.root, "band");
     let stone_b = s.scene.find_by_name(s.root, "stone_b");
     let pick = |s: &mut Setup, x: f32, y: f32| {
@@ -338,10 +344,14 @@ async fn scene_shaders_and_options() {
         .create_program(vert, "out vec4 c;\nvoid main() { c = nope; }")
     {
         Err(e) => e.message().to_string(),
-        Ok(p) => {
+        // Linking in the background: the error is logged when it completes.
+        Ok(p) => console_errors(|| {
             s.ctx.program_active_uniform_names(p);
-            format!("linked: {}", s.ctx.program_is_valid(p))
-        }
+        })
+        .join(
+            "
+",
+        ),
     };
     assert!(
         err.contains("0:2"),
@@ -370,7 +380,7 @@ async fn scene_shaders_and_options() {
     let draw = DrawCommand::arrays(DrawMode::Triangles, 0, 6);
     s.scene.set_mesh(e, json(&opts), &draw).expect("mesh");
     // Blue through scene_output: tone mapping desaturates it a little.
-    let px = s.frame()[1];
+    let px = s.frame().await[1];
     assert!(
         px[2] > 220 && px[0] < 60 && px[0] == px[1],
         "drawn in front of stone_a: {px:?}"
@@ -485,7 +495,7 @@ async fn await_texture(p: js_sys::Promise) -> Result<TextureId, JsValue> {
 #[wasm_bindgen_test]
 async fn material_textures_from_js() {
     let mut s = setup().await;
-    s.frame();
+    s.frame().await;
     let stone = s.scene.find_material(s.root, "Stone");
     let variants = s.scene.shader_variant_count();
 
@@ -498,7 +508,7 @@ async fn material_textures_from_js() {
     s.scene
         .set_material_texture(stone, "baseColorTexture", red, JsValue::UNDEFINED)
         .unwrap();
-    assert_eq!(s.frame(), [YELLOW, RED, RED]);
+    assert_eq!(s.frame().await, [YELLOW, RED, RED]);
     assert_eq!(s.scene.material_texture(stone, "baseColorTexture"), red);
     assert_eq!(
         s.scene.shader_variant_count(),
@@ -521,7 +531,7 @@ async fn material_textures_from_js() {
         .unwrap();
     s.scene
         .set_material(s.scene.find_by_name(s.root, "stone_b"), copy);
-    assert_eq!(s.frame(), [YELLOW, RED, BLUE]);
+    assert_eq!(s.frame().await, [YELLOW, RED, BLUE]);
 
     // Removing a map goes back to the factor (and the variant without it).
     s.scene
@@ -532,7 +542,7 @@ async fn material_textures_from_js() {
             JsValue::UNDEFINED,
         )
         .unwrap();
-    assert_eq!(s.frame(), [YELLOW, WHITE, BLUE]);
+    assert_eq!(s.frame().await, [YELLOW, WHITE, BLUE]);
     assert_eq!(
         s.scene.material_texture(stone, "baseColorTexture"),
         TextureId::NULL
@@ -577,11 +587,11 @@ async fn reverse_z_draws_and_picks_the_same() {
     if !s.scene.set_reverse_z(true) {
         return; // EXT_clip_control unavailable
     }
-    assert_eq!(s.frame(), [YELLOW, WHITE, WHITE]);
+    assert_eq!(s.frame().await, [YELLOW, WHITE, WHITE]);
     let stone_b = s.scene.find_by_name(s.root, "stone_b");
     // In front of the band now: the nearer one still wins.
     s.scene.set_translation(stone_b, -1.0, 0.0, 0.5);
-    assert_eq!(s.frame(), [WHITE, WHITE, [0, 0, 0, 255]]);
+    assert_eq!(s.frame().await, [WHITE, WHITE, [0, 0, 0, 255]]);
     let p = s.scene.pick(s.camera, -2.0 / 3.0, 0.0).unwrap();
     let hit = wasm_bindgen_futures::JsFuture::from(p).await.unwrap();
     let get = |k: &str| js_sys::Reflect::get(&hit, &k.into()).unwrap();
@@ -590,6 +600,49 @@ async fn reverse_z_draws_and_picks_the_same() {
     let point = js_sys::Float32Array::from(get("point")).to_vec();
     assert!((point[2] - 0.5).abs() < 1e-3, "{point:?}");
     s.scene.set_reverse_z(false);
-    assert_eq!(s.frame(), [WHITE, WHITE, [0, 0, 0, 255]], "and back");
+    assert_eq!(s.frame().await, [WHITE, WHITE, [0, 0, 0, 255]], "and back");
+    s.scene.destroy();
+}
+
+// Messages logged with console.error while `f` runs.
+fn console_errors(f: impl FnOnce()) -> Vec<String> {
+    let console = js_sys::Reflect::get(&js_sys::global(), &"console".into()).unwrap();
+    let original = js_sys::Reflect::get(&console, &"error".into()).unwrap();
+    let log = js_sys::Array::new();
+    let push = js_sys::Function::new_with_args("m", "this.push(String(m))").bind0(&log);
+    js_sys::Reflect::set(&console, &"error".into(), &push).unwrap();
+    f();
+    js_sys::Reflect::set(&console, &"error".into(), &original).unwrap();
+    log.iter().filter_map(|v| v.as_string()).collect()
+}
+
+// Shaders link in the background: a frame before they're done leaves the
+// meshes out (counted as pending) instead of waiting; `whenReady` resolves
+// when they're done, and a material change that needs a new variant keeps
+// drawing with the old one until the new one links.
+#[wasm_bindgen_test]
+async fn shaders_compile_without_stalling_frames() {
+    let mut s = setup().await;
+    let parallel = s
+        .ctx
+        .is_extension_enabled(rswebgl::extension::Extension::KhrParallelShaderCompile);
+    s.scene.render_frame(s.camera);
+    assert_eq!(s.scene.drawn() + s.scene.pending(), 3);
+    assert_eq!(s.frame().await, [YELLOW, WHITE, WHITE]);
+    assert_eq!(s.scene.pending(), 0);
+
+    // A new variant (a base color map): the stones stay drawn meanwhile.
+    let p = s
+        .scene
+        .load_texture(&png_url([255, 0, 0, 255]), json(r#"{ "mipmaps": false }"#))
+        .unwrap();
+    let red = await_texture(p).await.expect("loaded");
+    let stone = s.scene.find_material(s.root, "Stone");
+    s.scene
+        .set_material_texture(stone, "baseColorTexture", red, JsValue::UNDEFINED)
+        .unwrap();
+    s.scene.render_frame(s.camera);
+    assert_eq!(s.scene.drawn(), 3, "parallel: {parallel}");
+    assert_eq!(s.frame().await, [YELLOW, RED, RED]);
     s.scene.destroy();
 }

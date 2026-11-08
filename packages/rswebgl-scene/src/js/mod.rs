@@ -73,6 +73,9 @@ pub struct Scene {
     // The canvas pass `renderFrame` reuses.
     frame_pass: Pass,
     stats: RenderStats,
+    // PBR variant switches waiting for the new program to link: the mesh
+    // keeps drawing with its old one meanwhile.
+    pending_variants: Vec<(Entity, ProgramId)>,
 }
 
 // A rejected call on a dead entity: reported once per call site, no-op.
@@ -99,6 +102,9 @@ fn vec3(op: &str, what: &str, v: &[f32]) -> Option<Vec3> {
 impl Scene {
     #[wasm_bindgen(constructor)]
     pub fn new(ctx: &Context) -> Result<Scene, Error> {
+        // Shaders link in the background: a mesh whose shader isn't ready
+        // is left out of the frame instead of stalling it (`whenReady`).
+        ctx.enable_extension_quietly(rswebgl::extension::Extension::KhrParallelShaderCompile);
         let mut frame_pass = Pass::to_default();
         frame_pass.set_clear(&ClearMask::color_depth());
         Ok(Self {
@@ -112,6 +118,7 @@ impl Scene {
             textures: Vec::new(),
             frame_pass,
             stats: RenderStats::default(),
+            pending_variants: Vec::new(),
         })
     }
 
@@ -344,6 +351,7 @@ impl Scene {
         if mesh.program.is_null() || mesh.state.is_null() {
             return Err("setMesh: \"program\" and \"state\" are required".into());
         }
+        self.pending_variants.retain(|&(p, _)| p != e);
         self.insert(e, "setMesh", mesh);
         Ok(())
     }
@@ -459,6 +467,7 @@ impl Scene {
     /// clearing or sorting the pass, and leaves the camera's aspect to you
     /// (`setCameraAspect`). Returns the draws added.
     pub fn render(&mut self, camera: Entity, pass: &mut Pass) -> usize {
+        self.apply_pending_variants();
         self.transforms.update(&mut self.world);
         self.stats = self.renderer.render(&self.world, &self.ctx, camera, pass);
         self.world.clear_trackers();
@@ -474,6 +483,35 @@ impl Scene {
     #[wasm_bindgen(js_name = setReverseZ)]
     pub fn set_reverse_z(&mut self, on: bool) -> bool {
         self.ctx.set_reverse_z(on)
+    }
+
+    /// Resolves once every shader the scene's meshes use (and any variant
+    /// switch under way) has finished compiling. Shaders compile in the
+    /// background (`KHR_parallel_shader_compile`); until then frames leave
+    /// those meshes out rather than stall. Await it after `addModel` to show
+    /// a model whole; resolves at once where compiles are synchronous.
+    #[wasm_bindgen(js_name = whenReady)]
+    pub fn when_ready(&self) -> js_sys::Promise {
+        let mut programs: Vec<ProgramId> = self
+            .world
+            .storage::<MeshRenderer>()
+            .map(|m| m.data().iter().map(|m| m.program).collect())
+            .unwrap_or_default();
+        programs.extend(self.pending_variants.iter().map(|&(_, p)| p));
+        programs.extend(self.renderer.built_background_program());
+        programs.sort_unstable_by_key(|p| p.to_raw());
+        programs.dedup();
+        let ready = self.ctx.programs_ready(programs);
+        wasm_bindgen_futures::future_to_promise(async move {
+            ready.await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Meshes the last frame left out because their shader was still
+    /// compiling.
+    pub fn pending(&self) -> usize {
+        self.stats.pending
     }
 
     /// Draws added by the last frame.

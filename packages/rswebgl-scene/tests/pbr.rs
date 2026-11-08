@@ -170,6 +170,9 @@ async fn setup() -> Setup {
     scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
     let model = load_model(&ctx, &asset_url()).await.expect("load");
     let root = scene.add_model(model);
+    wasm_bindgen_futures::JsFuture::from(scene.when_ready())
+        .await
+        .unwrap();
     let mut pass = Pass::to_default();
     pass.set_clear(&ClearMask::color_depth());
     Setup {

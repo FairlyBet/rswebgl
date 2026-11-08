@@ -156,6 +156,8 @@ impl Scene {
     #[wasm_bindgen(js_name = setBackground)]
     pub fn set_background(&mut self, blur: f32) {
         self.renderer.set_background(Some(blur));
+        // Start compiling now; `whenReady` waits for it.
+        self.renderer.background_program(&self.ctx);
     }
 
     /// No background: the clear color shows.

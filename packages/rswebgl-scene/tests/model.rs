@@ -172,6 +172,9 @@ async fn a_model_becomes_a_hierarchy_of_entities() {
     let buffers = model.buffers().to_vec();
     let program = s.ctx.create_program(VERT, FRAG).expect("program");
     let root = s.scene.add_model_with_program(model, program);
+    wasm_bindgen_futures::JsFuture::from(s.scene.when_ready())
+        .await
+        .unwrap();
 
     // camera + root + 3 nodes + 2 primitives × 2 nodes with the mesh.
     assert_eq!(s.scene.entity_count(), 1 + 1 + 3 + 4);

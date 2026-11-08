@@ -194,6 +194,7 @@ fn stats(drawn: usize, culled: usize, objects_written: usize) -> RenderStats {
         drawn,
         culled,
         objects_written,
+        pending: 0,
     }
 }
 

@@ -407,15 +407,46 @@ impl Scene {
         }
         let key = PbrKey::new(prim.attributes, &record.material);
         match self.pbr.program(&self.ctx, key) {
-            Ok(program) if program != mesh.program => {
-                if let Some(mut m) = self.world.get_mut::<MeshRenderer>(e) {
+            // A new variant still linking: keep drawing with the current one
+            // (if it is ready) and switch when the new one is.
+            Ok(program)
+                if program != mesh.program
+                    && self.ctx.program_link_pending(program)
+                    && !self.ctx.program_link_pending(mesh.program) =>
+            {
+                self.pending_variants.retain(|&(p, _)| p != e);
+                self.pending_variants.push((e, program));
+            }
+            Ok(program) => {
+                self.pending_variants.retain(|&(p, _)| p != e);
+                if program != mesh.program
+                    && let Some(mut m) = self.world.get_mut::<MeshRenderer>(e)
+                {
                     m.program = program;
                 }
             }
-            Ok(_) => {}
             Err(err) => console::error_once(&format!(
                 "[rswebgl-scene] a PBR shader variant failed to build: {err}"
             )),
         }
+    }
+
+    // Switches meshes whose new variant has finished linking (or failed:
+    // then the draw reports it, as any broken program).
+    pub(super) fn apply_pending_variants(&mut self) {
+        if self.pending_variants.is_empty() {
+            return;
+        }
+        let ctx = &self.ctx;
+        let world = &mut self.world;
+        self.pending_variants.retain(|&(e, program)| {
+            if ctx.program_link_pending(program) {
+                return world.is_alive(e);
+            }
+            if let Some(mut m) = world.get_mut::<MeshRenderer>(e) {
+                m.program = program;
+            }
+            false
+        });
     }
 }

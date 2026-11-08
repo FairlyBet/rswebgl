@@ -117,6 +117,9 @@ pub struct RenderStats {
     pub culled: usize,
     /// Object groups whose matrices were written (moved or new objects).
     pub objects_written: usize,
+    /// Visible meshes left out because their shader is still compiling in
+    /// the background (parallel compile); they appear once it links.
+    pub pending: usize,
 }
 
 // An entity's object group and the `WorldMatrix` change tick it holds. Kept
@@ -329,12 +332,18 @@ impl SceneRenderer {
         ctx.param_set_texture(self.frame_group, self.f_env_specular, env.specular());
     }
 
-    // The background draw: first in the pass (key 0, pushed before any
-    // mesh), not writing depth.
-    fn push_background(&mut self, ctx: &Context, pass: &mut Pass) {
-        let Some(blur) = self.background else {
-            return;
-        };
+    /// The background shader, built on first use (`set_background` callers can
+    /// build it early, so it compiles while other things load). None if it
+    /// failed to build (reported once).
+    // The background shader if it has been built.
+    pub(crate) fn built_background_program(&self) -> Option<ProgramId> {
+        match self.skybox {
+            Some(Ok(p)) => Some(p),
+            _ => None,
+        }
+    }
+
+    pub fn background_program(&mut self, ctx: &Context) -> Option<ProgramId> {
         let program = *self.skybox.get_or_insert_with(|| {
             create_scene_program(ctx, FULLSCREEN_VERT, SKYBOX_FRAG).map_err(|e| {
                 console::error(&format!(
@@ -342,9 +351,22 @@ impl SceneRenderer {
                 ))
             })
         });
-        let Ok(program) = program else {
+        program.ok()
+    }
+
+    // The background draw: first in the pass (key 0, pushed before any
+    // mesh), not writing depth.
+    fn push_background(&mut self, ctx: &Context, pass: &mut Pass) {
+        let Some(blur) = self.background else {
             return;
         };
+        let Some(program) = self.background_program(ctx) else {
+            return;
+        };
+        // Still compiling: no background this frame rather than a stall.
+        if ctx.program_link_pending(program) {
+            return;
+        }
         ctx.param_set_f32(self.frame_group, self.f_background_blur, blur);
         let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
         groups[FRAME_SLOT] = self.frame_group;
@@ -414,6 +436,13 @@ impl SceneRenderer {
                     continue;
                 }
                 center = c;
+            }
+
+            // A shader still linking would stall the frame: skip the mesh until
+            // it is done.
+            if ctx.program_link_pending(mesh.program) {
+                self.stats.pending += 1;
+                continue;
             }
 
             let Some(group) = self.ensure_object_group(ctx, e, &m, worlds.changed_tick(row)) else {

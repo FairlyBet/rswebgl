@@ -41,6 +41,9 @@ const root = scene.addModel(model);
 // shown blurred behind the model.
 scene.setEnvironmentHdr(new Uint8Array(hdr), 256);
 scene.setBackground(0.3);
+// Shaders compile in the background; wait so the model appears whole
+// (frames before this would leave its parts out, never stall).
+await scene.whenReady();
 
 // Frame the model: a camera looking at its bounding sphere.
 const [cx, cy, cz, radius] = scene.modelBounds(root);
