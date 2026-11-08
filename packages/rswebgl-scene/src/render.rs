@@ -232,6 +232,7 @@ pub struct SceneRenderer {
     batches: Batches,
     batch_groups: Vec<ParamGroupId>,
     program_kinds: HashMap<ProgramId, ProgramKind>,
+    program_peels: HashMap<ProgramId, bool>,
     // Made on the first `pick`.
     picker: Option<GpuPicker>,
     // The context generation its GPU objects belong to.
@@ -341,6 +342,7 @@ impl SceneRenderer {
             batches: Batches::default(),
             batch_groups: Vec::new(),
             program_kinds: HashMap::new(),
+            program_peels: HashMap::new(),
             picker: None,
             generation: ctx.generation(),
             display_output: true,
@@ -623,7 +625,13 @@ impl SceneRenderer {
             if mesh.transmissive {
                 self.stats.transmissive += 1;
             }
-            let dest = if glass.is_some() && mesh.transmissive && !mesh.transparent {
+            // Peeled only if its shader takes part (calls peel_discard, as the
+            // PBR shader does): another would draw whole in every layer pass.
+            let dest = if glass.is_some()
+                && mesh.transmissive
+                && !mesh.transparent
+                && self.program_peels(ctx, mesh.program)
+            {
                 Dest::Glass
             } else if late.is_some() && (mesh.transparent || mesh.transmissive) {
                 Dest::Late
@@ -783,6 +791,19 @@ impl SceneRenderer {
             ctx.param_set_i32(group, self.f_morph_count, morph.targets as i32);
             ctx.param_set_texture(group, self.f_morph_targets, morph.texture);
         }
+    }
+
+    // Whether `program` reads the peeled depth (its fragment stage calls
+    // peel_discard). Asked once linked, like `program_kind`.
+    fn program_peels(&mut self, ctx: &Context, program: ProgramId) -> bool {
+        if self.program_peels.len() > 1024 {
+            self.program_peels.clear();
+        }
+        *self.program_peels.entry(program).or_insert_with(|| {
+            ctx.program_active_uniform_names(program)
+                .iter()
+                .any(|n| n == "u_peel_depth")
+        })
     }
 
     // The `i`th pooled object group for a batch (made on first need).

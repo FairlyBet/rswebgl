@@ -567,6 +567,9 @@ impl Scene {
             pass.sort();
             self.time(&mut pass, "opaque");
             self.ctx.render(&pass);
+            if !peeling && let Some(out) = &mut self.hdr {
+                out.release_peel(&self.ctx);
+            }
             if glass.draw_count() > 0 {
                 self.peel_glass(&mut glass, &mut late);
             } else if self.stats.transmissive > 0
@@ -608,6 +611,10 @@ impl Scene {
     /// the next `render` call: each call rewrites the scene's instance data
     /// (the matrices its batched draws read).
     pub fn render(&mut self, camera: Entity, pass: &mut Pass) -> usize {
+        // Straight to displayable colors (renderFrame's HDR target set
+        // linear output), and nothing transmissive sees a scene copy.
+        self.renderer.set_output(true, self.tone_mapping);
+        self.renderer.set_scene_color(&self.ctx, None);
         self.render_passes(camera, pass, None, None)
     }
 
@@ -740,6 +747,8 @@ impl Scene {
         glass.set_clear(&rswebgl::framebuffer::ClearMask::none());
         glass.clear_resolve();
         glass.set_invalidate(&rswebgl::framebuffer::InvalidateMask::none());
+        // The depth peels aren't timed (only the shading passes are).
+        glass.clear_timer();
         let out = self.hdr.as_ref().expect("checked");
         // Front to back: layer k is the nearest surface beyond layer k − 1.
         for k in 0..layers {
@@ -763,6 +772,7 @@ impl Scene {
                 p.time(glass, "glass");
             }
             self.ctx.render(glass);
+            glass.clear_timer();
         }
         self.renderer
             .set_peel(&self.ctx, 0, rswebgl::ids::TextureId::NULL);
@@ -773,8 +783,10 @@ impl Scene {
 
     // Times `pass` under `label` when profiling.
     fn time(&mut self, pass: &mut Pass, label: &str) {
-        if let Some(p) = &mut self.profiler {
-            p.time(pass, label);
+        match &mut self.profiler {
+            Some(p) => p.time(pass, label),
+            // Passes live across frames: drop a query an earlier frame set.
+            None => pass.clear_timer(),
         }
     }
 
@@ -843,9 +855,7 @@ impl Scene {
         if let Some(p) = &self.env_pending {
             p.cancel();
         }
-        if let Some(baker) = &self.env_baker
-            && self.generation == self.ctx.generation()
-        {
+        if let Some(baker) = &self.env_baker {
             baker.destroy();
         }
         for (g, record) in &self.materials {

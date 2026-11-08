@@ -169,6 +169,8 @@ fn mip_count(size: i32) -> i32 {
 /// background) and shared by every bake on a context.
 pub struct EnvBaker {
     ctx: Context,
+    // The context generation its programs belong to.
+    generation: u32,
     destroyed: std::cell::Cell<bool>,
     decode: ProgramId,
     equirect: ProgramId,
@@ -206,6 +208,7 @@ impl EnvBaker {
         )?;
         Ok(Self {
             ctx: ctx.clone(),
+            generation: ctx.generation(),
             destroyed: std::cell::Cell::new(false),
             decode: program("DECODE")?,
             equirect: program("EQUIRECT")?,
@@ -244,10 +247,14 @@ impl EnvBaker {
             return;
         }
         let ctx = &self.ctx;
+        // The group and layout are CPU-side: freed even after a context
+        // loss, when the programs are gone already.
         ctx.destroy_param_group(self.group);
         ctx.destroy_param_layout(self.layout);
-        for p in self.programs() {
-            ctx.destroy_program(p);
+        if self.generation == ctx.generation() {
+            for p in self.programs() {
+                ctx.destroy_program(p);
+            }
         }
     }
 
@@ -511,11 +518,14 @@ impl PendingEnvironment {
         let task_ctx = ctx.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let ctx = task_ctx;
+            let generation = ctx.generation();
             ctx.programs_ready(baker.programs().to_vec()).await;
             let mut result = baker.check_linked().map(|()| None);
             while let Ok(None) = result {
                 let running = matches!(*shared.borrow(), PendingState::Running);
-                if !running || ctx.is_lost() {
+                // Lost, or lost and restored between two steps: the job's
+                // handles are gone either way.
+                if !running || ctx.is_lost() || ctx.generation() != generation {
                     job.cancel();
                     *shared.borrow_mut() = PendingState::Over;
                     return;

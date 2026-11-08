@@ -117,9 +117,13 @@ impl PeelTargets {
             ctx.destroy_texture(t);
         }
         for fb in [self.opaque_fb, self.glass_fb, self.transparent_fb] {
-            ctx.destroy_framebuffer(fb);
+            if !fb.is_null() {
+                ctx.destroy_framebuffer(fb);
+            }
         }
-        ctx.destroy_texture(self.opaque_depth);
+        if !self.opaque_depth.is_null() {
+            ctx.destroy_texture(self.opaque_depth);
+        }
     }
 }
 
@@ -283,6 +287,13 @@ impl HdrOutput {
         }
     }
 
+    /// Frees the peeling targets (peeling turned off).
+    pub fn release_peel(&mut self, ctx: &Context) {
+        if let Some(peel) = self.peel.take() {
+            peel.free(ctx);
+        }
+    }
+
     /// Makes (or keeps) `layers` peeling targets at the current size.
     pub fn ensure_peel(&mut self, ctx: &Context, layers: usize) -> Result<(), Error> {
         if self.peel.as_ref().is_some_and(|p| p.layers.len() == layers) {
@@ -304,23 +315,31 @@ impl HdrOutput {
             ctx.framebuffer_attach_depth_texture(fb, t, 0);
             Ok((t, fb))
         };
-        let (opaque_depth, opaque_fb) = depth(ctx)?;
-        let mut layers = Vec::with_capacity(layers);
-        for _ in 0..layers.capacity() {
-            layers.push(depth(ctx)?);
+        // Built as it goes, so a failure part way frees what was made.
+        let mut peel = PeelTargets {
+            layers: Vec::with_capacity(layers),
+            opaque_depth: TextureId::NULL,
+            opaque_fb: FramebufferId::NULL,
+            glass_fb: FramebufferId::NULL,
+            transparent_fb: FramebufferId::NULL,
+        };
+        let made = (|| -> Result<(), Error> {
+            (peel.opaque_depth, peel.opaque_fb) = depth(ctx)?;
+            for _ in 0..layers {
+                peel.layers.push(depth(ctx)?);
+            }
+            peel.glass_fb = ctx.create_framebuffer(w, h)?;
+            ctx.framebuffer_attach_color_texture_2d(peel.glass_fb, 0, self.color, 0);
+            peel.transparent_fb = ctx.create_framebuffer(w, h)?;
+            ctx.framebuffer_attach_color_texture_2d(peel.transparent_fb, 0, self.color, 0);
+            ctx.framebuffer_attach_depth_texture(peel.transparent_fb, peel.layers[0].0, 0);
+            Ok(())
+        })();
+        if let Err(e) = made {
+            peel.free(ctx);
+            return Err(e);
         }
-        let glass_fb = ctx.create_framebuffer(w, h)?;
-        ctx.framebuffer_attach_color_texture_2d(glass_fb, 0, self.color, 0);
-        let transparent_fb = ctx.create_framebuffer(w, h)?;
-        ctx.framebuffer_attach_color_texture_2d(transparent_fb, 0, self.color, 0);
-        ctx.framebuffer_attach_depth_texture(transparent_fb, layers[0].0, 0);
-        self.peel = Some(PeelTargets {
-            layers,
-            opaque_depth,
-            opaque_fb,
-            glass_fb,
-            transparent_fb,
-        });
+        self.peel = Some(peel);
         Ok(())
     }
 

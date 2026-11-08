@@ -74,7 +74,9 @@ impl Scene {
         if let Some(p) = self.env_pending.take() {
             p.cancel();
         }
-        self.env_baker = None;
+        if let Some(baker) = self.env_baker.take() {
+            baker.destroy();
+        }
         if let Some((bytes, size)) = self.env_source.clone() {
             let intensity = self.renderer.environment_intensity();
             let started = decode_hdr_rgbe(&bytes)

@@ -41,10 +41,12 @@ void peel_discard() {
     float mode = u_shading.z;
     if (mode < 0.5) return;
     float layer = texelFetch(u_peel_depth, ivec2(gl_FragCoord.xy), 0).r;
-    // > 0: farther than the layer. Depth textures are 24-bit without
-    // reverse-Z: a step there is 2^-24.
-    float beyond = u_shading.w > 0.5 ? layer - gl_FragCoord.z : gl_FragCoord.z - layer;
-    const float EPS = 4e-7;
+    // > 0: farther than the layer. Without reverse-Z depth is 24-bit (a step
+    // is 2^-24: a few of them); with it, 32F, whose steps shrink with the
+    // depth: relative, or far glass a centimeter apart would merge.
+    bool reverse = u_shading.w > 0.5;
+    float beyond = reverse ? layer - gl_FragCoord.z : gl_FragCoord.z - layer;
+    float EPS = reverse ? max(abs(layer) * 1e-5, 1e-10) : 4e-7;
     if (mode < 1.5 ? beyond <= EPS : abs(beyond) > EPS) discard;
 }
 
