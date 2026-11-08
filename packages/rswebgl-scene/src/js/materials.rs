@@ -278,6 +278,9 @@ impl Scene {
         if uv > 1 {
             return Err("setMaterialTexture: texCoord must be 0 or 1".into());
         }
+        let [ox, oy] = options::vec2_or(&opts, "offset", [0.0, 0.0])?;
+        let [sx, sy] = options::vec2_or(&opts, "scale", [1.0, 1.0])?;
+        let transform = [ox, oy, options::f32_or(&opts, "rotation", 0.0)?, sx, sy];
         let record = self
             .materials
             .get_mut(&material)
@@ -288,6 +291,12 @@ impl Scene {
             EXTERNAL_TEXTURE
         };
         record.material.set_map(slot, index, uv);
+        record.material.set_uv_transform(slot, transform);
+        self.ctx.param_set_floats_by_name(
+            material,
+            rswebgl_gltf::MAP_SLOTS[slot].transform,
+            &rswebgl_gltf::uv_matrix(transform),
+        );
         record.maps[slot] = texture;
         let uniform = MAP_UNIFORMS[slot];
         self.ctx

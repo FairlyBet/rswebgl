@@ -1016,3 +1016,126 @@ async fn extension_maps_from_js() {
     s.frame().await;
     s.scene.destroy();
 }
+
+// A w×h RGBA PNG of `pixels` (rows top first), stored deflate.
+fn png_rgba(w: u32, h: u32, pixels: &[[u8; 4]]) -> Vec<u8> {
+    fn crc32(data: &[u8]) -> u32 {
+        let mut c = 0xffff_ffffu32;
+        for &b in data {
+            c ^= b as u32;
+            for _ in 0..8 {
+                c = if c & 1 != 0 {
+                    0xedb8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
+            }
+        }
+        !c
+    }
+    fn chunk(out: &mut Vec<u8>, kind: &[u8], data: &[u8]) {
+        out.extend((data.len() as u32).to_be_bytes());
+        let start = out.len();
+        out.extend(kind);
+        out.extend(data);
+        let crc = crc32(&out[start..]);
+        out.extend(crc.to_be_bytes());
+    }
+    let mut raw = Vec::new();
+    for row in pixels.chunks(w as usize) {
+        raw.push(0);
+        for p in row {
+            raw.extend(p);
+        }
+    }
+    let (mut a, mut b) = (1u32, 0u32);
+    for &x in &raw {
+        a = (a + x as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    let len = raw.len() as u16;
+    let mut zlib = vec![0x78, 0x01, 1];
+    zlib.extend(len.to_le_bytes());
+    zlib.extend((!len).to_le_bytes());
+    zlib.extend(&raw);
+    zlib.extend(((b << 16) | a).to_be_bytes());
+    let mut ihdr = Vec::new();
+    ihdr.extend(w.to_be_bytes());
+    ihdr.extend(h.to_be_bytes());
+    ihdr.extend([8, 6, 0, 0, 0]);
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &zlib);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+// KHR_texture_transform from JS: a red|blue texture on a quad, then shifted
+// half a texture (the halves swap) and turned half a turn (they swap back).
+#[wasm_bindgen_test]
+async fn texture_transforms() {
+    let mut s = setup().await;
+    let painted = load_model(&s.ctx, &textured_quad_url(WHITE)).await.unwrap();
+    let painted = s.scene.add_model(painted);
+    // In front of stone_a (the middle cell, 32 px = 1 unit).
+    s.scene.set_translation(painted, 0.0, 0.0, 0.5);
+    let material = s.scene.find_material(painted, "Painted");
+    let url = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png_rgba(2, 1, &[RED, BLUE]))
+    );
+    let p = s
+        .scene
+        .load_texture(&url, json(r#"{ "mipmaps": false, "wrap": "repeat" }"#))
+        .unwrap();
+    let tex = await_texture(p).await.unwrap();
+    async fn halves(
+        s: &mut Setup,
+        material: ParamGroupId,
+        tex: TextureId,
+        opts: &str,
+    ) -> [[u8; 4]; 2] {
+        s.scene
+            .set_material_texture(material, "baseColorTexture", tex, json(opts))
+            .unwrap();
+        s.frame().await;
+        let read = |x: i32| {
+            let mut p = [0u8; 4];
+            s.gl.read_pixels_with_opt_u8_array(
+                x,
+                H / 2,
+                1,
+                1,
+                Gl::RGBA,
+                Gl::UNSIGNED_BYTE,
+                Some(&mut p[..]),
+            )
+            .unwrap();
+            p
+        };
+        // u = 0.25 and 0.75 across the quad: the two texel centers.
+        // Linear filtering blends a little across the texel edge: which
+        // color dominates is what counts.
+        [read(32 + 8), read(32 + 24)].map(|p| {
+            let (r, b) = (p[0] as i32, p[2] as i32);
+            if r > b + 100 {
+                RED
+            } else if b > r + 100 {
+                BLUE
+            } else {
+                p
+            }
+        })
+    }
+    assert_eq!(halves(&mut s, material, tex, "{}").await, [RED, BLUE]);
+    assert_eq!(
+        halves(&mut s, material, tex, r#"{ "offset": [0.5, 0] }"#).await,
+        [BLUE, RED]
+    );
+    // Half a turn about the origin maps u → −u: 0.25 → 0.75 (repeat).
+    assert_eq!(
+        halves(&mut s, material, tex, r#"{ "rotation": 3.14159265 }"#).await,
+        [BLUE, RED]
+    );
+    s.scene.destroy();
+}

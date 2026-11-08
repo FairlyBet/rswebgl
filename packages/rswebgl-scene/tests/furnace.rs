@@ -103,6 +103,10 @@ fn grid_url(materials: &[&str]) -> String {
         }
     }
     let node_list: Vec<String> = (0..nodes.len()).map(|i| i.to_string()).collect();
+    let black = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png([0, 0, 0, 0]))
+    );
     let json = format!(
         r#"{{
   "asset": {{ "version": "2.0" }},
@@ -133,10 +137,7 @@ fn grid_url(materials: &[&str]) -> String {
         meshes = meshes.join(","),
         nodes = nodes.join(","),
         node_list = node_list.join(","),
-        black = format!(
-            "data:image/png;base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(png([0, 0, 0, 0]))
-        ),
+        black = black,
     );
     format!("data:model/gltf+json;base64,{}", b64(json.as_bytes()))
 }

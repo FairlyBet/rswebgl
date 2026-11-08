@@ -56,7 +56,7 @@ fn every_feature_compiles_and_links() {
     let uv1: u64 = 0x1ffff << 34;
     let layers: u64 = 0xf << 8 | 0xf << 13;
     // Each bit alone, every alpha mode, and everything at once.
-    let mut keys: Vec<u64> = (0..51).map(|b| 1u64 << b).collect();
+    let mut keys: Vec<u64> = (0..52).map(|b| 1u64 << b).collect();
     keys.extend([
         0,
         2 << 5,
@@ -65,6 +65,8 @@ fn every_feature_compiles_and_links() {
         maps,
         attrs | maps | layers,
         attrs | maps | layers | 2 << 5,
+        attrs | maps | 1 << 51,
+        attrs | maps | uv1 | layers | 1 << 51,
     ]);
     for model in [ShadingModel::OpenPbr, ShadingModel::Gltf] {
         shaders.set_model(model);

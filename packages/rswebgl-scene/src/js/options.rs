@@ -45,6 +45,12 @@ export interface TextureOptions {
 export interface MaterialTextureOptions {
   /** Which TEXCOORD set the map reads: 0 (default) or 1. */
   texCoord?: number;
+  /** KHR_texture_transform: UV offset (default [0, 0]). */
+  offset?: [number, number];
+  /** UV scale, i.e. repeats (default [1, 1]). */
+  scale?: [number, number];
+  /** UV rotation in radians (default 0). */
+  rotation?: number;
 }
 
 /** What `pick` found. */
@@ -151,5 +157,16 @@ pub(crate) fn string_or(obj: &JsValue, key: &str, default: &str) -> Result<Strin
         Some(v) => v
             .as_string()
             .ok_or_else(|| format!("\"{key}\" must be a string").into()),
+    }
+}
+
+// A pair of numbers at `key`, or `default` when absent.
+pub(crate) fn vec2_or(obj: &JsValue, key: &str, default: [f32; 2]) -> Result<[f32; 2], Error> {
+    match get(obj, key)? {
+        None => Ok(default),
+        Some(v) => match numbers(&v).as_deref() {
+            Some(&[x, y]) => Ok([x, y]),
+            _ => Err(format!("\"{key}\" needs 2 numbers").into()),
+        },
     }
 }

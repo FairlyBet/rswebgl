@@ -235,11 +235,10 @@ FBO blit). Done. Deferred polish:
   `size`. A device without half-float render targets gets an error, no
   fallback (e.g. RGBM in RGBA8).
 - Material model (OpenPBR + glTF reference, `shaders/lib/surface_*.glsl`):
-  factors only — the extensions' textures (transmission, thickness,
-  clearcoat + its roughness and normal, specular / specular color, sheen,
-  iridescence + thickness, anisotropy) aren't read, and
-  `KHR_texture_transform` isn't supported (assets requiring it, e.g.
-  SheenChair, fail to load). Transmission sees a half-size copy of the
+  all extension maps and `KHR_texture_transform` are read (17 maps; a
+  variant needing more samplers than the device has drops the subtlest
+  maps, reported). The coat's normal map goes through the base's tangent
+  frame (fine unless its UV set is oriented differently). Transmission sees a half-size copy of the
   opaque scene (HDR output) — one layer: glass behind glass shows the
   environment's / the opaque scene, not the other glass (depth peeling,
   2–4 layers, is the planned upgrade; dual peeling needs EXT_float_blend).
@@ -255,8 +254,8 @@ FBO blit). Done. Deferred polish:
   own shaders (a displacing or skinning vertex shader is picked at rest).
   One pick in flight at a time is the natural use; many at once each draw
   and read on their own. No region (box-select) picking yet.
-- Materials: `setMaterialTexture` sets the five core maps; the extension
-  maps (clearcoat, transmission, …) aren't settable (nor read from glTF).
+- Materials: `setMaterialTexture` sets any of the 17 maps (with a texture
+  transform: offset, scale, rotation).
   The color space of a texture set on a map isn't checked against the role
   (sRGB for colors). `cloneMaterial` shares the source model's textures, so
   a clone outlives its model only as long as nothing samples them.

@@ -101,6 +101,59 @@ uniform float u_iridescence_thickness; // nm
 uniform float u_anisotropy_strength;
 uniform float u_anisotropy_rotation;  // radians, from the tangent
 #endif
+// KHR_texture_transform: each map's UV matrix (its <MAP>_UV applies it).
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_BASE_COLOR_MAP)
+uniform mat3 u_base_color_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_METALLIC_ROUGHNESS_MAP)
+uniform mat3 u_metallic_roughness_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_NORMAL_MAP)
+uniform mat3 u_normal_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_OCCLUSION_MAP)
+uniform mat3 u_occlusion_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_EMISSIVE_MAP)
+uniform mat3 u_emissive_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_CLEARCOAT_MAP)
+uniform mat3 u_clearcoat_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_CLEARCOAT_ROUGHNESS_MAP)
+uniform mat3 u_clearcoat_roughness_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_CLEARCOAT_NORMAL_MAP)
+uniform mat3 u_clearcoat_normal_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_TRANSMISSION_MAP)
+uniform mat3 u_transmission_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_THICKNESS_MAP)
+uniform mat3 u_thickness_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_SPECULAR_MAP)
+uniform mat3 u_specular_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_SPECULAR_COLOR_MAP)
+uniform mat3 u_specular_color_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_SHEEN_COLOR_MAP)
+uniform mat3 u_sheen_color_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_SHEEN_ROUGHNESS_MAP)
+uniform mat3 u_sheen_roughness_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_IRIDESCENCE_MAP)
+uniform mat3 u_iridescence_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_IRIDESCENCE_THICKNESS_MAP)
+uniform mat3 u_iridescence_thickness_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_ANISOTROPY_MAP)
+uniform mat3 u_anisotropy_uv;
+#endif
+
 // Extension maps (channels as their extensions define them).
 #ifdef HAS_CLEARCOAT_MAP
 uniform sampler2D u_clearcoat_tex;              // R

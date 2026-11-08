@@ -24,7 +24,7 @@ const FRAG: &str = include_str!("../shaders/pbr.frag");
 // mode; 7 unlit; 8..12 transmission, volume, clearcoat, dispersion; 12 the
 // glTF reference model; 13 EON diffuse; 14..17 sheen, thin film,
 // anisotropy; 17..34 which maps the material has (`MAP_SLOTS` order);
-// 34..51 which of them read TEXCOORD_1.
+// 34..51 which of them read TEXCOORD_1; 51 KHR_texture_transform.
 const ATTRS: [(u64, &str); 5] = [
     (ATTR_NORMAL as u64, "HAS_NORMAL"),
     (ATTR_UV0 as u64, "HAS_UV0"),
@@ -48,9 +48,12 @@ const IRIDESCENCE: u64 = 1 << 15;
 const ANISOTROPY: u64 = 1 << 16;
 const MAP_SHIFT: u64 = 17;
 const UV1_SHIFT: u64 = MAP_SHIFT + MAP_COUNT as u64;
-const TOP_BIT: u64 = 1 << (UV1_SHIFT + MAP_COUNT as u64 - 1);
+// KHR_texture_transform on any map in use: its `_UV` goes through a matrix.
+const TEXTURE_TRANSFORM: u64 = 1 << (UV1_SHIFT + MAP_COUNT as u64);
+const TOP_BIT: u64 = TEXTURE_TRANSFORM;
 // Feature defines, by bit.
-const FEATURES: [(u64, &str); 10] = [
+const FEATURES: [(u64, &str); 11] = [
+    (TEXTURE_TRANSFORM, "HAS_TEXTURE_TRANSFORM"),
     (UNLIT, "MATERIAL_UNLIT"),
     (TRANSMISSION, "HAS_TRANSMISSION"),
     (VOLUME, "HAS_VOLUME"),
@@ -133,6 +136,9 @@ impl PbrKey {
                 }
             }
         }
+        if material.has_uv_transform() {
+            key |= TEXTURE_TRANSFORM;
+        }
         Self(key).fit_texture_units()
     }
 
@@ -207,7 +213,13 @@ impl PbrKey {
                     "v_uv0"
                 };
                 let name = slot.define;
-                let _ = writeln!(s, "#define HAS_{name}_MAP\n#define {name}_UV {uv}");
+                let _ = writeln!(s, "#define HAS_{name}_MAP");
+                if k & TEXTURE_TRANSFORM != 0 {
+                    let m = slot.transform;
+                    let _ = writeln!(s, "#define {name}_UV ({m} * vec3({uv}, 1.0)).xy");
+                } else {
+                    let _ = writeln!(s, "#define {name}_UV {uv}");
+                }
             }
         }
         let alpha = match (k >> ALPHA_SHIFT) & 3 {

@@ -32,7 +32,7 @@ mod textures;
 
 pub use material::{
     AlphaMode, EXTERNAL_TEXTURE, MAP_COUNT, MAP_NAMES, MAP_SLOTS, MapSlot, Material, PROPERTIES,
-    Property, default_material,
+    Property, UV_IDENTITY, default_material, uv_matrix,
 };
 
 use rswebgl::context::Context;
@@ -48,7 +48,7 @@ use wasm_bindgen::prelude::*;
 
 /// Extensions this crate handles itself; a file that *requires* one of them
 /// still loads (the `gltf` crate would reject it as unsupported).
-const HANDLED_EXTENSIONS: &[&str] = &["EXT_mesh_gpu_instancing"];
+const HANDLED_EXTENSIONS: &[&str] = &["EXT_mesh_gpu_instancing", "KHR_texture_transform"];
 
 // Optional vertex attributes a primitive can have (`DrawItem::attributes`).
 /// NORMAL at location 1.
@@ -542,6 +542,9 @@ fn build_material_groups(
     for name in MAP_UNIFORMS {
         builder = builder.texture(name);
     }
+    for slot in MAP_SLOTS {
+        builder = builder.uniform(slot.transform, UniformType::Mat3);
+    }
     let layout = ctx.create_param_layout(&builder)?;
     let field = |name| ctx.param_field(layout, name);
     let f_mode = field("u_alpha_mode")?;
@@ -560,6 +563,7 @@ fn build_material_groups(
     {
         let g = ctx.create_param_group(layout)?;
         m.write_properties(ctx, g);
+        m.write_uv_transforms(ctx, g);
         ctx.param_set_i32(g, f_mode, m.alpha_mode as i32);
         let samplers = map_samplers.get(i).copied().unwrap_or_default();
         for (map, ((tex, _), f)) in material_maps(m).into_iter().zip(&f_maps).enumerate() {

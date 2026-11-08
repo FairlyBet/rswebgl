@@ -33,6 +33,8 @@ pub struct Material {
     pub(crate) double_sided: bool,
     // Each map's (texture index or -1, TEXCOORD set), in `MAP_SLOTS` order.
     pub(crate) maps: [(i32, u32); MAP_COUNT],
+    // Each map's KHR_texture_transform (`UV_IDENTITY` without one).
+    pub(crate) uv_transforms: [[f32; 5]; MAP_COUNT],
     pub(crate) normal_scale: f32,
     pub(crate) occlusion_strength: f32,
     // KHR_materials_emissive_strength (1 without it).
@@ -394,6 +396,8 @@ impl Material {
 pub struct MapSlot {
     pub name: &'static str,
     pub uniform: &'static str,
+    /// Its KHR_texture_transform matrix (mat3) in a material group.
+    pub transform: &'static str,
     pub define: &'static str,
     pub srgb: bool,
 }
@@ -401,12 +405,14 @@ pub struct MapSlot {
 const fn slot(
     name: &'static str,
     uniform: &'static str,
+    transform: &'static str,
     define: &'static str,
     srgb: bool,
 ) -> MapSlot {
     MapSlot {
         name,
         uniform,
+        transform,
         define,
         srgb,
     }
@@ -419,68 +425,125 @@ pub const MAP_COUNT: usize = 17;
 /// (KHR_materials_clearcoat, _transmission, _volume, _specular, _sheen,
 /// _iridescence, _anisotropy). The channels each reads are the extensions'.
 pub const MAP_SLOTS: [MapSlot; MAP_COUNT] = [
-    slot("baseColorTexture", "u_base_color_tex", "BASE_COLOR", true),
+    slot(
+        "baseColorTexture",
+        "u_base_color_tex",
+        "u_base_color_uv",
+        "BASE_COLOR",
+        true,
+    ),
     slot(
         "metallicRoughnessTexture",
         "u_metallic_roughness_tex",
+        "u_metallic_roughness_uv",
         "METALLIC_ROUGHNESS",
         false,
     ),
-    slot("normalTexture", "u_normal_tex", "NORMAL", false),
-    slot("occlusionTexture", "u_occlusion_tex", "OCCLUSION", false),
-    slot("emissiveTexture", "u_emissive_tex", "EMISSIVE", true),
-    slot("clearcoatTexture", "u_clearcoat_tex", "CLEARCOAT", false),
+    slot(
+        "normalTexture",
+        "u_normal_tex",
+        "u_normal_uv",
+        "NORMAL",
+        false,
+    ),
+    slot(
+        "occlusionTexture",
+        "u_occlusion_tex",
+        "u_occlusion_uv",
+        "OCCLUSION",
+        false,
+    ),
+    slot(
+        "emissiveTexture",
+        "u_emissive_tex",
+        "u_emissive_uv",
+        "EMISSIVE",
+        true,
+    ),
+    slot(
+        "clearcoatTexture",
+        "u_clearcoat_tex",
+        "u_clearcoat_uv",
+        "CLEARCOAT",
+        false,
+    ),
     slot(
         "clearcoatRoughnessTexture",
         "u_clearcoat_roughness_tex",
+        "u_clearcoat_roughness_uv",
         "CLEARCOAT_ROUGHNESS",
         false,
     ),
     slot(
         "clearcoatNormalTexture",
         "u_clearcoat_normal_tex",
+        "u_clearcoat_normal_uv",
         "CLEARCOAT_NORMAL",
         false,
     ),
     slot(
         "transmissionTexture",
         "u_transmission_tex",
+        "u_transmission_uv",
         "TRANSMISSION",
         false,
     ),
-    slot("thicknessTexture", "u_thickness_tex", "THICKNESS", false),
-    slot("specularTexture", "u_specular_tex", "SPECULAR", false),
+    slot(
+        "thicknessTexture",
+        "u_thickness_tex",
+        "u_thickness_uv",
+        "THICKNESS",
+        false,
+    ),
+    slot(
+        "specularTexture",
+        "u_specular_tex",
+        "u_specular_uv",
+        "SPECULAR",
+        false,
+    ),
     slot(
         "specularColorTexture",
         "u_specular_color_tex",
+        "u_specular_color_uv",
         "SPECULAR_COLOR",
         true,
     ),
     slot(
         "sheenColorTexture",
         "u_sheen_color_tex",
+        "u_sheen_color_uv",
         "SHEEN_COLOR",
         true,
     ),
     slot(
         "sheenRoughnessTexture",
         "u_sheen_roughness_tex",
+        "u_sheen_roughness_uv",
         "SHEEN_ROUGHNESS",
         false,
     ),
     slot(
         "iridescenceTexture",
         "u_iridescence_tex",
+        "u_iridescence_uv",
         "IRIDESCENCE",
         false,
     ),
     slot(
         "iridescenceThicknessTexture",
         "u_iridescence_thickness_tex",
+        "u_iridescence_thickness_uv",
         "IRIDESCENCE_THICKNESS",
         false,
     ),
-    slot("anisotropyTexture", "u_anisotropy_tex", "ANISOTROPY", false),
+    slot(
+        "anisotropyTexture",
+        "u_anisotropy_tex",
+        "u_anisotropy_uv",
+        "ANISOTROPY",
+        false,
+    ),
 ];
 
 /// The material maps by glTF name (`MAP_SLOTS` order).
@@ -516,14 +579,86 @@ impl Material {
     pub fn maps(&self) -> [(i32, u32); MAP_COUNT] {
         self.maps
     }
+
+    /// Map `slot`'s KHR_texture_transform: offset x, y, rotation, scale x, y.
+    pub fn uv_transform(&self, slot: usize) -> [f32; 5] {
+        self.uv_transforms.get(slot).copied().unwrap_or(UV_IDENTITY)
+    }
+
+    pub fn set_uv_transform(&mut self, slot: usize, t: [f32; 5]) {
+        if let Some(u) = self.uv_transforms.get_mut(slot) {
+            *u = t;
+        }
+    }
+
+    /// Whether any map in use is transformed (the shader then applies them).
+    pub fn has_uv_transform(&self) -> bool {
+        self.maps
+            .iter()
+            .zip(&self.uv_transforms)
+            .any(|((tex, _), t)| *tex >= 0 && *t != UV_IDENTITY)
+    }
 }
 
+impl Material {
+    /// Writes every map's KHR_texture_transform matrix into `group`.
+    pub fn write_uv_transforms(&self, ctx: &Context, group: ParamGroupId) {
+        for (slot, t) in MAP_SLOTS.iter().zip(self.uv_transforms) {
+            ctx.param_set_floats_by_name(group, slot.transform, &uv_matrix(t));
+        }
+    }
+}
 /// A map's reference in the glTF document: the document texture and the
 /// TEXCOORD set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct DocMap {
     pub(crate) texture: usize,
     pub(crate) tex_coord: u32,
+    // KHR_texture_transform: offset x, y, rotation, scale x, y.
+    pub(crate) transform: [f32; 5],
+}
+
+/// No KHR_texture_transform: offset 0, rotation 0, scale 1.
+pub const UV_IDENTITY: [f32; 5] = [0.0, 0.0, 0.0, 1.0, 1.0];
+
+// A KHR_texture_transform object (raw JSON) → (offset, rotation, scale) and
+// its texCoord override.
+fn uv_transform(v: Option<&gltf::json::Value>) -> ([f32; 5], Option<u32>) {
+    let Some(v) = v else {
+        return (UV_IDENTITY, None);
+    };
+    let pair = |key: &str, default: [f32; 2]| {
+        v.get(key)
+            .and_then(|a| a.as_array())
+            .filter(|a| a.len() == 2)
+            .map_or(default, |a| {
+                let f = |i: usize| a[i].as_f64().map_or(default[i], |x| x as f32);
+                [f(0), f(1)]
+            })
+    };
+    let [ox, oy] = pair("offset", [0.0, 0.0]);
+    let [sx, sy] = pair("scale", [1.0, 1.0]);
+    let rotation = v.get("rotation").and_then(|r| r.as_f64()).unwrap_or(0.0) as f32;
+    let tex_coord = v.get("texCoord").and_then(|t| t.as_u64()).map(|t| t as u32);
+    ([ox, oy, rotation, sx, sy], tex_coord)
+}
+
+// A map reference with its transform (the transform's texCoord wins).
+fn with_transform(texture: usize, tex_coord: u32, ext: Option<&gltf::json::Value>) -> DocMap {
+    let (transform, over) = uv_transform(ext);
+    DocMap {
+        texture,
+        tex_coord: over.unwrap_or(tex_coord),
+        transform,
+    }
+}
+
+/// KHR_texture_transform as a column-major mat3 (translation × rotation ×
+/// scale, as the Khronos sample renderer builds it).
+pub fn uv_matrix(t: [f32; 5]) -> [f32; 9] {
+    let [ox, oy, r, sx, sy] = t;
+    let (s, c) = r.sin_cos();
+    [c * sx, -s * sx, 0.0, s * sy, c * sy, 0.0, ox, oy, 1.0]
 }
 
 /// The raw JSON of a texture-info object inside an extension the `gltf`
@@ -534,16 +669,21 @@ fn ext_texture<'a>(mat: &'a gltf::Material, ext: &str, key: &str) -> Option<&'a 
 
 fn doc_map_from_json(v: Option<&gltf::json::Value>) -> Option<DocMap> {
     let v = v?;
-    Some(DocMap {
-        texture: v.get("index")?.as_u64()? as usize,
-        tex_coord: v.get("texCoord").and_then(|t| t.as_u64()).unwrap_or(0) as u32,
-    })
+    Some(with_transform(
+        v.get("index")?.as_u64()? as usize,
+        v.get("texCoord").and_then(|t| t.as_u64()).unwrap_or(0) as u32,
+        v.get("extensions")
+            .and_then(|e| e.get("KHR_texture_transform")),
+    ))
 }
 
 fn doc_map(info: Option<gltf::texture::Info>) -> Option<DocMap> {
-    info.map(|i| DocMap {
-        texture: i.texture().index(),
-        tex_coord: i.tex_coord(),
+    info.map(|i| {
+        with_transform(
+            i.texture().index(),
+            i.tex_coord(),
+            i.extension_value("KHR_texture_transform"),
+        )
     })
 }
 
@@ -554,13 +694,19 @@ pub(crate) fn doc_maps(mat: &gltf::Material) -> [Option<DocMap>; MAP_COUNT] {
     [
         doc_map(pbr.base_color_texture()),
         doc_map(pbr.metallic_roughness_texture()),
-        mat.normal_texture().map(|n| DocMap {
-            texture: n.texture().index(),
-            tex_coord: n.tex_coord(),
+        mat.normal_texture().map(|n| {
+            with_transform(
+                n.texture().index(),
+                n.tex_coord(),
+                n.extension_value("KHR_texture_transform"),
+            )
         }),
-        mat.occlusion_texture().map(|o| DocMap {
-            texture: o.texture().index(),
-            tex_coord: o.tex_coord(),
+        mat.occlusion_texture().map(|o| {
+            with_transform(
+                o.texture().index(),
+                o.tex_coord(),
+                o.extension_value("KHR_texture_transform"),
+            )
         }),
         doc_map(mat.emissive_texture()),
         json("KHR_materials_clearcoat", "clearcoatTexture"),
@@ -597,6 +743,7 @@ pub fn translate(mat: &gltf::Material) -> Material {
         alpha_cutoff: mat.alpha_cutoff().unwrap_or(0.5),
         double_sided: mat.double_sided(),
         maps: doc_maps(mat).map(|m| m.map_or((-1, 0), |m| (m.texture as i32, m.tex_coord))),
+        uv_transforms: doc_maps(mat).map(|m| m.map_or(UV_IDENTITY, |m| m.transform)),
         normal_scale: mat.normal_texture().map_or(1.0, |i| i.scale()),
         occlusion_strength: mat.occlusion_texture().map_or(1.0, |i| i.strength()),
         emissive_strength: mat.emissive_strength().unwrap_or(1.0),
@@ -686,6 +833,7 @@ pub fn default_material() -> Material {
         alpha_cutoff: 0.5,
         double_sided: false,
         maps: [(-1, 0); MAP_COUNT],
+        uv_transforms: [UV_IDENTITY; MAP_COUNT],
         normal_scale: 1.0,
         occlusion_strength: 1.0,
         emissive_strength: 1.0,
@@ -944,5 +1092,62 @@ mod tests {
             (0.0, 1.3, 400.0)
         );
         assert_eq!(d.anisotropy_strength, 0.0);
+    }
+
+    #[test]
+    fn extension_maps_and_texture_transforms_are_read() {
+        let doc = r#"{
+            "asset": { "version": "2.0" },
+            "textures": [{}, {}, {}],
+            "materials": [{
+                "normalTexture": { "index": 1, "extensions": { "KHR_texture_transform":
+                    { "offset": [0.5, 0.25], "scale": [2, 3], "texCoord": 1 } } },
+                "pbrMetallicRoughness": { "baseColorTexture": { "index": 0 } },
+                "extensions": {
+                    "KHR_materials_clearcoat": { "clearcoatFactor": 1,
+                        "clearcoatTexture": { "index": 2, "texCoord": 1 },
+                        "clearcoatNormalTexture": { "index": 1, "scale": 0.5,
+                            "extensions": { "KHR_texture_transform": { "rotation": 1.5 } } } },
+                    "KHR_materials_sheen": { "sheenColorTexture": { "index": 0 } }
+                }
+            }]
+        }"#;
+        let gltf = gltf::Gltf::from_slice_without_validation(doc.as_bytes()).unwrap();
+        let mat = gltf.document.materials().next().unwrap();
+        let m = translate(&mat);
+        let slot = |name: &str| MAP_NAMES.iter().position(|n| *n == name).unwrap();
+        assert_eq!(m.map(slot("baseColorTexture")), Some((0, 0)));
+        // The transform's texCoord overrides the texture info's.
+        assert_eq!(m.map(slot("normalTexture")), Some((1, 1)));
+        assert_eq!(
+            m.uv_transform(slot("normalTexture")),
+            [0.5, 0.25, 0.0, 2.0, 3.0]
+        );
+        assert_eq!(m.map(slot("clearcoatTexture")), Some((2, 1)));
+        assert_eq!(m.map(slot("clearcoatNormalTexture")), Some((1, 0)));
+        assert_eq!(m.uv_transform(slot("clearcoatNormalTexture"))[2], 1.5);
+        assert_eq!(m.clearcoat_normal_scale, 0.5);
+        assert_eq!(m.map(slot("sheenColorTexture")), Some((0, 0)));
+        assert_eq!(m.map(slot("anisotropyTexture")), Some((-1, 0)));
+        assert!(m.has_uv_transform());
+        // The sRGB set: base color and sheen color (texture 0), not 1 or 2.
+        let srgb = crate::textures::srgb_texture_set(&gltf.document);
+        assert!(srgb.contains(&0) && !srgb.contains(&1) && !srgb.contains(&2));
+    }
+
+    #[test]
+    fn uv_matrix_is_translation_rotation_scale() {
+        // Column-major; a point (1, 0) turned a quarter, scaled ×2 in u,
+        // moved by (0.5, 0): (c·2, −s·2) + offset = (0.5, −2).
+        let m = uv_matrix([0.5, 0.0, std::f32::consts::FRAC_PI_2, 2.0, 1.0]);
+        let (u, v) = (
+            m[0] * 1.0 + m[3] * 0.0 + m[6],
+            m[1] * 1.0 + m[4] * 0.0 + m[7],
+        );
+        assert!((u - 0.5).abs() < 1e-6 && (v + 2.0).abs() < 1e-6, "{u} {v}");
+        assert_eq!(
+            uv_matrix(UV_IDENTITY),
+            [1.0, -0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        );
     }
 }
