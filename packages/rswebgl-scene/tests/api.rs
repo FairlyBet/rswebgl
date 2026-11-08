@@ -646,3 +646,182 @@ async fn shaders_compile_without_stalling_frames() {
     assert_eq!(s.frame().await, [YELLOW, RED, RED]);
     s.scene.destroy();
 }
+
+async fn sleep_ms(ms: i32) {
+    let p = js_sys::Promise::new(&mut |resolve, _| {
+        web_sys::window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+            .unwrap();
+    });
+    wasm_bindgen_futures::JsFuture::from(p).await.unwrap();
+}
+
+// After a context loss and restore the scene rebuilds itself at its next
+// frame: renderer, environment, shaders (PBR and scene ones), loadTexture
+// textures, and the model (fetched again) — keeping material handles, their
+// edits and clones. Nothing reported along the way.
+#[wasm_bindgen_test]
+async fn the_scene_comes_back_after_a_context_loss() {
+    let mut s = setup().await;
+    // Background from a flat environment, sampled above the quads.
+    let flat = rswebgl_scene::encode_hdr(8, 4, &[0.5; 8 * 4 * 3]);
+    s.scene.set_environment_hdr(&flat, 16).unwrap();
+    s.scene.set_background(0.0);
+    // Edits: Gold → green; stone_a gets a clone with a loaded blue map.
+    let gold = s.scene.find_material(s.root, "Gold");
+    s.scene
+        .set_material_property(gold, "baseColorFactor", json("[0, 1, 0, 1]"))
+        .unwrap();
+    let stone_a = s.scene.find_by_name(s.root, "stone_a");
+    let stone = s.scene.find_material(s.root, "Stone");
+    let blue_stone = s.scene.clone_material(stone).unwrap();
+    let p = s
+        .scene
+        .load_texture(&png_url([0, 0, 255, 255]), json(r#"{ "mipmaps": false }"#))
+        .unwrap();
+    let blue = await_texture(p).await.unwrap();
+    s.scene
+        .set_material_texture(blue_stone, "baseColorTexture", blue, JsValue::UNDEFINED)
+        .unwrap();
+    s.scene.set_material(stone_a, blue_stone);
+    // stone_b hidden; in its place a half-size quad with its own texture,
+    // the background around it.
+    let stone_b = s.scene.find_by_name(s.root, "stone_b");
+    s.scene.set_visible(stone_b, false);
+    let painted = load_model(&s.ctx, &textured_quad_url(RED)).await.unwrap();
+    let painted = s.scene.add_model(painted);
+    s.scene.set_translation(painted, 1.0, 0.0, 0.0);
+    s.scene.set_scale(painted, 0.5, 0.5, 1.0);
+    const GREEN: [u8; 4] = [0, 255, 0, 255];
+    let read_background = |s: &Setup| {
+        let mut px = [0u8; 4];
+        s.gl.read_pixels_with_opt_u8_array(
+            66,
+            2,
+            1,
+            1,
+            Gl::RGBA,
+            Gl::UNSIGNED_BYTE,
+            Some(&mut px[..]),
+        )
+        .unwrap();
+        px
+    };
+    // The model's image decodes asynchronously.
+    let mut first = s.frame().await;
+    for _ in 0..50 {
+        if first[2] == RED {
+            break;
+        }
+        sleep_ms(10).await;
+        first = s.frame().await;
+    }
+    assert_eq!(first, [GREEN, BLUE, RED]);
+    let background = read_background(&s);
+    assert!(
+        background[0] > 20 && background[0] == background[2],
+        "{background:?}"
+    );
+
+    let errors = js_sys::Array::new();
+    let console = js_sys::Reflect::get(&js_sys::global(), &"console".into()).unwrap();
+    let original = js_sys::Reflect::get(&console, &"error".into()).unwrap();
+    let push = js_sys::Function::new_with_args("m", "this.push(String(m))").bind0(&errors);
+    js_sys::Reflect::set(&console, &"error".into(), &push).unwrap();
+
+    assert!(s.ctx.simulate_context_loss());
+    let generation = s.ctx.generation();
+    for _ in 0..100 {
+        if s.ctx.generation() != generation {
+            break;
+        }
+        sleep_ms(10).await;
+    }
+    assert_ne!(s.ctx.generation(), generation, "the loss arrived");
+    assert_eq!(
+        s.scene.render_frame(s.camera),
+        0,
+        "nothing to draw while lost"
+    );
+    assert!(s.ctx.simulate_context_restore());
+    let mut restored = None;
+    for _ in 0..200 {
+        sleep_ms(10).await;
+        if s.ctx.is_lost() {
+            continue;
+        }
+        let px = s.frame().await;
+        if s.scene.pending() == 0 && s.scene.drawn() == 3 && px[2] == RED {
+            restored = Some(px);
+            break;
+        }
+    }
+    js_sys::Reflect::set(&console, &"error".into(), &original).unwrap();
+    let errors: Vec<String> = errors.iter().filter_map(|v| v.as_string()).collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(restored, Some([GREEN, BLUE, RED]));
+    assert_eq!(read_background(&s), background);
+    // The handles the app holds are still the scene's.
+    assert_eq!(s.scene.find_material(s.root, "Gold"), gold);
+    assert_eq!(
+        s.scene.material_property(gold, "baseColorFactor"),
+        Some(vec![0.0, 1.0, 0.0, 1.0])
+    );
+    let prim = rswebgl_scene::children(s.scene.world(), stone_a)[0];
+    assert_eq!(s.scene.mesh_material(prim), blue_stone);
+    assert!(s.scene.has_environment());
+    s.scene.destroy();
+}
+
+// One unit quad, unlit, its base color from a 1×1 texture of `rgba` (the
+// model's own image, embedded).
+fn textured_quad_url(rgba: [u8; 4]) -> String {
+    let mut bin = Vec::new();
+    #[rustfmt::skip]
+    let positions = [-0.5f32, -0.5, 0.0, 0.5, -0.5, 0.0, 0.5, 0.5, 0.0, -0.5, 0.5, 0.0];
+    let uvs = [0.0f32, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0];
+    for v in positions.iter().chain(&uvs) {
+        bin.extend_from_slice(&v.to_le_bytes());
+    }
+    for i in [0u16, 1, 2, 0, 2, 3] {
+        bin.extend_from_slice(&i.to_le_bytes());
+    }
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let json = format!(
+        r#"{{
+  "asset": {{ "version": "2.0" }},
+  "extensionsUsed": ["KHR_materials_unlit"],
+  "buffers": [{{ "byteLength": {len}, "uri": "data:application/octet-stream;base64,{bin}" }}],
+  "bufferViews": [
+    {{ "buffer": 0, "byteOffset": 0, "byteLength": 48 }},
+    {{ "buffer": 0, "byteOffset": 48, "byteLength": 32 }},
+    {{ "buffer": 0, "byteOffset": 80, "byteLength": 12, "target": 34963 }}
+  ],
+  "accessors": [
+    {{ "bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3",
+       "min": [-0.5, -0.5, 0], "max": [0.5, 0.5, 0] }},
+    {{ "bufferView": 1, "componentType": 5126, "count": 4, "type": "VEC2" }},
+    {{ "bufferView": 2, "componentType": 5123, "count": 6, "type": "SCALAR" }}
+  ],
+  "images": [{{ "uri": "{png}" }}],
+  "samplers": [{{ "magFilter": 9728, "minFilter": 9728 }}],
+  "textures": [{{ "source": 0, "sampler": 0 }}],
+  "materials": [
+    {{ "name": "Painted", "pbrMetallicRoughness": {{ "baseColorTexture": {{ "index": 0 }} }},
+       "extensions": {{ "KHR_materials_unlit": {{}} }} }}
+  ],
+  "meshes": [
+    {{ "primitives": [{{ "attributes": {{ "POSITION": 0, "TEXCOORD_0": 1 }}, "indices": 2,
+                          "material": 0 }}] }}
+  ],
+  "nodes": [{{ "name": "painted", "mesh": 0 }}],
+  "scenes": [{{ "nodes": [0] }}],
+  "scene": 0
+}}"#,
+        len = bin.len(),
+        bin = b64(&bin),
+        png = png_url(rgba),
+    );
+    format!("data:model/gltf+json;base64,{}", b64(json.as_bytes()))
+}

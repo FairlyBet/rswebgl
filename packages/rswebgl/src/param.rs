@@ -605,3 +605,32 @@ impl Context {
         f
     }
 }
+
+impl Context {
+    /// Rewrites texture and sampler handles in every parameter group: each
+    /// `old` found becomes its `new`. For rebuilding after a context loss —
+    /// groups are CPU-side and survive it, the GPU objects they name don't:
+    /// recreate those, then point the surviving groups at the new ones.
+    pub fn remap_group_handles(
+        &self,
+        textures: &std::collections::HashMap<TextureId, TextureId>,
+        samplers: &std::collections::HashMap<SamplerId, SamplerId>,
+    ) {
+        if textures.is_empty() && samplers.is_empty() {
+            return;
+        }
+        let mut res = self.res();
+        for group in res.param_groups.values_mut() {
+            for t in &mut group.textures {
+                if let Some(&new) = textures.get(t) {
+                    *t = new;
+                }
+            }
+            for s in &mut group.samplers {
+                if let Some(&new) = samplers.get(s) {
+                    *s = new;
+                }
+            }
+        }
+    }
+}

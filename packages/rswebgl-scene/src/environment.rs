@@ -81,10 +81,13 @@ impl Environment {
 
     /// Bakes an equirectangular HDR image (e.g. from `decode_hdr`). `size` is
     /// the specular cube's face side (256 is plenty for lighting; the
-    /// background shows it too). Errors if the device can't render to
-    /// half-float textures.
+    /// background shows it too), rounded up to a power of two in 32..=2048
+    /// (the specular cube's mips need 32). Errors if the device can't render
+    /// to half-float textures.
     pub fn from_equirect(ctx: &Context, image: &HdrImage, size: u32) -> Result<Self, Error> {
-        let size = size.clamp(16, 2048).next_power_of_two() as i32;
+        // Below 32 the cube has fewer levels than the specular mips.
+        const MIN_SIZE: u32 = 1 << (SPECULAR_MIPS - 1);
+        let size = size.clamp(MIN_SIZE, 2048).next_power_of_two() as i32;
         let bake = Baker::new(ctx, size)?;
         let result = bake.run(image, size);
         bake.destroy();

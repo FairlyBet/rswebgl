@@ -328,6 +328,13 @@ impl Context {
         self.core.gl.is_context_lost()
     }
 
+    /// Bumped by every context loss. Handles made under an earlier generation
+    /// are dead: an object that keeps handles can compare its generation to
+    /// see whether to rebuild (and that its handles need no destroying).
+    pub fn generation(&self) -> u32 {
+        self.core.epoch.get()
+    }
+
     /// JS: called when the context is lost. Every handle is dead from here on.
     #[wasm_bindgen(js_name = setOnLost)]
     pub fn set_on_lost(&self, f: js_sys::Function) {

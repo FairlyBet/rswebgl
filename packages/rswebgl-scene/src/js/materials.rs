@@ -174,83 +174,45 @@ impl Scene {
     /// into a texture the scene owns, for `setMaterialTexture`. Resolves with
     /// the texture once it's decoded; rejects if the image can't be loaded
     /// (the texture is freed then). See `TextureOptions` for color space,
-    /// wrapping and mipmaps; throws on bad options.
+    /// wrapping and mipmaps; throws on bad options. After a context loss the
+    /// scene loads it again (a new handle, in the same materials).
     #[wasm_bindgen(js_name = loadTexture)]
     pub fn load_texture(
         &mut self,
         url: &str,
         #[wasm_bindgen(unchecked_param_type = "TextureOptions | undefined")] opts: JsValue,
     ) -> Result<js_sys::Promise, Error> {
-        let srgb = match options::string_or(&opts, "colorSpace", "srgb")?.as_str() {
-            "srgb" => true,
-            "linear" => false,
-            other => {
-                return Err(
-                    format!("loadTexture: colorSpace \"{other}\" isn't srgb or linear").into(),
-                );
-            }
-        };
-        let wrap = match options::string_or(&opts, "wrap", "repeat")?.as_str() {
-            "repeat" => TextureWrap::Repeat,
-            "clamp" => TextureWrap::ClampToEdge,
-            "mirror" => TextureWrap::MirroredRepeat,
-            other => {
-                return Err(
-                    format!("loadTexture: wrap \"{other}\" isn't repeat, clamp or mirror").into(),
-                );
-            }
-        };
-        let mipmaps = options::bool_or(&opts, "mipmaps", true)?;
-        let flip_y = options::bool_or(&opts, "flipY", false)?;
-
-        let min = if mipmaps {
-            TextureMinFilter::LinearMipmapLinear
-        } else {
-            TextureMinFilter::Linear
-        };
-        let tex =
-            self.ctx
-                .create_texture(TextureTarget::Texture2D, min, TextureMagFilter::Linear)?;
-        self.ctx.texture_set_wrap_s(tex, wrap);
-        self.ctx.texture_set_wrap_t(tex, wrap);
-        self.textures.push(tex);
-        let format = if srgb {
-            TextureFormat::srgb8_alpha8()
-        } else {
-            TextureFormat::rgba8()
-        };
-
-        let ctx = self.ctx.clone();
-        let url = url.to_string();
-        Ok(js_sys::Promise::new(&mut |resolve, reject| {
-            let (ctx2, url2) = (ctx.clone(), url.clone());
-            let on_load = Closure::once_into_js(move |w: f64, _h: f64| {
-                if w > 0.0 {
-                    let _ = resolve.call1(&JsValue::NULL, &tex.to_raw().into());
-                } else {
-                    if ctx2.texture_is_valid(tex) {
-                        ctx2.destroy_texture(tex);
+        self.sync_context();
+        let spec = TextureSpec::parse(url, &opts)?;
+        let mut result = Ok(TextureId::NULL);
+        let promise = js_sys::Promise::new(&mut |resolve, reject| {
+            let (ctx, url) = (self.ctx.clone(), spec.url.clone());
+            let on_load = move |tex: TextureId| -> js_sys::Function {
+                Closure::once_into_js(move |w: f64, _h: f64| {
+                    if w > 0.0 {
+                        let _ = resolve.call1(&JsValue::NULL, &tex.to_raw().into());
+                    } else {
+                        if ctx.texture_is_valid(tex) {
+                            ctx.destroy_texture(tex);
+                        }
+                        let err = js_sys::Error::new(&format!("loadTexture: can't load {url}"));
+                        let _ = reject.call1(&JsValue::NULL, &err);
                     }
-                    let err = js_sys::Error::new(&format!("loadTexture: can't load {url2}"));
-                    let _ = reject.call1(&JsValue::NULL, &err);
-                }
-            });
-            ctx.texture_load_image(
-                tex,
-                &url,
-                &format,
-                mipmaps,
-                flip_y,
-                on_load.unchecked_into(),
-            );
-        }))
+                })
+                .unchecked_into()
+            };
+            result = spec.start(&self.ctx, on_load);
+        });
+        let tex = result?;
+        self.textures.push(LoadedTexture { id: tex, spec });
+        Ok(promise)
     }
 
     /// Frees a texture made by `loadTexture`. Materials still using it stop
     /// drawing (reported): set another texture, or none, first.
     #[wasm_bindgen(js_name = destroyTexture)]
     pub fn destroy_texture(&mut self, texture: TextureId) {
-        match self.textures.iter().position(|&t| t == texture) {
+        match self.textures.iter().position(|t| t.id == texture) {
             Some(i) => {
                 self.textures.swap_remove(i);
                 if self.ctx.texture_is_valid(texture) {
@@ -448,5 +410,89 @@ impl Scene {
             }
             false
         });
+    }
+}
+
+/// How a `loadTexture` texture was made, to make it again after a context
+/// loss.
+pub(crate) struct TextureSpec {
+    url: String,
+    srgb: bool,
+    wrap: TextureWrap,
+    mipmaps: bool,
+    flip_y: bool,
+}
+
+/// A texture `loadTexture` made: freed with the scene, reloaded after a loss.
+impl TextureSpec {
+    pub(crate) fn url(&self) -> &str {
+        &self.url
+    }
+}
+
+pub(crate) struct LoadedTexture {
+    pub(crate) id: TextureId,
+    pub(crate) spec: TextureSpec,
+}
+
+impl TextureSpec {
+    fn parse(url: &str, opts: &JsValue) -> Result<Self, Error> {
+        let srgb = match options::string_or(opts, "colorSpace", "srgb")?.as_str() {
+            "srgb" => true,
+            "linear" => false,
+            other => {
+                return Err(
+                    format!("loadTexture: colorSpace \"{other}\" isn't srgb or linear").into(),
+                );
+            }
+        };
+        let wrap = match options::string_or(opts, "wrap", "repeat")?.as_str() {
+            "repeat" => TextureWrap::Repeat,
+            "clamp" => TextureWrap::ClampToEdge,
+            "mirror" => TextureWrap::MirroredRepeat,
+            other => {
+                return Err(
+                    format!("loadTexture: wrap \"{other}\" isn't repeat, clamp or mirror").into(),
+                );
+            }
+        };
+        Ok(Self {
+            url: url.to_string(),
+            srgb,
+            wrap,
+            mipmaps: options::bool_or(opts, "mipmaps", true)?,
+            flip_y: options::bool_or(opts, "flipY", false)?,
+        })
+    }
+
+    /// Creates the texture and starts loading into it; `on_load(w, h)` as
+    /// for `Context::texture_load_image`.
+    pub(crate) fn start(
+        &self,
+        ctx: &rswebgl::context::Context,
+        on_load: impl FnOnce(TextureId) -> js_sys::Function,
+    ) -> Result<TextureId, Error> {
+        let min = if self.mipmaps {
+            TextureMinFilter::LinearMipmapLinear
+        } else {
+            TextureMinFilter::Linear
+        };
+        let tex = ctx.create_texture(TextureTarget::Texture2D, min, TextureMagFilter::Linear)?;
+        ctx.texture_set_wrap_s(tex, self.wrap);
+        ctx.texture_set_wrap_t(tex, self.wrap);
+        let format = if self.srgb {
+            TextureFormat::srgb8_alpha8()
+        } else {
+            TextureFormat::rgba8()
+        };
+        ctx.texture_load_image(
+            tex,
+            &self.url,
+            &format,
+            self.mipmaps,
+            self.flip_y,
+            on_load(tex),
+        );
+        Ok(tex)
     }
 }

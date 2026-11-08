@@ -58,7 +58,8 @@ pub use pbr::{PbrKey, PbrShaders};
 pub use pick::{Hit, Ray, pick_bounds, ray_aabb};
 pub use render::{
     FRAME_BLOCK, FRAME_SLOT, LIGHTING_BLOCK, MATERIAL_SLOT, MAX_LIGHTS, MODEL_UNIFORM,
-    MeshRenderer, NORMAL_MATRIX_UNIFORM, OBJECT_SLOT, RenderStats, SceneRenderer, Visible,
+    MeshRenderer, NORMAL_MATRIX_UNIFORM, OBJECT_SLOT, Reloading, RenderStats, SceneRenderer,
+    Visible,
 };
 pub use shader::{FRAG_PRELUDE, VERT_PRELUDE, create_scene_program, shader_sources};
 pub use transform::{Parent, Transform, WorldMatrix};

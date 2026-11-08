@@ -27,6 +27,7 @@
 mod lights;
 mod materials;
 mod options;
+mod restore;
 
 use std::collections::HashMap;
 
@@ -50,12 +51,15 @@ use crate::render::{MeshRenderer, RenderStats, SceneRenderer, Visible};
 use crate::shader::create_scene_program;
 use crate::transform::{Parent, Transform, WorldMatrix};
 
-use materials::MaterialRecord;
+use materials::{LoadedTexture, MaterialRecord};
+use restore::{Reloads, SceneProgram};
 
 /// A scene: entities with transforms, hierarchy, cameras, lights and meshes.
 /// `renderFrame` draws it to the canvas; `render` into a pass of yours.
-/// After a context loss its handles are stale: `destroy` it and build a new
-/// one.
+/// After a context loss it rebuilds itself at its next call (see
+/// `restore.rs`): what it made comes back, models are fetched again from
+/// their URL, and material handles the app holds stay valid. What the app
+/// made itself through the context is the app's to rebuild.
 #[wasm_bindgen]
 pub struct Scene {
     ctx: Context,
@@ -68,8 +72,18 @@ pub struct Scene {
     // Every material the scene knows (models' and clones), by group.
     materials: HashMap<ParamGroupId, MaterialRecord>,
     pbr: PbrShaders,
-    // Textures `loadTexture` made: freed with the scene.
-    textures: Vec<rswebgl::ids::TextureId>,
+    // Textures `loadTexture` made: freed with the scene, reloaded after a
+    // context loss.
+    textures: Vec<LoadedTexture>,
+    // The context generation the scene's GPU objects belong to.
+    generation: u32,
+    // `createProgram` shaders, recompiled after a loss.
+    scene_programs: Vec<SceneProgram>,
+    // The `.hdr` bytes and cube size of the environment, baked again after
+    // a loss.
+    env_source: Option<(Vec<u8>, u32)>,
+    // Models reloaded after a loss, applied at the next frame.
+    reloads: Reloads,
     // The canvas pass `renderFrame` reuses.
     frame_pass: Pass,
     stats: RenderStats,
@@ -116,6 +130,10 @@ impl Scene {
             materials: HashMap::new(),
             pbr: PbrShaders::new(),
             textures: Vec::new(),
+            generation: ctx.generation(),
+            scene_programs: Vec::new(),
+            env_source: None,
+            reloads: Reloads::default(),
             frame_pass,
             stats: RenderStats::default(),
             pending_variants: Vec::new(),
@@ -388,8 +406,15 @@ impl Scene {
     /// `scene_reflection`, `scene_output`), without `#version` or those
     /// declarations. The program is yours to destroy (`ctx.destroyProgram`).
     #[wasm_bindgen(js_name = createProgram)]
-    pub fn create_program(&self, vert: &str, frag: &str) -> Result<ProgramId, Error> {
-        create_scene_program(&self.ctx, vert, frag)
+    pub fn create_program(&mut self, vert: &str, frag: &str) -> Result<ProgramId, Error> {
+        self.sync_context();
+        let id = create_scene_program(&self.ctx, vert, frag)?;
+        self.scene_programs.push(SceneProgram {
+            id,
+            vert: vert.to_string(),
+            frag: frag.to_string(),
+        });
+        Ok(id)
     }
 
     // --- models ---------------------------------------------------------------
@@ -402,6 +427,7 @@ impl Scene {
     /// theirs (`findMaterial`).
     #[wasm_bindgen(js_name = addModel)]
     pub fn add_model(&mut self, model: Model) -> Entity {
+        self.sync_context();
         let (ctx, pbr) = (&self.ctx, &mut self.pbr);
         let root = spawn_model(&mut self.world, &model, |item| {
             pbr.program_for(ctx, &model, item)
@@ -422,6 +448,7 @@ impl Scene {
     /// object; the material group is the loader's).
     #[wasm_bindgen(js_name = addModelWithProgram)]
     pub fn add_model_with_program(&mut self, model: Model, program: ProgramId) -> Entity {
+        self.sync_context();
         let root = spawn_model(&mut self.world, &model, |_| Some(program));
         self.register_materials(&model);
         self.models.insert(root, model);
@@ -467,6 +494,10 @@ impl Scene {
     /// clearing or sorting the pass, and leaves the camera's aspect to you
     /// (`setCameraAspect`). Returns the draws added.
     pub fn render(&mut self, camera: Entity, pass: &mut Pass) -> usize {
+        if !self.sync_context() {
+            return 0; // lost: nothing to draw with
+        }
+        self.apply_reloads();
         self.apply_pending_variants();
         self.transforms.update(&mut self.world);
         self.stats = self.renderer.render(&self.world, &self.ctx, camera, pass);
@@ -544,6 +575,9 @@ impl Scene {
     /// their location-0 attribute as the position.
     #[wasm_bindgen(unchecked_return_type = "Promise<PickHit | null>")]
     pub fn pick(&mut self, camera: Entity, x: f32, y: f32) -> Result<js_sys::Promise, Error> {
+        if !self.sync_context() {
+            return Err("pick: the WebGL context is lost".into());
+        }
         self.transforms.update(&mut self.world);
         let fb = self.ctx.default_framebuffer();
         let found = self.renderer.pick(
@@ -583,13 +617,22 @@ impl Scene {
         for model in self.models.into_values() {
             model.destroy(&self.ctx);
         }
+        // GPU objects of a context lost since are gone already.
+        let current = self.generation == self.ctx.generation();
         for t in self.textures {
-            if self.ctx.texture_is_valid(t) {
-                self.ctx.destroy_texture(t);
+            if current && self.ctx.texture_is_valid(t.id) {
+                self.ctx.destroy_texture(t.id);
+            }
+        }
+        for m in std::mem::take(&mut *self.reloads.borrow_mut()) {
+            if let (_, Ok(model)) = m {
+                model.destroy(&self.ctx);
             }
         }
         self.renderer.destroy(&self.ctx);
-        self.pbr.destroy(&self.ctx);
+        if current {
+            self.pbr.destroy(&self.ctx);
+        }
     }
 }
 

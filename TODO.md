@@ -88,9 +88,16 @@ lost, extensions are re-enabled on restore, and `on_lost` / `on_restored(ctx)`
 are called. Stale-handle reports are muted while a context is lost. Recreating
 resources is the app's job (see the cube example). Possible follow-ups:
 
-- **Automatic restore** of objects the library itself owns (e.g. a
-  `TexturePacker` has to be recreated after a restore).
-- glTF `Model` has no "reload" path; an app has to call `load_model` again.
+- The scene rebuilds itself (`rswebgl-scene/src/js/restore.rs`): renderer,
+  environment (from the kept `.hdr` bytes — a copy of the file stays in
+  memory), shaders, `loadTexture` textures, models (fetched again from their
+  URL, `Model::adopt`; material groups and their edits survive). Left:
+  - a model given as a data URI keeps its whole URI string for the reload;
+    no "keep nothing, the app reloads" switch for memory-tight pages;
+  - `createProgram` shaders come back under a new handle (meshes switched;
+    the app's copy of the old handle is stale);
+  - a `TexturePacker` (Rust) has to be recreated by its owner.
+- glTF `Model` reload: `load_model` again + `Model::adopt`.
 - No JS example of `set_on_restored` yet.
 
 ### Niche — note for completeness, not soon

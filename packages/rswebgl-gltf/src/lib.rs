@@ -202,6 +202,10 @@ pub struct Model {
     pub(crate) mesh_count: usize,
     pub(crate) center: [f32; 3],
     pub(crate) radius: f32,
+    // Where it was loaded from, to reload it after a context loss.
+    pub(crate) source: String,
+    // The context generation its GPU handles belong to.
+    pub(crate) generation: u32,
 }
 
 #[wasm_bindgen]
@@ -268,7 +272,16 @@ impl Model {
     /// textures (a texture still loading is dropped when its image arrives),
     /// material groups and their layout. Handles from this model are stale
     /// afterwards.
+    /// After a context loss the GPU objects are gone already: only the
+    /// material groups and layout (CPU-side) are freed then.
     pub fn destroy(&self, ctx: &Context) {
+        for &g in &self.material_groups {
+            ctx.destroy_param_group(g);
+        }
+        ctx.destroy_param_layout(self.material_layout);
+        if self.generation != ctx.generation() {
+            return;
+        }
         for &vao in &self.vertex_arrays {
             ctx.destroy_vertex_array(vao);
         }
@@ -281,10 +294,62 @@ impl Model {
         for &s in &self.samplers {
             ctx.destroy_sampler(s);
         }
-        for &g in &self.material_groups {
+    }
+
+    /// Takes over the GPU objects of `fresh` — the same file loaded again
+    /// after a context loss — keeping this model's material groups and their
+    /// values (so material handles held elsewhere, and edits made to them,
+    /// stay valid). Every parameter group pointing at this model's old
+    /// textures or samplers (clones included) is pointed at the new ones.
+    /// `fresh`'s own groups are freed. An error (and nothing changed but
+    /// `fresh` freed) if the file no longer matches.
+    pub fn adopt(&mut self, ctx: &Context, fresh: Model) -> Result<(), Error> {
+        let same = self.items.len() == fresh.items.len()
+            && self.textures.len() == fresh.textures.len()
+            && self.samplers.len() == fresh.samplers.len()
+            && self.materials.len() == fresh.materials.len();
+        if !same {
+            fresh.destroy(ctx);
+            return Err(format!("reloading {}: the file has changed", self.source).into());
+        }
+        let textures = self
+            .textures
+            .iter()
+            .copied()
+            .zip(fresh.textures.iter().copied());
+        let samplers = self
+            .samplers
+            .iter()
+            .copied()
+            .zip(fresh.samplers.iter().copied());
+        ctx.remap_group_handles(&textures.collect(), &samplers.collect());
+        for (mine, theirs) in self.items.iter_mut().zip(&fresh.items) {
+            mine.vao = theirs.vao;
+            mine.state_id = theirs.state_id;
+        }
+        for &g in &fresh.material_groups {
             ctx.destroy_param_group(g);
         }
-        ctx.destroy_param_layout(self.material_layout);
+        ctx.destroy_param_layout(fresh.material_layout);
+        self.textures = fresh.textures;
+        self.samplers = fresh.samplers;
+        self.vertex_arrays = fresh.vertex_arrays;
+        self.buffers = fresh.buffers;
+        self.generation = fresh.generation;
+        Ok(())
+    }
+
+    /// The URL the model was loaded from (what a reload after a context loss
+    /// fetches again).
+    pub fn source(&self) -> String {
+        self.source.clone()
+    }
+
+    /// Whether its GPU objects belong to an earlier context generation (lost
+    /// since): reload it and `adopt` the reload.
+    #[wasm_bindgen(js_name = isLost)]
+    pub fn is_lost(&self, ctx: &Context) -> bool {
+        self.generation != ctx.generation()
     }
 }
 
@@ -355,6 +420,8 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
     if ctx.is_lost() {
         return Err("WebGL context lost while the model loaded".into());
     }
+    // Everything below is created synchronously, in this generation.
+    let generation = ctx.generation();
     let set = pack::build_texture_set(ctx, &document, &buffers, &base)?;
     let mut materials: Vec<Material> = document
         .materials()
@@ -408,6 +475,8 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
         mesh_count: geometry.mesh_count(),
         center,
         radius,
+        source: url.to_string(),
+        generation,
     })
 }
 

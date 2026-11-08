@@ -103,6 +103,11 @@ window.addEventListener("keydown", (e) => {
   }
   if (k === "e") scene.setEnvironmentRotation((envAngle += Math.PI / 4));
   if (k === "c") recolor();
+  // Simulate a context loss; the scene rebuilds itself after the restore
+  // (model fetched again, environment re-baked, materials as they were).
+  if (k === "l" && ctx.simulateContextLoss()) {
+    setTimeout(() => ctx.simulateContextRestore(), 1000);
+  }
 });
 
 let last = performance.now();

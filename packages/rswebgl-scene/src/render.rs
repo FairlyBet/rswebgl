@@ -108,6 +108,11 @@ pub struct MeshRenderer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Visible(pub bool);
 
+/// A mesh whose GPU data is being rebuilt (its model reloading after a
+/// context loss): left out of frames, counted as pending, until removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reloading;
+
 /// What the last `SceneRenderer::render` did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RenderStats {
@@ -179,6 +184,8 @@ pub struct SceneRenderer {
     objects: HashMap<Entity, Object>,
     // Made on the first `pick`.
     picker: Option<GpuPicker>,
+    // The context generation its GPU objects belong to.
+    generation: u32,
     stats: RenderStats,
 }
 
@@ -250,6 +257,7 @@ impl SceneRenderer {
             f_object_id: ctx.param_field(object_layout, OBJECT_ID_UNIFORM)?,
             objects: HashMap::new(),
             picker: None,
+            generation: ctx.generation(),
             stats: RenderStats::default(),
         };
         renderer.bind_environment(ctx);
@@ -416,6 +424,7 @@ impl SceneRenderer {
             return self.stats;
         };
         let bounds = world.storage::<Bounds>();
+        let reloading = world.storage::<Reloading>().filter(|r| !r.is_empty());
         // Ancestors are walked per mesh only while something is hidden.
         let any_hidden = world
             .storage::<Visible>()
@@ -439,8 +448,8 @@ impl SceneRenderer {
             }
 
             // A shader still linking would stall the frame: skip the mesh until
-            // it is done.
-            if ctx.program_link_pending(mesh.program) {
+            // it is done. Likewise one whose model is reloading.
+            if reloading.is_some_and(|r| r.contains(e)) || ctx.program_link_pending(mesh.program) {
                 self.stats.pending += 1;
                 continue;
             }
@@ -475,8 +484,33 @@ impl SceneRenderer {
         self.stats
     }
 
+    /// Rebuilds the GPU side after a context loss (`Context::generation`
+    /// moved on), keeping the settings: environment intensity and rotation,
+    /// exposure, background. The environment itself is back to the default
+    /// white one: set it again (`set_environment`, which resets the
+    /// intensity to 1). Object groups are rewritten as meshes are drawn.
+    pub fn rebuild(&mut self, ctx: &Context) -> Result<(), Error> {
+        let mut fresh = Self::new(ctx)?;
+        fresh.env_intensity = self.env_intensity;
+        fresh.exposure = self.exposure;
+        fresh.env_rotation = self.env_rotation;
+        fresh.background = self.background;
+        if matches!(self.skybox, Some(Ok(_))) {
+            fresh.background_program(ctx);
+        }
+        std::mem::replace(self, fresh).destroy(ctx);
+        Ok(())
+    }
+
+    /// Whether its GPU objects belong to an earlier context generation
+    /// (`rebuild` it).
+    pub fn is_lost(&self, ctx: &Context) -> bool {
+        self.generation != ctx.generation()
+    }
+
     /// Destroys every resource the scene renderer created. Draws already in a
-    /// pass then refer to stale groups.
+    /// pass then refer to stale groups. After a context loss only the
+    /// CPU-side parameter groups are left to free.
     pub fn destroy(self, ctx: &Context) {
         for o in self.objects.into_values() {
             ctx.destroy_param_group(o.group);
@@ -484,6 +518,9 @@ impl SceneRenderer {
         ctx.destroy_param_group(self.frame_group);
         ctx.destroy_param_layout(self.frame_layout);
         ctx.destroy_param_layout(self.object_layout);
+        if self.generation != ctx.generation() {
+            return;
+        }
         ctx.destroy_uniform_buffer(self.frame_ubo);
         ctx.destroy_uniform_buffer(self.lighting_ubo);
         ctx.destroy_texture(self.brdf_lut);

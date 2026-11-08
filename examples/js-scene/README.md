@@ -12,7 +12,8 @@ light. Other assets: `?model=<url>` and `?env=<url.hdr>`.
 **Click** a part to pick it (its name shows), **C** paints it a random color
 (through a copy of its material). Keys: **V** hides / shows the model (through its root, so the
 whole subtree), **R** pauses the turntable, **+ / −** change the exposure, **B**
-toggles the background, **E** turns the environment.
+toggles the background, **E** turns the environment, **L** simulates a
+context loss (restored a second later: the scene rebuilds itself).
 
 ```bash
 wasm-pack build packages/rswebgl-scene --target web --out-dir ../../examples/js-scene/pkg

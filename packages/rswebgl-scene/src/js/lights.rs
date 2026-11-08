@@ -127,17 +127,23 @@ impl Scene {
     /// cube maps `size` texels per face (256 is a good default). Replaces the
     /// previous environment; throws if the file can't be read or the device
     /// can't render to half-float textures.
+    /// The bytes are kept (a copy) to bake it again after a context loss.
     #[wasm_bindgen(js_name = setEnvironmentHdr)]
     pub fn set_environment_hdr(&mut self, bytes: &[u8], size: u32) -> Result<(), Error> {
+        self.sync_context();
         let image = decode_hdr(bytes)?;
         let env = Environment::from_equirect(&self.ctx, &image, size)?;
         self.renderer.set_environment(&self.ctx, env);
+        // Kept to bake again after a context loss.
+        self.env_source = Some((bytes.to_vec(), size));
         Ok(())
     }
 
     /// Back to the default: a flat white ambient light at intensity 0.2.
     #[wasm_bindgen(js_name = clearEnvironment)]
     pub fn clear_environment(&mut self) {
+        self.sync_context();
+        self.env_source = None;
         self.renderer.clear_environment(&self.ctx);
     }
 

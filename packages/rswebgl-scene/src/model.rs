@@ -13,10 +13,13 @@ use crate::render::MeshRenderer;
 use crate::transform::{Parent, Transform};
 
 /// What a glTF primitive entity keeps from the loader: its vertex attributes
-/// (`ATTR_*`), to pick a PBR variant when its material changes.
+/// (`ATTR_*`), to pick a PBR variant when its material changes, and which of
+/// the model's draw items it is (`Model::items`), to find its GPU data again
+/// after a reload.
 #[derive(Debug, Clone, Copy)]
 pub struct Primitive {
     pub attributes: u32,
+    pub item: u32,
 }
 
 /// A name to find an entity by (glTF node names, or the app's own).
@@ -66,7 +69,7 @@ pub fn spawn_model(
         }
         by_index.insert(node.index, e);
     }
-    for item in model.items() {
+    for (index, item) in model.items().iter().enumerate() {
         let Some(&node) = by_index.get(&item.node()) else {
             continue;
         };
@@ -96,6 +99,7 @@ pub fn spawn_model(
             e,
             Primitive {
                 attributes: item.attributes(),
+                item: index as u32,
             },
         );
     }
