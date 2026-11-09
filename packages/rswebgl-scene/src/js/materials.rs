@@ -17,12 +17,14 @@
 use rswebgl::console;
 use rswebgl::error::Error;
 use rswebgl::ids::{ParamGroupId, SamplerId, TextureId};
+use rswebgl::render_state::FrontFace;
 use rswebgl::texture::{
     TextureFormat, TextureMagFilter, TextureMinFilter, TextureTarget, TextureWrap,
 };
 use rswebgl_ecs::Entity;
 use rswebgl_gltf::{
     EXTERNAL_TEXTURE, MAP_COUNT, MAP_NAMES, MAP_UNIFORMS, Material, Model, default_material,
+    render_state_for,
 };
 use wasm_bindgen::prelude::*;
 
@@ -101,6 +103,75 @@ impl Scene {
             }
             self.update_variant(d);
         }
+    }
+
+    /// KHR_materials_variants: the material variants of the model at `root`
+    /// (what `addModel` returned), by name; empty without the extension.
+    #[wasm_bindgen(js_name = materialVariants)]
+    pub fn material_variants(&self, root: Entity) -> Vec<String> {
+        self.models
+            .get(&root)
+            .map_or_else(Vec::new, |m| m.material_variants().to_vec())
+    }
+
+    /// Switches the model at `root` to material variant `name`
+    /// (`materialVariants`), or back to its own materials (undefined): each
+    /// mesh takes the material the file maps for that variant, its own where
+    /// none. Meshes given another material with `setMaterial` switch too.
+    /// Throws for an unknown root or name.
+    #[wasm_bindgen(js_name = setMaterialVariant)]
+    pub fn set_material_variant(
+        &mut self,
+        root: Entity,
+        name: Option<String>,
+    ) -> Result<(), Error> {
+        let model = self
+            .models
+            .get(&root)
+            .ok_or("setMaterialVariant: not the root of a model")?;
+        let variant = match &name {
+            None => None,
+            Some(n) => Some(
+                model
+                    .material_variants()
+                    .iter()
+                    .position(|v| v == n)
+                    .ok_or_else(|| Error::from(format!("setMaterialVariant: no variant \"{n}\"")))?
+                    as u32,
+            ),
+        };
+        let default = default_material();
+        let groups = model.material_groups();
+        let mut changes = Vec::new();
+        for e in descendants(&self.world, root) {
+            let Some(prim) = self.world.get::<Primitive>(e) else {
+                continue;
+            };
+            let Some(item) = model.items().get(prim.item as usize) else {
+                continue;
+            };
+            let index = variant.map_or(item.material_index(), |v| item.variant_material_index(v));
+            let (group, material) = match usize::try_from(index)
+                .ok()
+                .filter(|&i| i < model.materials().len())
+            {
+                Some(i) => (groups[i], &model.materials()[i]),
+                None => (groups[groups.len() - 1], &default),
+            };
+            // Blending and culling follow the material; mirroring the node.
+            let mirrored = item.render_state().front_face == FrontFace::Cw;
+            let state = render_state_for(material, mirrored);
+            changes.push((e, group, self.ctx.render_state(&state), state.blend));
+        }
+        for (e, group, state, blend) in changes {
+            if let Some(mut m) = self.world.get_mut::<MeshRenderer>(e) {
+                m.material = group;
+                m.state = state;
+                m.transparent = blend;
+            }
+            self.update_variant(e);
+        }
+        Ok(())
     }
 
     /// A material property by its glTF name (`baseColorFactor`,

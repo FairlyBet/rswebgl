@@ -220,6 +220,7 @@ async function load(/** @type {string} */ url, /** @type {string} */ label) {
     inspect(0, "");
     listCameras();
     listAnimations();
+    listVariants();
     status(`Compiling shaders for ${label}…`);
     await scene.whenReady();
     if (ticket === loading) {
@@ -252,6 +253,17 @@ function playSelected() {
   else if (root) scene.stopAnimation(root);
 }
 animSelect.addEventListener("change", playSelected);
+
+// KHR_materials_variants: the file's material variants, if any.
+const variantSelect = $("variant");
+function listVariants() {
+  variantSelect.length = 1;
+  for (const name of scene.materialVariants(root)) variantSelect.add(new Option(name, name));
+  variantSelect.value = "";
+}
+variantSelect.addEventListener("change", () => {
+  if (root) scene.setMaterialVariant(root, variantSelect.value || undefined);
+});
 
 // The model's own cameras (glTF `cameras`) as alternatives to the orbit.
 const viewSelect = $("view-camera");

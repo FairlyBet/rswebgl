@@ -40,7 +40,7 @@ pub use draco::set_draco_decoder_path;
 pub use ktx2::set_ktx2_transcoder_path;
 pub use material::{
     AlphaMode, EXTERNAL_TEXTURE, MAP_COUNT, MAP_NAMES, MAP_SLOTS, MapSlot, Material, PROPERTIES,
-    Property, UV_IDENTITY, default_material, uv_matrix,
+    Property, UV_IDENTITY, default_material, render_state_for, uv_matrix,
 };
 
 use rswebgl::context::Context;
@@ -73,6 +73,7 @@ const HANDLED_EXTENSIONS: &[&str] = &[
     "KHR_texture_basisu",
     "KHR_draco_mesh_compression",
     "KHR_mesh_quantization",
+    "KHR_materials_variants",
 ];
 
 // Optional vertex attributes a primitive can have (`DrawItem::attributes`).
@@ -125,6 +126,8 @@ pub struct DrawItem {
     // Morph target deltas (NULL without), and how many targets.
     pub(crate) morph_texture: TextureId,
     pub(crate) morph_targets: u32,
+    // KHR_materials_variants: (variant, material index).
+    pub(crate) variants: Vec<(u32, i32)>,
 }
 
 #[wasm_bindgen]
@@ -145,6 +148,17 @@ impl DrawItem {
     pub fn render_state(&self) -> RenderState {
         self.state.clone()
     }
+    /// The material this item uses in KHR_materials_variants variant
+    /// `variant` (an index into `materialVariants`): its own where the file
+    /// maps none.
+    #[wasm_bindgen(js_name = variantMaterialIndex)]
+    pub fn variant_material_index(&self, variant: u32) -> i32 {
+        self.variants
+            .iter()
+            .find(|(v, _)| *v == variant)
+            .map_or(self.material, |(_, m)| *m)
+    }
+
     /// Index into `Model::material(i)`, or `-1` for the default material.
     #[wasm_bindgen(js_name = materialIndex)]
     pub fn material_index(&self) -> i32 {
@@ -325,6 +339,8 @@ pub struct Model {
     pub(crate) source: String,
     // The context generation its GPU handles belong to.
     pub(crate) generation: u32,
+    // KHR_materials_variants: the variants' names, in index order.
+    pub(crate) variants: Vec<String>,
 }
 
 #[wasm_bindgen]
@@ -494,6 +510,12 @@ impl Model {
         &self.material_groups
     }
 
+    /// KHR_materials_variants: the variants' names, in index order (empty
+    /// without the extension).
+    pub fn material_variants(&self) -> &[String] {
+        &self.variants
+    }
+
     /// The default scene's nodes, parents before children.
     pub fn nodes(&self) -> &[SceneNode] {
         &self.nodes
@@ -548,6 +570,21 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
         .map_err(js_err)?;
     // Compressed geometry, decoded in place (meshopt) or into a buffer of
     // its own the accessors are pointed at (Draco).
+    // KHR_materials_variants: the variants' names.
+    let variants: Vec<String> = json
+        .pointer("/extensions/KHR_materials_variants/variants")
+        .and_then(|v| v.as_array())
+        .map(|vs| {
+            vs.iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    v["name"]
+                        .as_str()
+                        .map_or_else(|| format!("variant {i}"), str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     // (On the JSON: such a file is only a valid document once decoded.)
     meshopt::decode_views(&json, &mut buffers)?;
     draco::decode(&mut json, &mut buffers).await?;
@@ -655,6 +692,7 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
         radius,
         source: url.to_string(),
         generation,
+        variants,
     })
 }
 

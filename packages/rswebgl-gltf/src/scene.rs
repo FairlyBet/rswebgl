@@ -142,13 +142,14 @@ fn walk(
                     attributes: if node.skin().is_some() {
                         geo.attributes
                     } else {
-                        geo.attributes & !crate::ATTR_SKIN
+                        geo.attributes & !(crate::ATTR_SKIN | crate::ATTR_SKIN8)
                     },
                     aabb_min: geo.aabb_min,
                     aabb_max: geo.aabb_max,
                     skin: node.skin().map_or(-1, |s| s.index() as i32),
                     morph_texture: geo.morph.map_or(TextureId::NULL, |m| m.texture),
                     morph_targets: geo.morph.map_or(0, |m| m.targets),
+                    variants: geo.variants.clone(),
                 });
             }
         }

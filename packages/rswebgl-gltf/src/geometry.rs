@@ -61,6 +61,8 @@ pub struct PrimitiveGpu {
     pub aabb_min: [f32; 3],
     pub aabb_max: [f32; 3],
     pub morph: Option<MorphGpu>,
+    /// KHR_materials_variants: (variant, material index) mappings.
+    pub variants: Vec<(u32, i32)>,
 }
 
 /// GPU buffers created so far, by accessor index, and the vertex arrays built
@@ -288,6 +290,7 @@ impl GeometryCache {
             aabb_min,
             aabb_max,
             morph: morph.map(|(m, _)| m),
+            variants: variant_mappings(primitive),
         })
     }
 
@@ -480,6 +483,34 @@ fn accessor_bounds(a: &gltf::Accessor) -> Option<([f32; 3], [f32; 3])> {
         Some(out)
     };
     Some((read(a.min())?, read(a.max())?))
+}
+
+// A primitive's KHR_materials_variants mappings: (variant, material).
+fn variant_mappings(primitive: &gltf::Primitive) -> Vec<(u32, i32)> {
+    let Some(maps) = primitive
+        .extension_value("KHR_materials_variants")
+        .and_then(|v| v.get("mappings"))
+        .and_then(|m| m.as_array())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for m in maps {
+        let Some(material) = m.get("material").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        for v in m
+            .get("variants")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            if let Some(v) = v.as_u64() {
+                out.push((v as u32, material as i32));
+            }
+        }
+    }
+    out
 }
 
 // A triangle list for bevy_mikktspace, and the tangents it gives back.
