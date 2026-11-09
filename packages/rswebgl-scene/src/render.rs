@@ -231,6 +231,8 @@ pub struct SceneRenderer {
     f_normal: ParamField,
     f_object_id: ParamField,
     objects: HashMap<Entity, Object>,
+    // MeshRenderer's removal count at the last sweep check.
+    removals_seen: u64,
     f_instance_base: ParamField,
     f_joint_base: ParamField,
     f_morph_base: ParamField,
@@ -261,6 +263,8 @@ pub struct SceneRenderer {
 
 impl SceneRenderer {
     pub fn new(ctx: &Context) -> Result<Self, Error> {
+        // What's made so far is freed if a later step fails.
+        let mut undo = rswebgl::undo::Undo::new(ctx);
         let frame_ubo = ctx.create_uniform_buffer(
             &UboLayout::new()
                 .field("u_view", UniformType::Mat4)
@@ -269,6 +273,7 @@ impl SceneRenderer {
                 .field("u_camera_pos", UniformType::Vec4),
             BufferUsage::DynamicDraw,
         )?;
+        undo.push(move |c| c.destroy_uniform_buffer(frame_ubo));
         let light = UboLayout::new()
             .field("position", UniformType::Vec4)
             .field("direction", UniformType::Vec4)
@@ -283,6 +288,7 @@ impl SceneRenderer {
                 .field("u_shading", UniformType::Vec4),
             BufferUsage::DynamicDraw,
         )?;
+        undo.push(move |c| c.destroy_uniform_buffer(lighting_ubo));
         let frame_layout = ctx.create_param_layout(
             &ParamLayoutBuilder::new()
                 .block(FRAME_BLOCK)
@@ -295,7 +301,9 @@ impl SceneRenderer {
                 .texture("u_peel_depth")
                 .uniform("u_background_blur", UniformType::F32),
         )?;
+        undo.push(move |c| c.destroy_param_layout(frame_layout));
         let frame_group = ctx.create_param_group(frame_layout)?;
+        undo.push(move |c| c.destroy_param_group(frame_group));
         ctx.param_set_block_by_name(frame_group, FRAME_BLOCK, frame_ubo);
         ctx.param_set_block_by_name(frame_group, LIGHTING_BLOCK, lighting_ubo);
         let object_layout = ctx.create_param_layout(
@@ -309,9 +317,19 @@ impl SceneRenderer {
                 .uniform("u_morph_count", UniformType::I32)
                 .texture("u_morph_targets"),
         )?;
+        undo.push(move |c| c.destroy_param_layout(object_layout));
         let instances = Instances::new(ctx)?;
+        let instance_texture = instances.texture();
+        undo.push(move |c| c.destroy_texture(instance_texture));
         ctx.param_set_texture_by_name(frame_group, INSTANCES_TEXTURE, instances.texture());
         let brdf_lut = brdf_lut_texture(ctx)?;
+        undo.push(move |c| c.destroy_texture(brdf_lut));
+        let default_env = Environment::constant(ctx, Vec3::ONE)?;
+        let (env_diffuse, env_specular) = (default_env.diffuse(), default_env.specular());
+        undo.push(move |c| {
+            c.destroy_texture(env_diffuse);
+            c.destroy_texture(env_specular);
+        });
         ctx.param_set_texture_by_name(frame_group, "u_env_brdf", brdf_lut);
         // Until a frame grabs the scene: any valid texture (not sampled).
         ctx.param_set_texture_by_name(frame_group, "u_scene_color", brdf_lut);
@@ -330,7 +348,7 @@ impl SceneRenderer {
             mip_bias: 0.0,
             last_view_proj: Mat4::IDENTITY,
             motion: None,
-            default_env: Environment::constant(ctx, Vec3::ONE)?,
+            default_env,
             env: None,
             env_rotation: 0.0,
             brdf_lut,
@@ -347,6 +365,7 @@ impl SceneRenderer {
             f_normal: ctx.param_field(object_layout, NORMAL_MATRIX_UNIFORM)?,
             f_object_id: ctx.param_field(object_layout, OBJECT_ID_UNIFORM)?,
             objects: HashMap::new(),
+            removals_seen: 0,
             f_instance_base: ctx.param_field(object_layout, INSTANCE_BASE_UNIFORM)?,
             f_joint_base: ctx.param_field(object_layout, JOINT_BASE_UNIFORM)?,
             f_morph_base: ctx.param_field(object_layout, MORPH_BASE_UNIFORM)?,
@@ -366,6 +385,7 @@ impl SceneRenderer {
             stats: RenderStats::default(),
         };
         renderer.bind_environment(ctx);
+        undo.keep();
         Ok(renderer)
     }
 
@@ -1214,7 +1234,12 @@ impl SceneRenderer {
         let meshes = world.storage::<MeshRenderer>();
         let logged = meshes.is_some_and(|m| !m.removed().is_empty());
         let live = meshes.map_or(0, |m| m.len());
-        if !logged && self.objects.len() <= live {
+        // The storage's removal count catches what the log can't: a removal
+        // whose log was cleared before this frame, alongside an addition.
+        let removals = meshes.map_or(0, |m| m.removal_count());
+        let counted = removals != self.removals_seen;
+        self.removals_seen = removals;
+        if !logged && !counted && self.objects.len() <= live {
             return;
         }
         self.objects.retain(|&e, o| {

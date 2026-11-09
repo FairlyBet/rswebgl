@@ -56,6 +56,7 @@ pub mod sampler;
 pub mod shader_source;
 pub mod texture;
 pub mod texture_packer;
+pub mod undo;
 pub mod uniform_buffer;
 pub mod vao;
 pub mod vao_builder;

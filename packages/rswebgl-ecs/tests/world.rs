@@ -163,3 +163,20 @@ fn storages_mut_rejects_the_same_type_twice() {
     let mut w = World::new();
     let _ = w.storages_mut::<Pos, Pos>();
 }
+
+// The removal count keeps going when the trackers are cleared, so a
+// consumer that checks it later still sees a removal it missed.
+#[test]
+fn removal_count_survives_clearing_the_trackers() {
+    let mut world = World::new();
+    let a = world.spawn();
+    let b = world.spawn();
+    world.insert(a, 1u32);
+    world.insert(b, 2u32);
+    world.remove::<u32>(a);
+    world.despawn(b);
+    world.clear_trackers();
+    let s = world.storage::<u32>().unwrap();
+    assert!(s.removed().is_empty());
+    assert_eq!(s.removal_count(), 2);
+}

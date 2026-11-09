@@ -594,7 +594,28 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
     );
 
     let (material_layout, material_groups) =
-        build_material_groups(ctx, &materials, &map_samplers, &textures)?;
+        match build_material_groups(ctx, &materials, &map_samplers, &textures) {
+            Ok(m) => m,
+            Err(e) => {
+                // Nothing of the model is kept.
+                for v in geometry.vertex_arrays() {
+                    ctx.destroy_vertex_array(v);
+                }
+                for b in geometry.buffers() {
+                    ctx.destroy_buffer(b);
+                }
+                for t in geometry.morph_textures() {
+                    ctx.destroy_texture(t);
+                }
+                for &t in &textures {
+                    ctx.destroy_texture(t);
+                }
+                for &s in &set.samplers {
+                    ctx.destroy_sampler(s);
+                }
+                return Err(e);
+            }
+        };
     for item in &mut items {
         let i = usize::try_from(item.material).unwrap_or(materials.len());
         item.material_group = material_groups[i];
@@ -737,6 +758,27 @@ fn build_material_groups(
         builder = builder.uniform(slot.transform, UniformType::Mat3);
     }
     let layout = ctx.create_param_layout(&builder)?;
+    // A failure part way frees the layout and the groups made.
+    let mut groups = Vec::with_capacity(materials.len() + 1);
+    let made = fill_material_groups(ctx, layout, materials, map_samplers, textures, &mut groups);
+    if let Err(e) = made {
+        for g in groups {
+            ctx.destroy_param_group(g);
+        }
+        ctx.destroy_param_layout(layout);
+        return Err(e);
+    }
+    Ok((layout, groups))
+}
+
+fn fill_material_groups(
+    ctx: &Context,
+    layout: ParamLayoutId,
+    materials: &[Material],
+    map_samplers: &[[SamplerId; MAPS]],
+    textures: &[TextureId],
+    groups: &mut Vec<ParamGroupId>,
+) -> Result<(), Error> {
     let field = |name| ctx.param_field(layout, name);
     let f_mode = field("u_alpha_mode")?;
     let f_has_tex = field("u_has_base_color_tex")?;
@@ -746,7 +788,6 @@ fn build_material_groups(
         .collect::<Result<_, _>>()?;
 
     let default = material::default_material();
-    let mut groups = Vec::with_capacity(materials.len() + 1);
     for (i, m) in materials
         .iter()
         .chain(std::iter::once(&default))
@@ -769,7 +810,7 @@ fn build_material_groups(
         }
         groups.push(g);
     }
-    Ok((layout, groups))
+    Ok(())
 }
 
 #[cfg(test)]

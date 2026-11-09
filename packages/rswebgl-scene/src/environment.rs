@@ -76,9 +76,11 @@ impl Environment {
             }
             Ok(t)
         };
+        let diffuse = cube()?;
+        let specular = cube().inspect_err(|_| ctx.destroy_texture(diffuse))?;
         Ok(Self {
-            diffuse: cube()?,
-            specular: cube()?,
+            diffuse,
+            specular,
             specular_mips: 1,
         })
     }
@@ -206,22 +208,41 @@ impl EnvBaker {
                 .texture("u_equirect")
                 .texture("u_source"),
         )?;
-        Ok(Self {
-            ctx: ctx.clone(),
-            generation: ctx.generation(),
-            destroyed: std::cell::Cell::new(false),
-            decode: program("DECODE")?,
-            equirect: program("EQUIRECT")?,
-            specular: program("SPECULAR")?,
-            irradiance: program("IRRADIANCE")?,
-            layout,
-            group: ctx.create_param_group(layout)?,
-            f_face: ctx.param_field(layout, "u_face")?,
-            f_roughness: ctx.param_field(layout, "u_roughness")?,
-            f_source_size: ctx.param_field(layout, "u_source_size")?,
-            f_rgbe: ctx.param_field(layout, "u_rgbe")?,
-            f_equirect: ctx.param_field(layout, "u_equirect")?,
-            f_source: ctx.param_field(layout, "u_source")?,
+        // Built as it goes, so a failure part way frees what was made.
+        let mut programs: Vec<ProgramId> = Vec::new();
+        let mut group = None;
+        let made = (|| -> Result<Self, Error> {
+            for mode in ["DECODE", "EQUIRECT", "SPECULAR", "IRRADIANCE"] {
+                programs.push(program(mode)?);
+            }
+            let g = ctx.create_param_group(layout)?;
+            group = Some(g);
+            Ok(Self {
+                ctx: ctx.clone(),
+                generation: ctx.generation(),
+                destroyed: std::cell::Cell::new(false),
+                decode: programs[0],
+                equirect: programs[1],
+                specular: programs[2],
+                irradiance: programs[3],
+                layout,
+                group: g,
+                f_face: ctx.param_field(layout, "u_face")?,
+                f_roughness: ctx.param_field(layout, "u_roughness")?,
+                f_source_size: ctx.param_field(layout, "u_source_size")?,
+                f_rgbe: ctx.param_field(layout, "u_rgbe")?,
+                f_equirect: ctx.param_field(layout, "u_equirect")?,
+                f_source: ctx.param_field(layout, "u_source")?,
+            })
+        })();
+        made.inspect_err(|_| {
+            if let Some(g) = group {
+                ctx.destroy_param_group(g);
+            }
+            for &p in &programs {
+                ctx.destroy_program(p);
+            }
+            ctx.destroy_param_layout(layout);
         })
     }
 

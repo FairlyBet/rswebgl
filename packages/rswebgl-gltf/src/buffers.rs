@@ -68,8 +68,30 @@ pub fn decode_data_uri(uri: &str) -> Option<Result<Vec<u8>, JsValue>> {
                 .map_err(|e| JsValue::from_str(&format!("data URI base64 decode: {e}"))),
         )
     } else {
-        Some(Ok(payload.as_bytes().to_vec()))
+        Some(Ok(percent_decode(payload)))
     }
+}
+
+// `%XX` escapes decoded (RFC 2397: a non-base64 payload is URL-encoded);
+// a malformed one is kept as it is.
+fn percent_decode(s: &str) -> Vec<u8> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2]))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// The MIME type declared in a `data:` image URI, if any (`data:image/png;base64,…`).
@@ -92,6 +114,12 @@ mod tests {
             .expect("is data URI")
             .expect("decodes");
         assert_eq!(got, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn decodes_percent_encoded_data_uri() {
+        let got = decode_data_uri("data:,a%20b%2Cc%zz").unwrap().unwrap();
+        assert_eq!(got, b"a b,c%zz");
     }
 
     #[test]

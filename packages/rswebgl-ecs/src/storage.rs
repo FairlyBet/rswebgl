@@ -21,6 +21,9 @@ pub struct Storage<T> {
     // Entities that lost the component (or were despawned) since the last
     // `World::clear_trackers`.
     removed: Vec<Entity>,
+    // Removals ever (never cleared): lets a consumer notice one even after
+    // the trackers were cleared.
+    removals: u64,
 }
 
 impl<T> Default for Storage<T> {
@@ -31,6 +34,7 @@ impl<T> Default for Storage<T> {
             data: Vec::new(),
             changed: Vec::new(),
             removed: Vec::new(),
+            removals: 0,
         }
     }
 }
@@ -99,6 +103,7 @@ impl<T> Storage<T> {
         self.entities.swap_remove(r);
         self.changed.swap_remove(r);
         self.removed.push(e);
+        self.removals += 1;
         Some(self.data.swap_remove(r))
     }
 
@@ -162,6 +167,13 @@ impl<T> Storage<T> {
     /// listed and have the component again if it was re-added.
     pub fn removed(&self) -> &[Entity] {
         &self.removed
+    }
+
+    /// How many times the component was removed (despawns included) since
+    /// the storage was made; unlike `removed`, `clear_trackers` doesn't reset
+    /// it.
+    pub fn removal_count(&self) -> u64 {
+        self.removals
     }
 
     pub(crate) fn clear_removed(&mut self) {
