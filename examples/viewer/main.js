@@ -107,6 +107,10 @@ const profiling = createProfiling({
   wasm,
   canvas,
   $,
+  scene,
+  ctx,
+  viewCamera: () => viewCamera(),
+  getRoot: () => root,
   describe: () => {
     /** @type {Record<string, string>} */
     const d = {

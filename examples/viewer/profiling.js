@@ -15,9 +15,13 @@ const TRACK_BROWSER = 3;
  *   canvas: HTMLCanvasElement,
  *   $: (id: string) => any,
  *   describe: () => Record<string, string>,
+ *   scene?: any,
+ *   ctx?: any,
+ *   viewCamera?: () => number,
+ *   getRoot?: () => number,
  * }} opts
  */
-export function createProfiling({ wasm, canvas, $, describe }) {
+export function createProfiling({ wasm, canvas, $, describe, scene, ctx, viewCamera = () => 0, getRoot = () => 0 }) {
   let until = 0; // performance.now() the recording ends at; 0 when idle
   let report = "";
   let reportName = "";
@@ -98,6 +102,105 @@ export function createProfiling({ wasm, canvas, $, describe }) {
   }
 
   $("trace-record").onclick = start;
+  $("cost-measure").onclick = () => measureView().catch((e) => ($("trace-summary").textContent = `Failed: ${e}`));
+
+  // What this view costs, and what each feature adds: frames rendered
+  // back to back, each waited for (a one-pixel read of the canvas, which
+  // can't return before the GPU is done; gl.finish doesn't wait in Chrome),
+  // so a time is the whole frame's CPU + GPU work. Settings are switched one at a time, then
+  // restored.
+  async function measureView() {
+    if (!scene) return;
+    const gl = /** @type {WebGL2RenderingContext} */ (canvas.getContext("webgl2"));
+    const cam = viewCamera();
+    const root = getRoot();
+    const out = $("trace-summary");
+    const pixel = new Uint8Array(4);
+    const sync = () => {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+      ctx?.invalidateState(); // the library's GL state cache saw none of this
+    };
+    for (const id of ["cost-measure", "trace-record"]) $(id).disabled = true;
+    /** @type {[string, number][]} */
+    const rows = [];
+    const time = async (/** @type {string} */ label) => {
+      out.textContent = `Measuring: ${label}…`;
+      await scene.whenReady();
+      for (let i = 0; i < 10; i++) scene.renderFrame(cam); // warm up (TAA history, mips)
+      sync();
+      const ms = [];
+      for (let i = 0; i < 25; i++) {
+        const t0 = performance.now();
+        scene.renderFrame(cam);
+        sync();
+        ms.push(performance.now() - t0);
+      }
+      ms.sort((a, b) => a - b);
+      rows.push([label, ms[ms.length >> 1]]);
+      await new Promise((r) => setTimeout(r, 50)); // let the page breathe
+    };
+    // Materials with a property on, to turn it off for a row.
+    const withProperty = (/** @type {string} */ name) =>
+      root
+        ? [...scene.materials(root)]
+            .map((m) => [m, scene.materialProperty(m, name)])
+            .filter(([, v]) => v && /** @type {any} */ (v)[0] > 0)
+        : [];
+    const without = async (/** @type {string} */ label, /** @type {string} */ name) => {
+      const on = withProperty(name);
+      if (!on.length) return;
+      for (const [m] of on) scene.setMaterialProperty(m, name, 0);
+      await time(label);
+      for (const [m, v] of on) scene.setMaterialProperty(m, name, /** @type {any} */ (v).length === 1 ? /** @type {any} */ (v)[0] : [.../** @type {any} */ (v)]);
+    };
+
+    Trace.start();
+    // Clocks ramp up: a second of frames before anything counts.
+    for (const end = performance.now() + 1000; performance.now() < end; ) {
+      scene.renderFrame(cam);
+      sync();
+    }
+    await time("this view, as set");
+    await without("no thin film (iridescence)", "thin_film_weight");
+    await without("no transmission", "transmission_weight");
+    await without("no coat", "coat_weight");
+    await without("no fuzz (sheen)", "fuzz_weight");
+    const trans = scene.transmissionResolution();
+    if (withProperty("transmission_weight").length) {
+      for (const s of [0.5, 0.25]) {
+        if (s >= trans) continue;
+        scene.setTransmissionResolution(s);
+        await time(`scene copy for glass at ${s}`);
+      }
+      scene.setTransmissionResolution(trans);
+    }
+    const shading = scene.shadingModel();
+    scene.setShadingModel(shading === "openpbr" ? "gltf" : "openpbr");
+    await time(`${scene.shadingModel()} shading`);
+    scene.setShadingModel(shading);
+    if (scene.isTaa()) {
+      scene.setTaa(false);
+      scene.setSamples(0);
+      await time("no TAA, no MSAA");
+      scene.setTaa(true);
+    }
+    if (root) {
+      scene.setVisible(root, false);
+      await time("model hidden (background only)");
+      scene.setVisible(root, true);
+    }
+    await time("this view again (drift check)");
+    await scene.whenReady();
+    const base = rows[0][1];
+    const text = rows.map(([l, ms]) => `${l}: ${ms.toFixed(1)} ms${l === rows[0][0] || l.startsWith("this view again") ? "" : ` (${ms - base >= 0 ? "+" : ""}${(ms - base).toFixed(1)})`}`).join("\n");
+    Trace.metadata("view cost (ms, frame + 1-pixel read, median of 25)", text.replace(/\n/g, " | "));
+    Trace.stop();
+    report = Trace.report();
+    reportName = `rswebgl-view-cost-${(describe().model ?? "model").replace(/[^\w.-]+/g, "_")}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    out.textContent = `${canvas.width}x${canvas.height}\n${text}`;
+    for (const id of ["cost-measure", "trace-record", "trace-download", "trace-send"]) $(id).disabled = false;
+  }
   $("trace-download").onclick = () => {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([report], { type: "application/json" }));
