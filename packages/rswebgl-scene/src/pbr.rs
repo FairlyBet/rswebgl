@@ -14,7 +14,8 @@ use rswebgl::ids::ProgramId;
 use rswebgl::shader_source::ShaderSource;
 use rswebgl_gltf::{
     ATTR_COLOR, ATTR_MORPH_NORMAL, ATTR_MORPH_POSITION, ATTR_MORPH_TANGENT, ATTR_NORMAL, ATTR_SKIN,
-    ATTR_TANGENT, ATTR_UV0, ATTR_UV1, AlphaMode, DrawItem, MAP_COUNT, MAP_SLOTS, Material, Model,
+    ATTR_SKIN8, ATTR_TANGENT, ATTR_UV0, ATTR_UV1, AlphaMode, DrawItem, MAP_COUNT, MAP_SLOTS,
+    Material, Model,
 };
 
 const VERT: &str = include_str!("../shaders/pbr.vert");
@@ -59,9 +60,12 @@ const MORPH_TANGENT: u64 = TEXTURE_TRANSFORM << 4;
 const MORPH: u64 = MORPH_POSITION | MORPH_NORMAL | MORPH_TANGENT;
 // OpenPBR subsurface (subsurface_weight > 0).
 const SUBSURFACE: u64 = TEXTURE_TRANSFORM << 5;
-const TOP_BIT: u64 = SUBSURFACE;
+// Eight joint influences (JOINTS_1 / WEIGHTS_1 as well).
+const SKIN8: u64 = TEXTURE_TRANSFORM << 6;
+const TOP_BIT: u64 = SKIN8;
 // Feature defines, by bit.
-const FEATURES: [(u64, &str); 16] = [
+const FEATURES: [(u64, &str); 17] = [
+    (SKIN8, "HAS_SKIN8"),
     (SUBSURFACE, "HAS_SUBSURFACE"),
     (TEXTURE_TRANSFORM, "HAS_TEXTURE_TRANSFORM"),
     (SKIN, "HAS_SKIN"),
@@ -121,6 +125,7 @@ impl PbrKey {
         let mut key = (attributes & 0x1f) as u64;
         for (attr, bit) in [
             (ATTR_SKIN, SKIN),
+            (ATTR_SKIN8, SKIN8),
             (ATTR_MORPH_POSITION, MORPH_POSITION),
             (ATTR_MORPH_NORMAL, MORPH_NORMAL),
             (ATTR_MORPH_TANGENT, MORPH_TANGENT),

@@ -45,6 +45,11 @@ layout(location = 6) in vec4 a_joints;
 layout(location = 7) in vec4 a_weights;
 uniform int u_joint_base;
 #endif
+#ifdef HAS_SKIN8
+// Four more (JOINTS_1 / WEIGHTS_1).
+layout(location = 8) in vec4 a_joints1;
+layout(location = 9) in vec4 a_weights1;
+#endif
 
 #ifdef HAS_MORPH
 // Morph targets (after three.js morphtarget_* chunks): deltas in
@@ -101,6 +106,12 @@ void main() {
                + a_weights.y * instance_matrix(u_joint_base + int(a_joints.y))
                + a_weights.z * instance_matrix(u_joint_base + int(a_joints.z))
                + a_weights.w * instance_matrix(u_joint_base + int(a_joints.w));
+#ifdef HAS_SKIN8
+    model += a_weights1.x * instance_matrix(u_joint_base + int(a_joints1.x))
+           + a_weights1.y * instance_matrix(u_joint_base + int(a_joints1.y))
+           + a_weights1.z * instance_matrix(u_joint_base + int(a_joints1.z))
+           + a_weights1.w * instance_matrix(u_joint_base + int(a_joints1.w));
+#endif
     // As three.js: normals by the skin matrix itself (shading normalizes).
     mat3 normal_matrix = mat3(model);
 #else

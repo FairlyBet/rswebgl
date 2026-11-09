@@ -954,6 +954,49 @@ fn ext_vec3(mat: &gltf::Material, ext: &str, key: &str, default: [f32; 3]) -> [f
         .unwrap_or(default)
 }
 
+/// Puts the TEXCOORD sets `m`'s maps read into the shader's two UV slots
+/// (locations 2 and 5) and points its maps at the slots: returns the sets,
+/// [slot 0, slot 1]. Sets 0 and 1 stay where they are when used; others
+/// (TEXCOORD_2 and up) take a free slot. A material reading more than two
+/// sets keeps the first two (reported); its other maps read slot 0.
+pub(crate) fn assign_uv_slots(m: &mut Material) -> [u32; 2] {
+    let mut used: Vec<u32> = m
+        .maps
+        .iter()
+        .filter(|(tex, _)| *tex >= 0)
+        .map(|(_, set)| *set)
+        .collect();
+    used.sort_unstable();
+    used.dedup();
+    if used.iter().all(|&s| s < 2) {
+        return [0, 1];
+    }
+    let mut slots = [u32::MAX; 2];
+    for &s in used.iter().filter(|&&s| s < 2) {
+        slots[s as usize] = s;
+    }
+    let mut dropped = false;
+    for &s in used.iter().filter(|&&s| s >= 2) {
+        match slots.iter_mut().find(|x| **x == u32::MAX) {
+            Some(free) => *free = s,
+            None => dropped = true,
+        }
+    }
+    if dropped {
+        rswebgl::console::warn_once(
+            "[rswebgl-gltf] a material reads more than two TEXCOORD sets; the shader has \
+             two: maps on the others read the first",
+        );
+    }
+    let slots = slots.map(|s| if s == u32::MAX { 0 } else { s });
+    for (tex, set) in &mut m.maps {
+        if *tex >= 0 {
+            *set = slots.iter().position(|&s| s == *set).unwrap_or(0) as u32;
+        }
+    }
+    slots
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1186,5 +1229,19 @@ mod tests {
             uv_matrix(UV_IDENTITY),
             [1.0, -0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         );
+    }
+
+    // TEXCOORD sets past 1 take a free UV slot; the maps follow.
+    #[test]
+    fn uv_sets_past_one_take_a_free_slot() {
+        let mut m = default_material();
+        m.maps[0] = (0, 2);
+        m.maps[2] = (1, 0);
+        assert_eq!(assign_uv_slots(&mut m), [0, 2]);
+        assert_eq!((m.maps[0], m.maps[2]), ((0, 1), (1, 0)));
+        let mut plain = default_material();
+        plain.maps[0] = (0, 1);
+        assert_eq!(assign_uv_slots(&mut plain), [0, 1]);
+        assert_eq!(plain.maps[0], (0, 1));
     }
 }

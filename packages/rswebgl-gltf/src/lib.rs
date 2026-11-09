@@ -94,6 +94,9 @@ pub const ATTR_MORPH_POSITION: u32 = 1 << 6;
 pub const ATTR_MORPH_NORMAL: u32 = 1 << 7;
 /// Morph targets with tangent deltas.
 pub const ATTR_MORPH_TANGENT: u32 = 1 << 8;
+/// JOINTS_1 at location 8 and WEIGHTS_1 at 9: eight joint influences (with
+/// `ATTR_SKIN`).
+pub const ATTR_SKIN8: u32 = 1 << 9;
 
 /// One thing to draw: a primitive of a mesh, at one instance of it. Items of
 /// the same mesh share their vertex array.
@@ -565,6 +568,11 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
         .materials()
         .map(|m| material::translate(&m))
         .collect();
+    // TEXCOORD_2 and up go into the shader's two UV slots, per material.
+    let uv_sets: Vec<[u32; 2]> = materials
+        .iter_mut()
+        .map(material::assign_uv_slots)
+        .collect();
     // Samplers follow the document texture, so pick them before remapping.
     let sampler_of = |doc_tex: i32| {
         usize::try_from(doc_tex)
@@ -583,6 +591,7 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
     let mut items = Vec::new();
     let mut nodes = Vec::new();
     let mut geometry = geometry::GeometryCache::default();
+    geometry.set_uv_sets(uv_sets);
     let (center, radius) = scene::build_draw_list(
         ctx,
         &document,

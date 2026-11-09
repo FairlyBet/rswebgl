@@ -19,7 +19,7 @@ use rswebgl::pass::Pass;
 use rswebgl::render_state::RenderState;
 use rswebgl::uniform_buffer::UniformType;
 use rswebgl_ecs::{Entity, World};
-use rswebgl_gltf::{ATTR_MORPH_NORMAL, ATTR_MORPH_POSITION, ATTR_MORPH_TANGENT};
+use rswebgl_gltf::{ATTR_MORPH_NORMAL, ATTR_MORPH_POSITION, ATTR_MORPH_TANGENT, ATTR_SKIN8};
 
 use crate::animation::MorphWeights;
 use crate::instances::Instances;
@@ -57,6 +57,8 @@ struct MotionDraw {
 
 // Variant bits: skinned, and the morph kinds (when positions morph).
 const VARIANT_SKIN: u32 = 1;
+// Eight influences (JOINTS_1 / WEIGHTS_1); above the morph kinds' two bits.
+const VARIANT_SKIN8: u32 = 1 << 3;
 const VARIANT_KINDS_SHIFT: u32 = 1;
 
 pub(crate) struct MotionVectors {
@@ -226,6 +228,13 @@ impl MotionVectors {
                 }
             }
             let mut variant = if skin.is_some() { VARIANT_SKIN } else { 0 };
+            if skin.is_some()
+                && world
+                    .get::<Primitive>(e)
+                    .is_some_and(|p| p.attributes & ATTR_SKIN8 != 0)
+            {
+                variant |= VARIANT_SKIN8;
+            }
             let (mut morph_base, mut prev_morph, mut morph_count) = (0, 0, 0);
             let mut morph_texture = TextureId::NULL;
             if let Some((morph, kinds)) = morph {
@@ -336,7 +345,10 @@ impl MotionVectors {
             if variant & VARIANT_SKIN != 0 {
                 defines.push_str("#define HAS_SKIN\n");
             }
-            let kinds = variant >> VARIANT_KINDS_SHIFT;
+            if variant & VARIANT_SKIN8 != 0 {
+                defines.push_str("#define HAS_SKIN8\n");
+            }
+            let kinds = (variant >> VARIANT_KINDS_SHIFT) & 3;
             if kinds > 0 {
                 defines.push_str(&format!("#define MORPH_KINDS {kinds}\n"));
             }

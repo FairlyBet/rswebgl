@@ -33,7 +33,7 @@ use rswebgl::texture::{TextureFormat, TextureMagFilter, TextureMinFilter, Textur
 
 use crate::{
     ATTR_COLOR, ATTR_MORPH_NORMAL, ATTR_MORPH_POSITION, ATTR_MORPH_TANGENT, ATTR_NORMAL, ATTR_SKIN,
-    ATTR_TANGENT, ATTR_UV0, ATTR_UV1,
+    ATTR_SKIN8, ATTR_TANGENT, ATTR_UV0, ATTR_UV1,
 };
 
 /// Texels per row of a morph texture; `MORPH_TEXTURE_WIDTH` in the shader.
@@ -70,6 +70,11 @@ pub struct GeometryCache {
     vertex: HashMap<usize, BufferId>,
     index: HashMap<usize, (BufferId, IndexType)>,
     meshes: HashMap<usize, Vec<PrimitiveGpu>>,
+    // The TEXCOORD sets each material reads, in its two UV slots
+    // (`material::assign_uv_slots`; [0, 1] for one not listed).
+    uv_sets: Vec<[u32; 2]>,
+    // Skin weights, renormalized (by WEIGHTS_0 and WEIGHTS_1 accessor).
+    weights: HashMap<(usize, Option<usize>), (BufferId, Option<BufferId>)>,
 }
 
 impl GeometryCache {
@@ -79,6 +84,11 @@ impl GeometryCache {
             .values()
             .copied()
             .chain(self.index.values().map(|(b, _)| *b))
+            .chain(
+                self.weights
+                    .values()
+                    .flat_map(|(a, b)| std::iter::once(*a).chain(*b)),
+            )
     }
 
     /// Every vertex array created, one per primitive of each built mesh.
@@ -99,6 +109,12 @@ impl GeometryCache {
         self.meshes.len()
     }
 
+    /// The TEXCOORD sets material `m` reads go into the UV slots as
+    /// `uv_sets[m]` says (before building meshes).
+    pub fn set_uv_sets(&mut self, uv_sets: Vec<[u32; 2]>) {
+        self.uv_sets = uv_sets;
+    }
+
     /// The primitives of `mesh`, built on first request.
     pub fn mesh(
         &mut self,
@@ -107,9 +123,18 @@ impl GeometryCache {
         buffers: &[Vec<u8>],
     ) -> &[PrimitiveGpu] {
         if !self.meshes.contains_key(&mesh.index()) {
+            let uv_sets = self.uv_sets.clone();
             let prims = mesh
                 .primitives()
-                .filter_map(|p| self.build_primitive(ctx, &p, buffers))
+                .filter_map(|p| {
+                    let uv = p
+                        .material()
+                        .index()
+                        .and_then(|m| uv_sets.get(m))
+                        .copied()
+                        .unwrap_or([0, 1]);
+                    self.build_primitive(ctx, &p, buffers, uv)
+                })
                 .collect();
             self.meshes.insert(mesh.index(), prims);
         }
@@ -123,6 +148,7 @@ impl GeometryCache {
         ctx: &Context,
         primitive: &gltf::Primitive,
         buffers: &[Vec<u8>],
+        uv: [u32; 2],
     ) -> Option<PrimitiveGpu> {
         let reader = primitive.reader(|b| buffers.get(b.index()).map(|v| v.as_slice()));
         let Some(pos_accessor) = primitive.get(&gltf::Semantic::Positions) else {
@@ -167,10 +193,10 @@ impl GeometryCache {
         let attrs = [
             (0, gltf::Semantic::Positions, 3u8, 0),
             (1, gltf::Semantic::Normals, 3, ATTR_NORMAL),
-            (2, gltf::Semantic::TexCoords(0), 2, ATTR_UV0),
+            (2, gltf::Semantic::TexCoords(uv[0]), 2, ATTR_UV0),
             (3, gltf::Semantic::Tangents, 4, ATTR_TANGENT),
             (4, gltf::Semantic::Colors(0), 4, ATTR_COLOR),
-            (5, gltf::Semantic::TexCoords(1), 2, ATTR_UV1),
+            (5, gltf::Semantic::TexCoords(uv[1]), 2, ATTR_UV1),
         ];
         let mut attributes = 0;
         for (loc, semantic, size, bit) in attrs {
@@ -183,16 +209,28 @@ impl GeometryCache {
             ctx.vertex_array_attr(vao, loc, buf, &VertexAttr::float(size));
             attributes |= bit;
         }
-        // Skinning needs both: four joint indices and their weights.
+        // Skinning needs both: four joint indices and their weights, and
+        // four more with JOINTS_1 / WEIGHTS_1.
         let joints = primitive.get(&gltf::Semantic::Joints(0));
         let weights = primitive.get(&gltf::Semantic::Weights(0));
         if let (Some(j), Some(w)) = (joints, weights) {
+            let more = primitive
+                .get(&gltf::Semantic::Joints(1))
+                .zip(primitive.get(&gltf::Semantic::Weights(1)));
             let j = self.vertex_buffer(ctx, buffers, &reader, &j, &gltf::Semantic::Joints(0));
-            let w = self.vertex_buffer(ctx, buffers, &reader, &w, &gltf::Semantic::Weights(0));
-            if let (Some(j), Some(w)) = (j, w) {
+            let j1 = more.as_ref().and_then(|(j1, _)| {
+                self.vertex_buffer(ctx, buffers, &reader, j1, &gltf::Semantic::Joints(1))
+            });
+            let w = self.skin_weights(ctx, buffers, &w, more.as_ref().map(|(_, w1)| w1));
+            if let (Some(j), Some((w, w1))) = (j, w) {
                 ctx.vertex_array_attr(vao, 6, j, &VertexAttr::float(4));
                 ctx.vertex_array_attr(vao, 7, w, &VertexAttr::float(4));
                 attributes |= ATTR_SKIN;
+                if let (Some(j1), Some(w1)) = (j1, w1) {
+                    ctx.vertex_array_attr(vao, 8, j1, &VertexAttr::float(4));
+                    ctx.vertex_array_attr(vao, 9, w1, &VertexAttr::float(4));
+                    attributes |= ATTR_SKIN8;
+                }
             }
         }
         let morph = morph_texture(ctx, primitive, buffers, vertex_count as usize, attributes);
@@ -225,6 +263,48 @@ impl GeometryCache {
             aabb_max,
             morph: morph.map(|(m, _)| m),
         })
+    }
+
+    // The skin weights (WEIGHTS_0, and WEIGHTS_1 if given) as floats,
+    // renormalized so each vertex's sum to 1 (glTF 2.0 §3.7.3.3: exporters
+    // quantize; a sum off 1 scales the mesh), created on first use.
+    fn skin_weights(
+        &mut self,
+        ctx: &Context,
+        buffers: &[Vec<u8>],
+        w0: &gltf::Accessor,
+        w1: Option<&gltf::Accessor>,
+    ) -> Option<(BufferId, Option<BufferId>)> {
+        let key = (w0.index(), w1.map(|a| a.index()));
+        if let Some(&b) = self.weights.get(&key) {
+            return Some(b);
+        }
+        let mut a = crate::accessor::read_vecs::<4>(w0, buffers)?;
+        let mut b = match w1 {
+            Some(w1) => Some(crate::accessor::read_vecs::<4>(w1, buffers)?),
+            None => None,
+        };
+        for (i, w0) in a.iter_mut().enumerate() {
+            let extra = b
+                .as_ref()
+                .map_or(0.0, |b| b.get(i).map_or(0.0, |w| w.iter().sum()));
+            let sum: f32 = w0.iter().sum::<f32>() + extra;
+            if sum > 0.0 && (sum - 1.0).abs() > 1e-6 {
+                *w0 = w0.map(|w| w / sum);
+                if let Some(w) = b.as_mut().and_then(|b| b.get_mut(i)) {
+                    *w = w.map(|w| w / sum);
+                }
+            }
+        }
+        let upload = |v: &[[f32; 4]]| {
+            ctx.create_buffer(BufferUsage::StaticDraw, bytes_of(v.as_flattened()))
+                .inspect_err(|e| console::error(&format!("[rswebgl-gltf] skin weights: {e}")))
+                .ok()
+        };
+        let first = upload(&a)?;
+        let second = b.as_deref().and_then(upload);
+        self.weights.insert(key, (first, second));
+        Some((first, second))
     }
 
     // The buffer for a vertex accessor, created on first use.
