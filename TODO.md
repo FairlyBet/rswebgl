@@ -107,7 +107,13 @@ attached. Left:
   binary (FSR2's sample settings); per-material reactivity would be finer.
 - Godot's velocity disocclusion: each resolve keeps the motion it used per
   pixel (a second attachment of the history), the next compares.
-- Next: TAAU (render below the output size and upsample in the resolve).
+- TAAU (render below the output size, upsample in the resolve) was tried and
+  reverted (3543d86): Karis/Unreal-style reconstruction with a running
+  average and a clip eased by the nearest sample's weight converged well on
+  a still scene but ghosted badly while turning — far samples left the
+  history barely clipped and barely refreshed. Next attempt: port FSR2's
+  accumulate pass properly (locks, depth clip, luma instability, Lanczos
+  reconstruction) rather than approximate it.
 
 ## From the review (done)
 
