@@ -41,8 +41,8 @@ set aside for now).
    2.97 / 16.5; a small UBO rewritten per draw 2.31 / 21.0; plain uniforms
    1.77 / 15.4; a ring of three or orphaning no better than one upload.
    A tenth changing (100 scattered writes) ≈ uploading all 80 KB (1.13 vs
-   1.05): a write costs about as much as ~1 KB of upload. So: merge dirty
-   runs less than ~1 KB apart into one write (`uniform_buffer.rs`); a
+   1.05): a write costs about as much as ~1 KB of upload. Done: dirty
+   runs less than 1 KB apart upload as one write (`uniform_buffer.rs`). A
    shared material UBO would gain ~25% over plain uniforms — low priority,
    per-object data already goes through the instance texture.
 8. Later: bloom, LOD by meshoptimizer's simplifier, `KHR_animation_pointer`,
@@ -72,11 +72,8 @@ sub-image regions are checked against their level. Left:
 
 ### Uniform buffers (UBO)
 
-- Scattered writes upload as separate runs; whether many small
-  `bufferSubData` runs beat one larger one on mobile drivers is unmeasured
-  (a gap threshold could merge runs a few chunks apart). See "Planned" 7:
-  the scene itself has two blocks written once a frame, so it matters
-  only once materials live in UBOs.
+- Dirty runs closer than 1 KB upload as one `bufferSubData` (measured on
+  a Mali-G57, see "Planned" 7); the threshold isn't tuned per device.
 - Layout validation is size-only (`UNIFORM_BLOCK_DATA_SIZE` vs our std140
   size): same-size permutations and per-field offset errors slip through.
 - `bindBufferRange` (several blocks in one buffer) is wired

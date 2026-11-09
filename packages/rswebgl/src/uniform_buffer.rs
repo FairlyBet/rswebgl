@@ -160,20 +160,28 @@ fn validate_block_size(size: u32, max: u32) -> Result<(), Error> {
 // a vec4 or a matrix column across two uploads.
 const DIRTY_CHUNK: u32 = 16;
 
+// Dirty runs closer than this (bytes) upload as one bufferSubData, the clean
+// bytes between them included. Measured on a Mali-G57 (Chrome,
+// examples/viewer/ubo-bench.html): a call costs about as much as 1 KB of
+// upload, and a write per draw into a big buffer was 2.3x the CPU time of
+// one upload of all of it.
+const MERGE_GAP: u32 = 1024;
+
 // ---------------------------------------------------------------------------
 // UniformBuffer — CPU-staged, std140-packed, GPU-backed uniform block.
 // ---------------------------------------------------------------------------
 
 /// A uniform block in the context's pool: writes land in a CPU-side byte buffer
 /// laid out per std140, and are flushed to its own GL buffer as one
-/// `bufferSubData` per changed run when the block is bound in a pass.
+/// `bufferSubData` per changed run (close runs merged) when the block is
+/// bound in a pass.
 #[derive(Debug)]
 pub(crate) struct UniformBufferObj {
     pub(crate) raw: WebGlBuffer,
     data: Vec<u8>,
     layout: Layout,
-    // Touched 16-byte chunks since the last flush; scattered writes upload as
-    // separate runs instead of one span from the first to the last.
+    // Touched 16-byte chunks since the last flush; runs more than `MERGE_GAP`
+    // apart upload separately instead of one span from the first to the last.
     dirty: DirtyBits,
 }
 
@@ -191,7 +199,7 @@ impl UniformBufferObj {
         if !self.dirty.is_dirty() {
             return;
         }
-        for run in self.dirty.take_runs() {
+        for run in self.dirty.take_runs_merged(MERGE_GAP) {
             write_raw(
                 gl,
                 BufferKind::Generic,

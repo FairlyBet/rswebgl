@@ -101,6 +101,21 @@ impl DirtyBits {
         runs
     }
 
+    /// Takes the dirty ranges, clearing them, with runs less than `max_gap`
+    /// units apart merged into one (the clean units between them come
+    /// along): for uploads where each call costs more than the bytes.
+    pub fn take_runs_merged(&mut self, max_gap: u32) -> Vec<Range<u32>> {
+        let mut out: Vec<Range<u32>> = Vec::new();
+        for run in self.runs() {
+            match out.last_mut() {
+                Some(last) if run.start - last.end < max_gap => last.end = run.end,
+                _ => out.push(run),
+            }
+        }
+        self.clear();
+        out
+    }
+
     fn is_set(&self, c: u32) -> bool {
         self.bits[(c / 64) as usize] & (1 << (c % 64)) != 0
     }
@@ -194,6 +209,19 @@ mod tests {
         assert_eq!(d.take_runs(), vec![0..64]);
         assert!(!d.is_dirty());
         assert!(d.take_runs().is_empty());
+    }
+
+    #[test]
+    fn close_runs_merge_far_ones_dont() {
+        let mut d = DirtyBits::new(4096, 16);
+        d.mark(0..16);
+        d.mark(48..64); // 32 apart: merged
+        d.mark(2048..2064); // far: separate
+        assert_eq!(d.take_runs_merged(64), vec![0..64, 2048..2064]);
+        assert!(!d.is_dirty());
+        d.mark(0..16);
+        d.mark(48..64);
+        assert_eq!(d.take_runs_merged(32), vec![0..16, 48..64]); // gap 32 is not < 32
     }
 
     #[test]
