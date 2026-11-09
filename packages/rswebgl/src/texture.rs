@@ -316,6 +316,8 @@ pub(crate) struct TextureObj {
     pub(crate) target: TextureTarget,
     // Sized internal format once storage is allocated, 0 before.
     pub(crate) internal: Cell<u32>,
+    // Storage extent: levels, width, height, depth (zeros before).
+    pub(crate) extent: Cell<[i32; 4]>,
 }
 
 impl TextureObj {
@@ -336,6 +338,46 @@ impl TextureObj {
         match self.target {
             TextureTarget::Texture3D => mip_levels(width.max(depth), height),
             _ => mip_levels(width, height),
+        }
+    }
+
+    // Checks a sub-image region against the allocated level (GL would
+    // reject it with a bare INVALID_VALUE); reports and returns false if it
+    // doesn't fit. A 3D texture's depth halves per level, an array's
+    // layers don't.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn region_fits(
+        &self,
+        op: &str,
+        level: i32,
+        [x, y, z]: [i32; 3],
+        [w, h, d]: [i32; 3],
+    ) -> bool {
+        let [levels, width, height, depth] = self.extent.get();
+        let problem = if levels == 0 {
+            Some("the texture has no storage yet".to_string())
+        } else if level < 0 || level >= levels {
+            Some(format!("level {level} is outside 0..{levels}"))
+        } else {
+            let lw = (width >> level).max(1);
+            let lh = (height >> level).max(1);
+            let ld = match self.target {
+                TextureTarget::Texture3D => (depth >> level).max(1),
+                _ => depth,
+            };
+            let inside = |o: i32, n: i32, size: i32| o >= 0 && n >= 0 && o + n <= size;
+            (!(inside(x, w, lw) && inside(y, h, lh) && inside(z, d, ld))).then(|| {
+                format!(
+                    "region {w}x{h}x{d} at ({x}, {y}, {z}) is outside level {level} \n                     ({lw}x{lh}x{ld})"
+                )
+            })
+        };
+        match problem {
+            Some(p) => {
+                console::error(&format!("[rswebgl] {op}: {p}; ignored"));
+                false
+            }
+            None => true,
         }
     }
 
@@ -406,6 +448,7 @@ impl Context {
             let fits = obj.storage_fits(levels, width, height, 1);
             if fits {
                 gl.tex_storage_2d(t, levels, format.internal as u32, width, height);
+                obj.extent.set([levels, width, height, 1]);
                 storage_allocated(gl, t, obj, format.internal as u32, filter_float);
             }
             fits
@@ -513,6 +556,7 @@ impl Context {
                 raw,
                 target,
                 internal: Cell::new(0),
+                extent: Cell::new([0; 4]),
             })
             .map(Into::into)
             .map_err(|e| Error::from(e.to_string()))
@@ -577,6 +621,7 @@ impl Context {
         self.with_texture(tex, "texture_storage_3d", |gl, t, obj| {
             if obj.storage_fits(levels, width, height, depth) {
                 gl.tex_storage_3d(t, levels, format.internal as u32, width, height, depth);
+                obj.extent.set([levels, width, height, depth]);
                 storage_allocated(gl, t, obj, format.internal as u32, filter_float);
             }
         });
@@ -596,6 +641,7 @@ impl Context {
         self.with_texture(tex, "texture_compressed_storage_2d", |gl, t, obj| {
             if obj.storage_fits(levels, width, height, 1) {
                 gl.tex_storage_2d(t, levels, format.as_gl(), width, height);
+                obj.extent.set([levels, width, height, 1]);
                 obj.internal.set(format.as_gl());
             }
         });
@@ -615,6 +661,7 @@ impl Context {
         self.with_texture(tex, "texture_compressed_storage_3d", |gl, t, obj| {
             if obj.storage_fits(levels, width, height, depth) {
                 gl.tex_storage_3d(t, levels, format.as_gl(), width, height, depth);
+                obj.extent.set([levels, width, height, depth]);
                 obj.internal.set(format.as_gl());
             }
         });
@@ -665,7 +712,10 @@ impl Context {
         data: &[u8],
         unpack: &PixelUnpack,
     ) {
-        self.with_texture(tex, "texture_sub_image_2d", |gl, t, _| {
+        self.with_texture(tex, "texture_sub_image_2d", |gl, t, obj| {
+            if !obj.region_fits("texture_sub_image_2d", level, [x, y, 0], [width, height, 1]) {
+                return;
+            }
             unpack.apply(gl);
             if let Err(e) = sub_image_2d(gl, t, level, x, y, width, height, format, data) {
                 console::error(&format!("[rswebgl] texSubImage2D failed: {e}"));
@@ -722,7 +772,15 @@ impl Context {
         data: &[u8],
         unpack: &PixelUnpack,
     ) {
-        self.with_texture(tex, "texture_sub_image_3d", |gl, t, _| {
+        self.with_texture(tex, "texture_sub_image_3d", |gl, t, obj| {
+            if !obj.region_fits(
+                "texture_sub_image_3d",
+                level,
+                [x, y, z],
+                [width, height, depth],
+            ) {
+                return;
+            }
             unpack.apply(gl);
             let result = if format.data_type == UNSIGNED_BYTE {
                 gl.tex_sub_image_3d_with_opt_u8_array(
@@ -779,7 +837,15 @@ impl Context {
         format: &TextureFormat,
         data: &[u8],
     ) {
-        self.with_texture(tex, "texture_sub_image_cube_face", |gl, _, _| {
+        self.with_texture(tex, "texture_sub_image_cube_face", |gl, _, obj| {
+            if !obj.region_fits(
+                "texture_sub_image_cube_face",
+                level,
+                [x, y, 0],
+                [width, height, 1],
+            ) {
+                return;
+            }
             let target = face.as_gl();
             if let Err(e) = sub_image_2d(gl, target, level, x, y, width, height, format, data) {
                 console::error(&format!("[rswebgl] texSubImage2D cube face failed: {e}"));
@@ -803,7 +869,15 @@ impl Context {
         format: &CompressedFormat,
         data: &[u8],
     ) {
-        self.with_texture(tex, "texture_compressed_sub_image_2d", |gl, t, _| {
+        self.with_texture(tex, "texture_compressed_sub_image_2d", |gl, t, obj| {
+            if !obj.region_fits(
+                "texture_compressed_sub_image_2d",
+                level,
+                [x, y, 0],
+                [width, height, 1],
+            ) {
+                return;
+            }
             // SAFETY: the view borrows wasm memory only for this call; the GL copy
             // happens synchronously and we don't allocate while it's alive.
             let view = unsafe { js_sys::Uint8Array::view(data) };
@@ -836,7 +910,15 @@ impl Context {
         format: &CompressedFormat,
         data: &[u8],
     ) {
-        self.with_texture(tex, "texture_compressed_sub_image_3d", |gl, t, _| {
+        self.with_texture(tex, "texture_compressed_sub_image_3d", |gl, t, obj| {
+            if !obj.region_fits(
+                "texture_compressed_sub_image_3d",
+                level,
+                [x, y, z],
+                [width, height, depth],
+            ) {
+                return;
+            }
             // SAFETY: see texture_compressed_sub_image_2d.
             let view = unsafe { js_sys::Uint8Array::view(data) };
             gl.compressed_tex_sub_image_3d_with_array_buffer_view(

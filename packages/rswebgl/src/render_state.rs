@@ -317,6 +317,11 @@ impl RenderState {
         !self.targets.is_empty()
     }
 
+    /// Whether any color attachment blends.
+    pub(crate) fn blends(&self) -> bool {
+        self.blend || self.targets.iter().any(|(_, t)| t.blend)
+    }
+
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self::default()

@@ -123,9 +123,13 @@ impl Context {
         if gl.is_context_lost() {
             return;
         }
+        let filter_float32 = self.can_filter_float32();
+        let float_blend = self.is_extension_enabled(crate::extension::Extension::ExtFloatBlend);
         let res = &mut *self.res();
         let st = &mut *self.gl_state();
         st.reverse_z = self.core.reverse_z.get();
+        st.filter_float32 = filter_float32;
+        st.float_blend = float_blend;
         for pass in passes {
             execute_pass(gl, &self.core.default_fb, res, pass, st);
         }
@@ -164,6 +168,7 @@ fn run_pass(
 ) {
     let Resources {
         framebuffers,
+        renderbuffers,
         programs,
         vertex_arrays,
         textures,
@@ -191,6 +196,10 @@ fn run_pass(
     };
     st.stats.passes += 1;
     st.bind_target(gl, pass.target, target.map(|f| &f.raw));
+    // Blending into a 32-bit float attachment without EXT_float_blend is an
+    // INVALID_OPERATION per draw: such draws are skipped, reported.
+    let float32_target =
+        !st.float_blend && target.is_some_and(|f| f.has_float32_color(textures, renderbuffers));
 
     // Viewport — the pass's override, else the target's full size.
     let vp = pass.viewport.unwrap_or_else(|| match target {
@@ -259,6 +268,18 @@ fn run_pass(
             st.stats.skipped += 1;
             continue;
         }
+        if float32_target
+            && render_states
+                .get(d.state.0)
+                .is_some_and(RenderState::blends)
+        {
+            console::warn_once(
+                "[rswebgl] render: blending into a 32-bit float target needs \
+                 EXT_float_blend, which this device doesn't have; draws skipped",
+            );
+            st.stats.skipped += 1;
+            continue;
+        }
         let vao = if d.vao.is_null() {
             None
         } else {
@@ -306,6 +327,7 @@ fn run_pass(
                 uniform_buffers,
                 &mut st.bindings,
                 &mut st.stats,
+                st.filter_float32,
             );
             used[n_used] = m;
             n_used += 1;
@@ -515,6 +537,10 @@ pub(crate) struct GlState {
     // Copied from the context at each `render`: depth funcs and depth clears
     // are flipped under reverse-Z.
     pub(crate) reverse_z: bool,
+    // Copied likewise: OES_texture_float_linear and EXT_float_blend, for the
+    // draw-time checks of 32-bit float sampling and blending.
+    pub(crate) filter_float32: bool,
+    pub(crate) float_blend: bool,
 }
 
 impl GlState {
@@ -634,6 +660,7 @@ fn apply_group(
     uniform_buffers: &mut Pool<UniformBufferObj>,
     bindings: &mut GlBindings,
     stats: &mut FrameStats,
+    filter_float32: bool,
 ) -> bool {
     let mut complete = true;
     for (i, f) in layout.plain.iter().enumerate() {
@@ -678,7 +705,24 @@ fn apply_group(
             None
         } else {
             match samplers.get(sid.0) {
-                Some(s) => Some(&s.raw),
+                Some(s) => {
+                    // A 32F texture filtered linearly without
+                    // OES_texture_float_linear samples as black.
+                    if !filter_float32
+                        && s.desc.filters_linearly()
+                        && textures
+                            .get(tex.0)
+                            .is_some_and(|t| crate::float_targets::is_float32(t.internal.get()))
+                    {
+                        console::warn_once(&format!(
+                            "[rswebgl] texture \"{}\": a 32-bit float texture with a linear \
+                             sampler needs OES_texture_float_linear, which this device \
+                             doesn't have; it samples as black (use a nearest sampler)",
+                            layout.textures[i]
+                        ));
+                    }
+                    Some(&s.raw)
+                }
                 None => {
                     stale(
                         "sampler",

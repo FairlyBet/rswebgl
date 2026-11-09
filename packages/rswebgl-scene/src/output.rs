@@ -702,7 +702,13 @@ impl HdrOutput {
         (self.grab, self.grab_fb, self.grab_size) = (grab, grab_fb, (gw, gh));
 
         // Multisampled if the device takes it for this format; else straight
-        // into the texture.
+        // into the texture. No more samples than both formats take.
+        if self.samples > 1 {
+            let most = ctx
+                .max_samples_for(RenderbufferFormat::Rgba16f)
+                .min(ctx.max_samples_for(depth));
+            self.samples = self.samples.min(most);
+        }
         while self.samples > 1 && self.taa.is_none() {
             let fb = ctx.create_framebuffer(w, h)?;
             let color_rb = ctx.create_renderbuffer_multisample(

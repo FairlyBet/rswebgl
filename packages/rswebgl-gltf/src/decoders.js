@@ -47,9 +47,11 @@ function transcode(bytes, srgb, config) {
     const levels = [];
     for (let mip = 0; mip < levelCount; mip++) {
       const info = file.getImageLevelInfo(mip, 0, 0);
-      // Without mips, the block-padded size (three.js #25908).
-      const w = levelCount > 1 ? info.origWidth : info.width;
-      const h = levelCount > 1 ? info.origHeight : info.height;
+      // The level's own size: a compressed region may end off the block
+      // grid where it reaches the level's edge (three.js passes the padded
+      // size, #25908, as it sizes levels by their data).
+      const w = info.origWidth;
+      const h = info.origHeight;
       const data = new Uint8Array(file.getImageTranscodedSizeInBytes(mip, 0, 0, format));
       if (!file.transcodeImage(data, mip, 0, 0, format, 0, -1, -1)) throw new Error('.transcodeImage failed');
       levels.push({ data, width: w, height: h });

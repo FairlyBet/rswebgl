@@ -149,3 +149,57 @@ fn wrong_type_write_is_reported_once_across_frames() {
     let about: Vec<_> = warnings.iter().filter(|w| w.contains("u_speed")).collect();
     assert_eq!(about.len(), 1, "{warnings:?}");
 }
+
+// A sub-image region outside its level is reported and skipped, not a bare
+// GL error; one inside still uploads.
+#[wasm_bindgen_test]
+fn sub_image_outside_its_level_is_rejected() {
+    let f = fixture();
+    let t = f
+        .ctx
+        .create_texture(
+            TextureTarget::Texture2D,
+            TextureMinFilter::Nearest,
+            TextureMagFilter::Nearest,
+        )
+        .unwrap();
+    let rgba = TextureFormat::rgba8();
+    f.ctx.texture_storage_2d(t, 2, &rgba, 4, 4);
+    for (level, x, w, why) in [
+        (0, 2, 4, "outside level 0"),
+        (1, 0, 4, "outside level 1"),
+        (2, 0, 1, "level 2"),
+    ] {
+        let errors = capture_console("error", || {
+            f.ctx
+                .texture_sub_image_2d(t, level, x, 0, w, 1, &rgba, &vec![0u8; (w * 4) as usize])
+        });
+        assert!(errors.iter().any(|e| e.contains(why)), "{why}: {errors:?}");
+        assert_no_gl_error(&f);
+    }
+    let errors = capture_console("error", || {
+        f.ctx
+            .texture_sub_image_2d(t, 1, 0, 0, 2, 2, &rgba, &[0u8; 16])
+    });
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_no_gl_error(&f);
+}
+
+// Multisampling is bounded by what the format takes, not only MAX_SAMPLES.
+#[wasm_bindgen_test]
+fn renderbuffer_samples_are_bounded_per_format() {
+    let f = fixture();
+    let most = f.ctx.max_samples_for(RenderbufferFormat::Rgba8);
+    assert!(most >= 4, "RGBA8 takes {most}");
+    assert!(
+        f.ctx
+            .create_renderbuffer_multisample(RenderbufferFormat::Rgba8, most, 4, 4)
+            .is_ok()
+    );
+    let err = f
+        .ctx
+        .create_renderbuffer_multisample(RenderbufferFormat::Rgba8, most + 1, 4, 4)
+        .expect_err("past the format's samples");
+    assert!(err.to_string().contains("samples"), "{err}");
+    assert_no_gl_error(&f);
+}

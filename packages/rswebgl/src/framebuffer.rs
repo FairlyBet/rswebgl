@@ -745,6 +745,22 @@ fn detach_depth_points(gl: &WebGl2RenderingContext) {
 }
 
 impl FramebufferObj {
+    // Whether a color attachment is a 32-bit float format.
+    pub(crate) fn has_float32_color(
+        &self,
+        textures: &Pool<TextureObj>,
+        renderbuffers: &Pool<RenderbufferObj>,
+    ) -> bool {
+        self.color.iter().flatten().any(|a| match a.source() {
+            Source::Texture(t) => textures
+                .get(t.0)
+                .is_some_and(|t| crate::float_targets::is_float32(t.internal.get())),
+            Source::Renderbuffer(r) => renderbuffers
+                .get(r.0)
+                .is_some_and(|r| crate::float_targets::is_float32(r.format.as_gl())),
+        })
+    }
+
     // Size of the attachments (what reads are bounded by).
     pub(crate) fn size(&self) -> (i32, i32) {
         (self.width, self.height)

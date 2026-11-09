@@ -60,6 +60,16 @@ impl Default for SamplerDesc {
     }
 }
 
+impl SamplerDesc {
+    // Whether it filters linearly anywhere (min or mag).
+    pub(crate) fn filters_linearly(&self) -> bool {
+        !matches!(
+            self.min_filter,
+            TextureMinFilter::Nearest | TextureMinFilter::NearestMipmapNearest
+        ) || self.mag_filter == TextureMagFilter::Linear
+    }
+}
+
 #[wasm_bindgen]
 impl SamplerDesc {
     /// The WebGL defaults: NEAREST_MIPMAP_LINEAR / LINEAR, REPEAT, LOD

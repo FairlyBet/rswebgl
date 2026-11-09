@@ -1,5 +1,6 @@
 use crate::error::{Error, err};
 use rswebgl_foundation::pool::Destroyed;
+use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{WebGl2RenderingContext, WebGlRenderbuffer};
 
@@ -34,7 +35,7 @@ pub enum RenderbufferFormat {
 }
 
 impl RenderbufferFormat {
-    fn as_gl(&self) -> u32 {
+    pub(crate) fn as_gl(&self) -> u32 {
         *self as u32
     }
 }
@@ -50,7 +51,7 @@ pub(crate) struct RenderbufferObj {
     width: i32,
     height: i32,
     samples: i32,
-    format: RenderbufferFormat,
+    pub(crate) format: RenderbufferFormat,
 }
 
 impl RenderbufferObj {
@@ -79,6 +80,15 @@ impl Context {
         check_size(width, height, samples)?;
         if let Some(p) = self.float_target_problem(format.as_gl()) {
             return Err(err!("{p}"));
+        }
+        // A format can take fewer samples than MAX_SAMPLES (float ones often).
+        if samples > 0
+            && let Some(max) = self.format_max_samples(format)
+            && samples > max
+        {
+            return Err(err!(
+                "renderbuffer samples {samples} exceed what {format:?} takes ({max}; \n                 maxSamplesFor)"
+            ));
         }
         let gl = self.gl();
         let raw = gl
@@ -115,6 +125,20 @@ impl Context {
             .map_err(|e| Error::from(e.to_string()))
     }
 
+    // The most samples `format` takes, or None when the query fails (lost).
+    fn format_max_samples(&self, format: RenderbufferFormat) -> Option<i32> {
+        let v = self
+            .gl()
+            .get_internalformat_parameter(
+                WebGl2RenderingContext::RENDERBUFFER,
+                format.as_gl(),
+                WebGl2RenderingContext::SAMPLES,
+            )
+            .ok()?;
+        let counts = v.dyn_into::<js_sys::Int32Array>().ok()?;
+        Some(counts.to_vec().into_iter().max().unwrap_or(0))
+    }
+
     fn renderbuffer_obj<T>(
         &self,
         rb: RenderbufferId,
@@ -126,6 +150,15 @@ impl Context {
 
 #[wasm_bindgen]
 impl Context {
+    /// The most samples `format` takes in a multisampled renderbuffer
+    /// (`getInternalformatParameter(SAMPLES)`): can be below
+    /// `MAX_SAMPLES`, e.g. for float formats; 0 if it can't be multisampled
+    /// (or the context is lost).
+    #[wasm_bindgen(js_name = maxSamplesFor)]
+    pub fn max_samples_for(&self, format: RenderbufferFormat) -> i32 {
+        self.format_max_samples(format).unwrap_or(0)
+    }
+
     #[wasm_bindgen(js_name = createRenderbuffer)]
     pub fn create_renderbuffer(
         &self,
