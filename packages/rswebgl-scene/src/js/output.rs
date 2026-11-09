@@ -145,7 +145,15 @@ impl Scene {
             out.destroy(&self.ctx);
         }
         if self.hdr_wanted && self.hdr.is_none() {
-            match HdrOutput::new(&self.ctx, self.samples, self.taa) {
+            let mut made = HdrOutput::new(&self.ctx, self.samples, self.taa);
+            // A TAA failure (its shader, a target) costs TAA, not HDR.
+            if let Err(e) = &made
+                && self.taa
+            {
+                self.give_up_taa(e);
+                made = HdrOutput::new(&self.ctx, self.samples, false);
+            }
+            match made {
                 Ok(out) => self.hdr = Some(out),
                 Err(e) => self.give_up_hdr(&e),
             }
@@ -158,6 +166,13 @@ impl Scene {
                     self.renderer.set_output(false, self.tone_mapping);
                     return true;
                 }
+                Err(e) if self.taa => {
+                    // Without TAA's targets at the next frame.
+                    self.give_up_taa(&e);
+                    if let Some(out) = self.hdr.take() {
+                        out.destroy(&self.ctx);
+                    }
+                }
                 Err(e) => self.give_up_hdr(&e),
             }
         }
@@ -167,6 +182,16 @@ impl Scene {
         pass.clear_resolve();
         pass.set_invalidate(&rswebgl::framebuffer::InvalidateMask::none());
         false
+    }
+
+    // TAA off for good (`isTaa` answers false); HDR output stays.
+    fn give_up_taa(&mut self, e: &Error) {
+        console::warn(&format!(
+            "[rswebgl-scene] TAA unavailable ({e}); HDR output without it"
+        ));
+        self.taa = false;
+        self.taa_previous = None;
+        self.renderer.set_motion_vectors(&self.ctx, false);
     }
 
     fn give_up_hdr(&mut self, e: &Error) {

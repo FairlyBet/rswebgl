@@ -149,8 +149,14 @@ void main() {
     vec2 offset = texel * 2.0;
     vec2 closest_uv = uv;
     float closest = depth_at(uv);
-    vec2 taps[4] = vec2[4](uv + vec2(-offset.x, offset.y), uv + vec2(offset.x, offset.y),
-                           uv + vec2(-offset.x, -offset.y), uv + vec2(offset.x, -offset.y));
+    // Element by element, not an array constructor: Mali's compiler gives
+    // the constructor's temporary no default precision and rejects it
+    // (S0032, Mali-G57 under ANGLE).
+    vec2 taps[4];
+    taps[0] = uv + vec2(-offset.x, offset.y);
+    taps[1] = uv + vec2(offset.x, offset.y);
+    taps[2] = uv + vec2(-offset.x, -offset.y);
+    taps[3] = uv + vec2(offset.x, -offset.y);
     for (int i = 0; i < 4; i++) {
         float d = depth_at(taps[i]);
         if (reverse ? d > closest : d < closest) {
