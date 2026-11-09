@@ -91,13 +91,19 @@ attached. Left:
 ## TAA
 
 - `setTaa(true)` (HDR output, instead of MSAA): Bevy's resolve ported
-  (`shaders/taa.frag`), Halton jitter, map LOD bias −1. Motion comes from
-  reprojecting depth through the camera's motion: exact for a moving camera;
-  animated, skinned or moved objects rely on the variance clip (some
-  softness or trails on fast ones). Next: per-object motion vectors (a
-  velocity target written by the PBR shader from this and last frame's
-  instance / joint matrices), then TAAU (render below the output size) and
-  a sharpening pass (RCAS).
+  (`shaders/taa.frag`) with Godot's 9-tap Catmull-Rom history, Halton
+  jitter, map LOD bias −1. Static geometry: the depth reprojected through
+  the camera's motion. Meshes that moved (transform, skin, morph weights):
+  their own motion vectors, drawn after the scene by `src/motion.rs` into a
+  velocity target (Unreal's split; nothing for a still scene). Sharpening:
+  `setSharpening` (FSR1 RCAS in the display pass).
+- Motion-vector caveats: alpha-masked cutouts take the mesh's motion in
+  their holes (the motion pass doesn't discard); custom instanced draws
+  (`instance_count` > 1) get none; a mesh's first frame has no previous
+  state.
+- Next: TAAU (render below the output size and upsample in the resolve),
+  Godot's velocity disocclusion (needs last frame's velocity for every
+  pixel, not only moving meshes).
 - Transparent and peeled glass draw into the history like the rest:
   fine while still; no reactive mask yet.
 

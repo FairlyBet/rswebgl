@@ -40,6 +40,7 @@ mod instances;
 mod js;
 mod light;
 mod model;
+mod motion;
 mod output;
 mod pbr;
 mod pick;

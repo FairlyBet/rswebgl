@@ -1,14 +1,20 @@
 // Temporal antialiasing resolve — ported from Bevy's TAA
 // (crates/bevy_anti_alias/src/taa/taa.wesl, MIT / Apache-2.0), itself after
 // Karis 2014 ("High Quality Temporal Supersampling"), Salvi 2016 (variance
-// clipping), Playdead's YCoCg helpers (MIT), Jimenez's 5-tap Catmull-Rom and
-// Hoppe's confidence. Differences:
-// - motion comes from reprojecting the depth through the camera's motion
-//   (u_reproject), not from a motion-vector target: exact for a moving
-//   camera; moving objects are held back by the variance clip;
-// - the history holds linear premultiplied radiance (tone-mapped on read for
-//   the filter and the clip, Karis' reversible map) and the confidence in
-//   its alpha; coverage alpha is read from the current frame by the display.
+// clipping), Playdead's YCoCg helpers (MIT), and Hoppe's confidence; the
+// history filter is Godot's (taa_resolve.glsl, MIT: Panos Karabelas' TAA)
+// 9-tap Catmull-Rom after MJP. Differences from Bevy:
+// - motion: the velocity target where a moving mesh drew its motion
+//   (motion.vert), else the depth reprojected through the camera's motion
+//   (u_reproject) — exact for everything static, no motion-vector pass for
+//   it;
+// - the full 9-tap Catmull-Rom (Bevy's 5 taps drop the corners and soften
+//   the history a little each frame, which shows as blur while turning);
+// - the tonemap for filtering, clipping and blending sees the exposed
+//   color (the display's exposure: Bevy's targets are pre-exposed);
+// - the history holds linear premultiplied radiance and the confidence in
+//   its alpha; coverage alpha is read from the current frame by the
+//   display.
 // Needs nothing from the scene prelude.
 
 precision highp float;
@@ -17,19 +23,23 @@ precision highp sampler2D;
 in vec2 v_ndc;
 out vec4 frag_color; // rgb linear premultiplied, a confidence
 
-uniform sampler2D u_current; // this frame (jittered), linear HDR
-uniform sampler2D u_history; // the last resolve
-uniform sampler2D u_depth;   // this frame's depth
-uniform mat4 u_reproject;    // clip now (unjittered) → clip last frame
-uniform vec4 u_taa;          // x 1: reset, y 1: reverse-Z
+uniform sampler2D u_current;  // this frame (jittered), linear HDR
+uniform sampler2D u_history;  // the last resolve
+uniform sampler2D u_depth;    // this frame's depth
+uniform sampler2D u_velocity; // moving meshes: uv now − uv then (else > 100)
+uniform mat4 u_reproject;     // clip now (unjittered) → clip last frame
+uniform vec4 u_taa;           // x 1: reset, y 1: reverse-Z, z 1: u_velocity
+                              // drawn this frame, w exposure
+uniform vec2 u_jitter;        // this frame's projection offset (NDC)
 
 // Lower = more history: chosen empirically by Bevy.
 const float DEFAULT_HISTORY_BLEND_RATE = 0.1;
 const float MIN_HISTORY_BLEND_RATE = 0.015;
 
 float max3(vec3 c) { return max(c.r, max(c.g, c.b)); }
-vec3 tonemap(vec3 c) { return c / (max3(c) + 1.0); }
-vec3 reverse_tonemap(vec3 c) { return c / max(1.0 - max3(c), 1e-4); }
+// Karis' reversible tonemap, of the exposed color.
+vec3 tonemap(vec3 c) { c *= u_taa.w; return c / (max3(c) + 1.0); }
+vec3 reverse_tonemap(vec3 c) { return c / max(1.0 - max3(c), 1e-4) / u_taa.w; }
 
 vec3 rgb_to_ycocg(vec3 c) {
     return vec3(c.r / 4.0 + c.g / 2.0 + c.b / 4.0,
@@ -50,7 +60,7 @@ vec3 clip_towards_aabb_center(vec3 history, vec3 lo, vec3 hi) {
 }
 
 vec3 sample_history(vec2 uv) {
-    return tonemap(texture(u_history, uv).rgb);
+    return tonemap(textureLod(u_history, uv, 0.0).rgb);
 }
 
 vec3 sample_current(ivec2 p) {
@@ -59,7 +69,34 @@ vec3 sample_current(ivec2 p) {
 }
 
 float depth_at(vec2 uv) {
-    return texture(u_depth, uv).r;
+    return textureLod(u_depth, uv, 0.0).r;
+}
+
+// The history at uv: Catmull-Rom over 4×4 texels in 9 bilinear taps (MJP,
+// via Godot's sample_catmull_rom_9).
+vec3 history_catmull_rom(vec2 uv, vec2 size) {
+    vec2 sample_pos = uv * size;
+    vec2 tex_pos1 = floor(sample_pos - 0.5) + 0.5;
+    vec2 f = sample_pos - tex_pos1;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 offset12 = w2 / w12;
+    vec2 p0 = (tex_pos1 - 1.0) / size;
+    vec2 p3 = (tex_pos1 + 2.0) / size;
+    vec2 p12 = (tex_pos1 + offset12) / size;
+    vec3 r = sample_history(vec2(p0.x, p0.y)) * w0.x * w0.y;
+    r += sample_history(vec2(p12.x, p0.y)) * w12.x * w0.y;
+    r += sample_history(vec2(p3.x, p0.y)) * w3.x * w0.y;
+    r += sample_history(vec2(p0.x, p12.y)) * w0.x * w12.y;
+    r += sample_history(vec2(p12.x, p12.y)) * w12.x * w12.y;
+    r += sample_history(vec2(p3.x, p12.y)) * w3.x * w12.y;
+    r += sample_history(vec2(p0.x, p3.y)) * w0.x * w3.y;
+    r += sample_history(vec2(p12.x, p3.y)) * w12.x * w3.y;
+    r += sample_history(vec2(p3.x, p3.y)) * w3.x * w3.y;
+    return max(r, 0.0);
 }
 
 void main() {
@@ -90,30 +127,23 @@ void main() {
         }
     }
 
-    // Where that point was last frame: through the camera's motion.
-    vec3 ndc = vec3(closest_uv * 2.0 - 1.0, reverse ? closest : closest * 2.0 - 1.0);
-    vec4 prev = u_reproject * vec4(ndc, 1.0);
-    vec2 prev_uv = prev.xy / prev.w * 0.5 + 0.5;
-    vec2 motion = closest_uv - prev_uv;
+    // Its motion since last frame, unjittered: a moving mesh's own, else
+    // the camera's (where the point seen there, without this frame's
+    // jitter, was last frame).
+    vec2 motion = vec2(1000.0);
+    if (u_taa.z > 0.5) {
+        ivec2 at = clamp(ivec2(closest_uv * size), ivec2(0), ivec2(size) - 1);
+        motion = texelFetch(u_velocity, at, 0).xy;
+    }
+    if (motion.x > 100.0) {
+        vec3 ndc = vec3(closest_uv * 2.0 - 1.0 - u_jitter, reverse ? closest : closest * 2.0 - 1.0);
+        vec4 prev = u_reproject * vec4(ndc, 1.0);
+        vec2 prev_uv = prev.xy / prev.w * 0.5 + 0.5;
+        motion = (closest_uv - 0.5 * u_jitter) - prev_uv;
+    }
 
-    // The history, 5-tap Catmull-Rom (corners left out).
     vec2 history_uv = uv - motion;
-    vec2 sample_position = history_uv * size;
-    vec2 texel_center = floor(sample_position - 0.5) + 0.5;
-    vec2 f = sample_position - texel_center;
-    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
-    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
-    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
-    vec2 w3 = f * f * (-0.5 + 0.5 * f);
-    vec2 w12 = w1 + w2;
-    vec2 tp0 = (texel_center - 1.0) * texel;
-    vec2 tp3 = (texel_center + 2.0) * texel;
-    vec2 tp12 = (texel_center + w2 / w12) * texel;
-    vec3 history = sample_history(vec2(tp12.x, tp0.y)) * w12.x * w0.y;
-    history += sample_history(vec2(tp0.x, tp12.y)) * w0.x * w12.y;
-    history += sample_history(vec2(tp12.x, tp12.y)) * w12.x * w12.y;
-    history += sample_history(vec2(tp3.x, tp12.y)) * w3.x * w12.y;
-    history += sample_history(vec2(tp12.x, tp3.y)) * w12.x * w3.y;
+    vec3 history = history_catmull_rom(history_uv, size);
 
     // Clipped to the 3×3 neighborhood's spread in YCoCg (Salvi 2016).
     vec3 m1 = vec3(0.0);

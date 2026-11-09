@@ -27,6 +27,7 @@ use crate::gpu_pick::{GpuPicker, PickView};
 use crate::instances::{Batches, Dest, Instances, ProgramKind};
 use crate::light::Light;
 use crate::model::{Morph, Skin};
+use crate::motion::MotionVectors;
 use crate::output::ToneMapping;
 use crate::pick::Hit;
 use crate::shader::create_scene_program;
@@ -159,6 +160,9 @@ pub struct RenderStats {
     /// Meshes drawn as instances of a batch (several identical meshes in
     /// one draw).
     pub instanced: usize,
+    /// Meshes that moved since the last frame, given motion vectors (with
+    /// motion vectors on: TAA).
+    pub moving: usize,
 }
 
 // An entity's object group and the `WorldMatrix` change tick it holds. Kept
@@ -205,6 +209,8 @@ pub struct SceneRenderer {
     jitter: Vec2,
     mip_bias: f32,
     last_view_proj: Mat4,
+    // TAA's motion vectors of moving meshes, while on.
+    motion: Option<MotionVectors>,
     // The white constant environment, used while no other is set.
     default_env: Environment,
     env: Option<Environment>,
@@ -323,6 +329,7 @@ impl SceneRenderer {
             jitter: Vec2::ZERO,
             mip_bias: 0.0,
             last_view_proj: Mat4::IDENTITY,
+            motion: None,
             default_env: Environment::constant(ctx, Vec3::ONE)?,
             env: None,
             env_rotation: 0.0,
@@ -524,6 +531,48 @@ impl SceneRenderer {
         self.mip_bias = mip_bias;
     }
 
+    /// The projection's subpixel offset (NDC) set by `set_jitter`.
+    pub fn jitter(&self) -> Vec2 {
+        self.jitter
+    }
+
+    /// Motion vectors for moving meshes (TAA) on or off: while on, each
+    /// frame notes the opaque meshes' state, and `push_motion` draws those
+    /// that moved.
+    pub fn set_motion_vectors(&mut self, ctx: &Context, on: bool) {
+        if on == self.motion.is_some() {
+            return;
+        }
+        if let Some(m) = self.motion.take() {
+            m.destroy(ctx, self.is_lost(ctx));
+        }
+        if on {
+            match MotionVectors::new(ctx) {
+                Ok(m) => self.motion = Some(m),
+                Err(err) => console::error_once(&format!("[rswebgl-scene] motion vectors: {err}")),
+            }
+        }
+    }
+
+    /// The motion of meshes that moved since the last frame (`render` with
+    /// motion vectors on) into `pass`, tested against `scene_depth`: uv
+    /// now − uv last frame per pixel. Returns the draws added: none if
+    /// nothing moved.
+    pub fn push_motion(&mut self, ctx: &Context, pass: &mut Pass, scene_depth: TextureId) -> usize {
+        let (frame, jitter) = (self.frame_group, self.jitter);
+        match &mut self.motion {
+            Some(m) if m.any() => m.push_draws(ctx, pass, frame, scene_depth, jitter),
+            _ => 0,
+        }
+    }
+
+    /// The motion-vector shaders built so far (`set_motion_vectors`).
+    pub(crate) fn motion_programs(&self) -> Vec<ProgramId> {
+        self.motion
+            .as_ref()
+            .map_or_else(Vec::new, |m| m.programs().collect())
+    }
+
     /// The view-projection of the last frame drawn, without the jitter.
     pub fn last_view_proj(&self) -> Mat4 {
         self.last_view_proj
@@ -597,6 +646,9 @@ impl SceneRenderer {
         self.release_removed(world, ctx);
         self.instances.clear();
         self.batches.clear();
+        if let Some(m) = &mut self.motion {
+            m.begin(self.last_view_proj);
+        }
 
         let Some((view, view_proj)) = self.write_frame(world, ctx, camera) else {
             return self.stats;
@@ -658,6 +710,12 @@ impl SceneRenderer {
             } else {
                 Dest::Opaque
             };
+            if dest == Dest::Opaque
+                && !mesh.transparent
+                && let Some(motion) = &mut self.motion
+            {
+                motion.track(world, e, &m, mesh, &mut self.instances);
+            }
             let kind = self.program_kind(ctx, mesh.program);
             // Opaque meshes of a shader that reads its instance draw
             // together: one instanced draw per program, state, vertex array,
@@ -746,6 +804,7 @@ impl SceneRenderer {
         }
         self.batches = batches;
         self.batches.clear();
+        self.stats.moving = self.motion.as_ref().map_or(0, MotionVectors::count);
         if let Err(err) = self
             .instances
             .upload(ctx, self.frame_group, self.f_instances)
@@ -878,6 +937,9 @@ impl SceneRenderer {
         }
         for g in self.batch_groups {
             ctx.destroy_param_group(g);
+        }
+        if let Some(m) = self.motion {
+            m.destroy(ctx, self.generation != ctx.generation());
         }
         ctx.destroy_param_group(self.frame_group);
         ctx.destroy_param_layout(self.frame_layout);

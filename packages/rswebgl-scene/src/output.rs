@@ -36,6 +36,9 @@ use crate::shader::chunk;
 
 const PRESENT_FRAG: &str = include_str!("../shaders/present.frag");
 const TAA_FRAG: &str = include_str!("../shaders/taa.frag");
+/// The velocity target's clear value: no motion vector here (taa.frag
+/// reprojects the depth instead).
+const VELOCITY_NONE: f32 = 1000.0;
 
 /// Temporal antialiasing (ported from Bevy, see taa.frag): the scene renders
 /// jittered without MSAA, its depth into a texture; each frame resolves
@@ -46,9 +49,13 @@ struct Taa {
     group: ParamGroupId,
     f_reproject: ParamField,
     f_taa: ParamField,
+    f_jitter: ParamField,
     // Sized with the target: (texture, framebuffer) each.
     history: [(TextureId, FramebufferId); 2],
     depth: TextureId,
+    // Moving meshes' motion (uv now − uv last frame; elsewhere the clear
+    // value, VELOCITY_NONE).
+    velocity: (TextureId, FramebufferId),
     // The history the last resolve wrote; whether the next starts over.
     current: usize,
     reset: bool,
@@ -107,6 +114,7 @@ pub struct HdrOutput {
     f_exposure: ParamField,
     f_tone_mapping: ParamField,
     f_dither: ParamField,
+    f_sharpness: ParamField,
     state: StateId,
     generation: u32,
     // Depth peeling's targets, made on first use (`peel`).
@@ -169,7 +177,8 @@ impl HdrOutput {
                 .texture("u_coverage")
                 .uniform("u_exposure", UniformType::F32)
                 .uniform("u_tone_mapping", UniformType::I32)
-                .uniform("u_dither", UniformType::F32),
+                .uniform("u_dither", UniformType::F32)
+                .uniform("u_sharpness", UniformType::F32),
         )?;
         let group = ctx.create_param_group(layout)?;
         let taa = if taa {
@@ -180,8 +189,10 @@ impl HdrOutput {
                     .texture("u_current")
                     .texture("u_history")
                     .texture("u_depth")
+                    .texture("u_velocity")
                     .uniform("u_reproject", UniformType::Mat4)
-                    .uniform("u_taa", UniformType::Vec4),
+                    .uniform("u_taa", UniformType::Vec4)
+                    .uniform("u_jitter", UniformType::Vec2),
             )?;
             Some(Taa {
                 program,
@@ -189,8 +200,10 @@ impl HdrOutput {
                 group: ctx.create_param_group(layout)?,
                 f_reproject: ctx.param_field(layout, "u_reproject")?,
                 f_taa: ctx.param_field(layout, "u_taa")?,
+                f_jitter: ctx.param_field(layout, "u_jitter")?,
                 history: [(TextureId::NULL, FramebufferId::NULL); 2],
                 depth: TextureId::NULL,
+                velocity: (TextureId::NULL, FramebufferId::NULL),
                 current: 0,
                 reset: true,
             })
@@ -218,6 +231,7 @@ impl HdrOutput {
             f_exposure: ctx.param_field(layout, "u_exposure")?,
             f_tone_mapping: ctx.param_field(layout, "u_tone_mapping")?,
             f_dither: ctx.param_field(layout, "u_dither")?,
+            f_sharpness: ctx.param_field(layout, "u_sharpness")?,
             state: ctx.render_state(&state),
             generation: ctx.generation(),
             peel: None,
@@ -248,10 +262,39 @@ impl HdrOutput {
         }
     }
 
+    /// With TAA, a pass into the velocity target (cleared to "no motion
+    /// vector"), and the scene's depth to test motion draws against.
+    pub fn motion_pass(&self, ctx: &Context) -> Option<(Pass, TextureId)> {
+        let taa = self.taa.as_ref()?;
+        let (_, fb) = taa.velocity;
+        if fb.is_null() {
+            return None;
+        }
+        ctx.framebuffer_set_clear_color(fb, VELOCITY_NONE, VELOCITY_NONE, 0.0, 0.0);
+        let mut pass = Pass::new(fb);
+        pass.set_viewport(&Viewport::new(0, 0, self.size.0, self.size.1));
+        pass.set_clear(&ClearMask {
+            color: true,
+            depth: false,
+            stencil: false,
+        });
+        Some((pass, taa.depth))
+    }
+
     /// Resolves this frame into the TAA history: the resolved color, the
-    /// last history reprojected by `reproject` (clip now, unjittered → clip
-    /// last frame) and clipped. After the scene's passes, before `present`.
-    pub fn taa_resolve(&mut self, ctx: &Context, reproject: &glam::Mat4) {
+    /// last history reprojected — by the velocity target where `velocity`
+    /// (`motion_pass` drew into it this frame), else by `reproject` (clip
+    /// now, unjittered → clip last frame) through the depth — and clipped.
+    /// `jitter` is this frame's projection offset (NDC), `exposure` the
+    /// display's. After the scene's passes, before `present`.
+    pub fn taa_resolve(
+        &mut self,
+        ctx: &Context,
+        reproject: &glam::Mat4,
+        jitter: glam::Vec2,
+        exposure: f32,
+        velocity: bool,
+    ) {
         let (w, h) = self.size;
         let reverse = self.reverse_z;
         let color = self.color;
@@ -264,14 +307,16 @@ impl HdrOutput {
         ctx.param_set_texture_by_name(taa.group, "u_current", color);
         ctx.param_set_texture_by_name(taa.group, "u_history", taa.history[taa.current].0);
         ctx.param_set_texture_by_name(taa.group, "u_depth", taa.depth);
+        ctx.param_set_texture_by_name(taa.group, "u_velocity", taa.velocity.0);
         ctx.param_set_floats(taa.group, taa.f_reproject, &reproject.to_cols_array());
         let flags = [
             if taa.reset { 1.0 } else { 0.0 },
             if reverse { 1.0 } else { 0.0 },
-            0.0,
-            0.0,
+            if velocity { 1.0 } else { 0.0 },
+            exposure.max(1e-6),
         ];
         ctx.param_set_floats(taa.group, taa.f_taa, &flags);
+        ctx.param_set_floats(taa.group, taa.f_jitter, &[jitter.x, jitter.y]);
         let mut pass = Pass::new(out_fb);
         pass.set_viewport(&Viewport::new(0, 0, w, h));
         let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
@@ -501,6 +546,7 @@ impl HdrOutput {
         exposure: f32,
         tone_mapping: ToneMapping,
         dither: bool,
+        sharpness: f32,
         profiler: Option<&mut GpuProfiler>,
     ) {
         // With TAA the display shows the history (the coverage stays this
@@ -514,6 +560,7 @@ impl HdrOutput {
         ctx.param_set_f32(self.group, self.f_exposure, exposure);
         ctx.param_set_i32(self.group, self.f_tone_mapping, tone_mapping as i32);
         ctx.param_set_f32(self.group, self.f_dither, if dither { 1.0 } else { 0.0 });
+        ctx.param_set_f32(self.group, self.f_sharpness, sharpness.clamp(0.0, 1.0));
         let mut pass = Pass::to_default();
         let fb = ctx.default_framebuffer();
         pass.set_viewport(&Viewport::new(0, 0, fb.width(), fb.height()));
@@ -625,6 +672,16 @@ impl HdrOutput {
                 ctx.framebuffer_attach_color_texture_2d(fb, 0, t, 0);
                 *h_slot = (t, fb);
             }
+            let v = tex(&TextureFormat::rg16f(), TextureMinFilter::Nearest)?;
+            let fb = ctx.create_framebuffer(w, h)?;
+            ctx.framebuffer_attach_color_texture_2d(fb, 0, v, 0);
+            if ctx.is_framebuffer_complete(fb) {
+                taa.velocity = (v, fb);
+            } else {
+                // Moving meshes then lean on the clip alone.
+                ctx.destroy_framebuffer(fb);
+                ctx.destroy_texture(v);
+            }
             taa.reset = true;
         } else {
             let depth_rb = ctx.create_renderbuffer(depth, w, h)?;
@@ -653,6 +710,14 @@ impl HdrOutput {
             }
             if !taa.depth.is_null() {
                 ctx.destroy_texture(std::mem::replace(&mut taa.depth, TextureId::NULL));
+            }
+            let (v, fb) =
+                std::mem::replace(&mut taa.velocity, (TextureId::NULL, FramebufferId::NULL));
+            if !fb.is_null() {
+                ctx.destroy_framebuffer(fb);
+            }
+            if !v.is_null() {
+                ctx.destroy_texture(v);
             }
         }
         if let Some(peel) = self.peel.take() {

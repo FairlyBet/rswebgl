@@ -11,6 +11,8 @@ from where. The originals' licenses apply to those parts.
 | [OpenPBR](https://github.com/AcademySoftwareFoundation/OpenPBR) | Apache-2.0 | the model `lib/surface_openpbr.glsl` implements |
 | [Filament](https://github.com/google/filament) | Apache-2.0 | specular antialiasing and specular occlusion (`lib/brdf.glsl`) |
 | [Bevy](https://github.com/bevyengine/bevy) | MIT / Apache-2.0 | the TAA resolve (`taa.frag`: Catmull-Rom history, YCoCg variance clip, confidence, reversible tone map; Halton jitter sequence), with Playdead's YCoCg helpers (MIT) |
+| [Godot](https://github.com/godotengine/godot) | MIT | the 9-tap Catmull-Rom history filter in `taa.frag` (`taa_resolve.glsl`, Panos Karabelas' TAA, after MJP) |
+| [AMD FidelityFX FSR 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR) | MIT | RCAS sharpening (`present.frag`, from `ffx_fsr1.h` `FsrRcasF`) |
 | [three.js](https://github.com/mrdoob/three.js) | MIT | ACES and AgX tone mapping (`lib/tonemap.glsl`); skinning and morph target vertex code (`pbr.vert`, after its `skinning_*` / `morphtarget_*` chunks) |
 
 Apache License 2.0: https://www.apache.org/licenses/LICENSE-2.0.

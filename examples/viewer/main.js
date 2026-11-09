@@ -334,6 +334,8 @@ $("resolution").addEventListener("change", () => {
   resolution = $("resolution").value;
   resize();
 });
+// RCAS after TAA (or any antialiasing): gives back the detail it softens.
+slider("sharpen", (v) => (v ? v.toFixed(2) : "off"), (v) => scene.setSharpening(v));
 // Variance; the threshold follows it from Filament's 0.2 up to 0.5.
 slider("spec-aa", (v) => v.toFixed(2), (v) => scene.setSpecularAntialiasing(v, Math.max(0.2, Math.min(0.5, v))));
 // Glass behind glass: depth-peeled transmission layers.
@@ -525,7 +527,7 @@ function frame(/** @type {number} */ now) {
     $("frame").textContent = `frame ${avg.toFixed(1)} ms (worst ${worst.toFixed(0)})  cpu ${cpu.toFixed(2)} ms`;
     $("info").textContent =
       `\n${canvas.width}×${canvas.height}  ${scene.isHdr() ? "HDR" : "direct"}  ${scene.shadingModel()}\n` +
-      `drawn ${scene.drawn()} in ${scene.drawCalls()} calls  culled ${scene.culled()}  pending ${scene.pending()}\n` +
+      `drawn ${scene.drawn()} in ${scene.drawCalls()} calls  culled ${scene.culled()}  pending ${scene.pending()}  moving ${scene.movingMeshes()}\n` +
       `variants ${scene.shaderVariantCount()}  entities ${scene.entityCount()}  file lights ${root ? scene.lights(root).length : 0}
 ` +
       gpuLine();

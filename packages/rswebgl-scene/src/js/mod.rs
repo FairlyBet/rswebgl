@@ -108,6 +108,8 @@ pub struct Scene {
     taa_previous: Option<(Entity, Mat4)>,
     tone_mapping: crate::output::ToneMapping,
     dither: bool,
+    // RCAS strength in the display pass (0 off).
+    sharpness: f32,
     // The canvas pass `renderFrame` reuses.
     frame_pass: Pass,
     // Its second pass with HDR output: what draws after the opaque scene.
@@ -175,6 +177,7 @@ impl Scene {
             taa_previous: None,
             tone_mapping: crate::output::ToneMapping::Neutral,
             dither: true,
+            sharpness: 0.0,
             frame_pass,
             late_pass: Pass::to_default(),
             glass_pass: Pass::to_default(),
@@ -558,6 +561,7 @@ impl Scene {
         // TAA: this frame's subpixel offset (Bevy's Halton (2, 3) − 0.5
         // sequence, in pixels) and a sharper LOD for the maps.
         let taa = hdr && self.hdr.as_ref().is_some_and(|o| o.taa());
+        self.renderer.set_motion_vectors(&self.ctx, taa);
         if taa {
             const HALTON: [(f32, f32); 8] = [
                 (0.0, 0.0),
@@ -620,6 +624,7 @@ impl Scene {
                     self.renderer.exposure(),
                     self.tone_mapping,
                     self.dither,
+                    self.sharpness,
                     self.profiler.as_mut(),
                 );
             }
@@ -679,6 +684,7 @@ impl Scene {
             .unwrap_or_default();
         programs.extend(self.pending_variants.iter().map(|&(_, p)| p));
         programs.extend(self.renderer.built_background_program());
+        programs.extend(self.renderer.motion_programs());
         programs.sort_unstable_by_key(|p| p.to_raw());
         programs.dedup();
         let ready = self.ctx.programs_ready(programs);
@@ -706,6 +712,12 @@ impl Scene {
     /// Draw calls the last frame made: fewer than `drawn` when identical
     /// meshes (same shader, geometry and material) drew as one instanced
     /// draw.
+    /// Meshes the last frame drew motion vectors for (they moved; with TAA).
+    #[wasm_bindgen(js_name = movingMeshes)]
+    pub fn moving_meshes(&self) -> usize {
+        self.stats.moving
+    }
+
     #[wasm_bindgen(js_name = drawCalls)]
     pub fn draw_calls(&self) -> usize {
         self.stats.draws
@@ -822,6 +834,17 @@ impl Scene {
         let Some(out) = self.hdr.as_mut() else {
             return;
         };
+        // Meshes that moved: their own motion into the velocity target.
+        let mut velocity = false;
+        if let Some((mut pass, depth)) = out.motion_pass(&self.ctx)
+            && self.renderer.push_motion(&self.ctx, &mut pass, depth) > 0
+        {
+            if let Some(p) = &mut self.profiler {
+                p.time(&mut pass, "motion");
+            }
+            self.ctx.render(&pass);
+            velocity = true;
+        }
         let reproject = match self.taa_previous {
             Some((cam, previous)) if cam == camera => previous * now.inverse(),
             _ => {
@@ -829,7 +852,13 @@ impl Scene {
                 Mat4::IDENTITY
             }
         };
-        out.taa_resolve(&self.ctx, &reproject);
+        out.taa_resolve(
+            &self.ctx,
+            &reproject,
+            self.renderer.jitter(),
+            self.renderer.exposure(),
+            velocity,
+        );
         self.taa_previous = Some((camera, now));
     }
 

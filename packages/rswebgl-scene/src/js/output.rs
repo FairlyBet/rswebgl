@@ -48,11 +48,12 @@ impl Scene {
 
     /// Temporal antialiasing instead of multisampling (with HDR output):
     /// the camera jitters by a subpixel each frame (Halton 2, 3) and frames
-    /// accumulate into a history reprojected through the camera's motion and
-    /// clipped to each pixel's neighborhood (ported from Bevy). Smooths
-    /// edges, thin geometry and shading aliasing MSAA leaves; moving objects
-    /// lean on the clip (no per-object motion vectors yet). Returns whether
-    /// it is on (needs HDR output).
+    /// accumulate into a history reprojected through the camera's motion —
+    /// and, for meshes that moved (animation, skinning, morph targets, your
+    /// own transforms), their own motion vectors — clipped to each pixel's
+    /// neighborhood (ported from Bevy and Godot). Smooths edges, thin
+    /// geometry and shading aliasing MSAA leaves; pair it with
+    /// `setSharpening`. Returns whether it is on (needs HDR output).
     #[wasm_bindgen(js_name = setTaa)]
     pub fn set_taa(&mut self, on: bool) -> bool {
         if self.taa != on {
@@ -62,7 +63,10 @@ impl Scene {
                 out.destroy(&self.ctx); // remade at the next frame
             }
         }
-        self.taa && self.hdr_wanted
+        // Its shader compiling from now (whenReady waits for it).
+        let on = self.taa && self.hdr_wanted;
+        self.renderer.set_motion_vectors(&self.ctx, on);
+        on
     }
 
     #[wasm_bindgen(js_name = isTaa)]
@@ -86,6 +90,23 @@ impl Scene {
     #[wasm_bindgen(js_name = setDither)]
     pub fn set_dither(&mut self, on: bool) {
         self.dither = on;
+    }
+
+    /// Sharpening of the displayed image, 0 (off, the default) to 1: AMD's
+    /// RCAS (FSR 1), which lifts detail without ringing or clipping. Gives
+    /// back what TAA's history filtering softens (~0.3–0.6 with `setTaa`).
+    /// With HDR output only.
+    #[wasm_bindgen(js_name = setSharpening)]
+    pub fn set_sharpening(&mut self, amount: f32) {
+        self.sharpness = if amount.is_finite() {
+            amount.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+    }
+
+    pub fn sharpening(&self) -> f32 {
+        self.sharpness
     }
 }
 

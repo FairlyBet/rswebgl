@@ -107,6 +107,16 @@ pub fn shader_sources(
 /// code without `#version` or the scene's declarations. The program is
 /// yours to destroy.
 pub fn create_scene_program(ctx: &Context, vert: &str, frag: &str) -> Result<ProgramId, Error> {
-    let (v, f) = shader_sources(vert, frag, "")?;
+    create_scene_program_with(ctx, vert, frag, "")
+}
+
+/// `create_scene_program` with `defines` (whole `#define` lines) first.
+pub fn create_scene_program_with(
+    ctx: &Context,
+    vert: &str,
+    frag: &str,
+    defines: &str,
+) -> Result<ProgramId, Error> {
+    let (v, f) = shader_sources(vert, frag, defines)?;
     ctx.create_program_from(&v, &f)
 }
