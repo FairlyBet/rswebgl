@@ -110,6 +110,8 @@ pub struct Scene {
     dither: bool,
     // RCAS strength in the display pass (0 off).
     sharpness: f32,
+    // TAA upscaling: the scene's share of the output's size (`setRenderScale`).
+    render_scale: f32,
     // The canvas pass `renderFrame` reuses.
     frame_pass: Pass,
     // Its second pass with HDR output: what draws after the opaque scene.
@@ -121,6 +123,18 @@ pub struct Scene {
     // PBR variant switches waiting for the new program to link: the mesh
     // keeps drawing with its old one meanwhile.
     pending_variants: Vec<(Entity, ProgramId)>,
+}
+
+// The `index`th element of the Halton sequence in `base` (radical inverse).
+fn halton(mut index: u32, base: u32) -> f32 {
+    let mut f = 1.0;
+    let mut r = 0.0;
+    while index > 0 {
+        f /= base as f32;
+        r += f * (index % base) as f32;
+        index /= base;
+    }
+    r
 }
 
 // A rejected call on a dead entity: reported once per call site, no-op.
@@ -178,6 +192,7 @@ impl Scene {
             tone_mapping: crate::output::ToneMapping::Neutral,
             dither: true,
             sharpness: 0.0,
+            render_scale: 1.0,
             frame_pass,
             late_pass: Pass::to_default(),
             glass_pass: Pass::to_default(),
@@ -563,20 +578,24 @@ impl Scene {
         let taa = hdr && self.hdr.as_ref().is_some_and(|o| o.taa());
         self.renderer.set_motion_vectors(&self.ctx, taa);
         if taa {
-            const HALTON: [(f32, f32); 8] = [
-                (0.0, 0.0),
-                (0.0, -0.16666666),
-                (-0.25, 0.16666669),
-                (0.25, -0.3888889),
-                (-0.375, -0.055555552),
-                (0.125, 0.2777778),
-                (-0.125, -0.2777778),
-                (0.375, 0.055555582),
-            ];
-            let (jx, jy) = HALTON[self.taa_frame as usize % HALTON.len()];
+            // Halton (2, 3) − 0.5 (Bevy's 8 phases at full size; upscaling,
+            // FSR2's 8 × (output / render)² so every output pixel gets
+            // samples near it) and a sharper LOD for the maps (FSR2:
+            // log2(render / output) − 1).
+            let (rw, rh, scale) = self.hdr.as_ref().map_or((w, h, 1.0), |o| {
+                let (rw, rh) = o.render_size();
+                (rw, rh, o.render_scale())
+            });
+            let phases = (8.0 / (scale * scale)).ceil() as u32;
+            let k = self.taa_frame % phases.max(1);
             self.taa_frame = self.taa_frame.wrapping_add(1);
-            let ndc = glam::Vec2::new(2.0 * jx / w.max(1) as f32, 2.0 * jy / h.max(1) as f32);
-            self.renderer.set_jitter(ndc, -1.0);
+            let (jx, jy) = if k == 0 {
+                (0.0, 0.0)
+            } else {
+                (halton(k, 2) - 0.5, halton(k, 3) - 0.5)
+            };
+            let ndc = glam::Vec2::new(2.0 * jx / rw.max(1) as f32, 2.0 * jy / rh.max(1) as f32);
+            self.renderer.set_jitter(ndc, scale.log2() - 1.0);
         } else {
             self.renderer.set_jitter(glam::Vec2::ZERO, 0.0);
             self.taa_previous = None;

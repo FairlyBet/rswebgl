@@ -114,7 +114,11 @@ pub struct HdrOutput {
     grab_fb: FramebufferId,
     grab: TextureId,
     grab_size: (i32, i32),
+    // What the scene renders at, and the output (the canvas): smaller with
+    // TAA upscaling (`render_scale` < 1), the history at the output's size.
     size: (i32, i32),
+    out_size: (i32, i32),
+    render_scale: f32,
     samples: i32,
     reverse_z: bool,
     program: ProgramId,
@@ -239,6 +243,8 @@ impl HdrOutput {
             grab_size: (0, 0),
             color: TextureId::NULL,
             size: (0, 0),
+            out_size: (0, 0),
+            render_scale: 1.0,
             samples: samples.clamp(0, rswebgl::limits::max_samples() as i32),
             reverse_z: false,
             program,
@@ -269,6 +275,42 @@ impl HdrOutput {
     /// Whether temporal antialiasing is on.
     pub fn taa(&self) -> bool {
         self.taa.is_some()
+    }
+
+    /// With TAA, the scene renders at `scale` (0.25…1) of the output's size
+    /// and the resolve upsamples (TAAU); 1 renders at the output's size.
+    /// Without TAA it renders at the output's size whatever this says.
+    pub fn set_render_scale(&mut self, scale: f32) {
+        self.render_scale = if scale.is_finite() {
+            scale.clamp(0.25, 1.0)
+        } else {
+            1.0
+        };
+    }
+
+    pub fn render_scale(&self) -> f32 {
+        if self.taa.is_some() {
+            self.render_scale
+        } else {
+            1.0
+        }
+    }
+
+    /// What the scene renders at (the last `prepare`).
+    pub fn render_size(&self) -> (i32, i32) {
+        self.size
+    }
+
+    // The render size for an output of `w`×`h`.
+    fn render_size_for(&self, w: i32, h: i32) -> (i32, i32) {
+        let s = self.render_scale();
+        if s >= 1.0 {
+            return (w, h);
+        }
+        (
+            ((w as f32 * s).round() as i32).max(1),
+            ((h as f32 * s).round() as i32).max(1),
+        )
     }
 
     /// Starts the TAA history over (a camera cut: nothing to reuse).
@@ -363,7 +405,7 @@ impl HdrOutput {
         velocity: bool,
         late_moved: bool,
     ) {
-        let (w, h) = self.size;
+        let (w, h) = self.out_size;
         let reverse = self.reverse_z;
         let color = self.color;
         let Some(taa) = &mut self.taa else {
@@ -440,9 +482,14 @@ impl HdrOutput {
         last: bool,
     ) -> Result<(), Error> {
         let (w, h) = (w.max(1), h.max(1));
+        let render = self.render_size_for(w, h);
         let reverse_z = ctx.reverse_z();
-        if self.size != (w, h) || self.reverse_z != reverse_z || self.fb.is_null() {
-            self.allocate(ctx, w, h, reverse_z)?;
+        if self.size != render
+            || self.out_size != (w, h)
+            || self.reverse_z != reverse_z
+            || self.fb.is_null()
+        {
+            self.allocate(ctx, render, (w, h), reverse_z)?;
         }
         // The canvas's clear color, as premultiplied linear radiance.
         let [r, g, b, a] = ctx.default_framebuffer().clear_color_rgba();
@@ -662,9 +709,16 @@ impl HdrOutput {
         ctx.render(&pass);
     }
 
-    fn allocate(&mut self, ctx: &Context, w: i32, h: i32, reverse_z: bool) -> Result<(), Error> {
+    fn allocate(
+        &mut self,
+        ctx: &Context,
+        (w, h): (i32, i32),
+        (ow, oh): (i32, i32),
+        reverse_z: bool,
+    ) -> Result<(), Error> {
         self.free_target(ctx);
         self.size = (w, h);
+        self.out_size = (ow, oh);
         self.reverse_z = reverse_z;
         let depth = if reverse_z {
             RenderbufferFormat::Depth32f
@@ -747,17 +801,22 @@ impl HdrOutput {
                     TextureMinFilter::Linear,
                     TextureMagFilter::Linear,
                 )?;
-                ctx.texture_storage_2d(t, 1, &TextureFormat::rgba16f(), w, h);
+                ctx.texture_storage_2d(t, 1, &TextureFormat::rgba16f(), ow, oh);
                 ctx.texture_set_wrap_s(t, TextureWrap::ClampToEdge);
                 ctx.texture_set_wrap_t(t, TextureWrap::ClampToEdge);
-                let fb = ctx.create_framebuffer(w, h)?;
+                let fb = ctx.create_framebuffer(ow, oh)?;
                 ctx.framebuffer_attach_color_texture_2d(fb, 0, t, 0);
                 *h_slot = (t, fb);
             }
             // Each resolve's motion next to its history (renderable with
             // the half-float color the HDR target needs).
             for i in 0..2 {
-                let m = tex(&TextureFormat::rg16f(), TextureMinFilter::Nearest)?;
+                let m = ctx.create_texture(
+                    TextureTarget::Texture2D,
+                    TextureMinFilter::Nearest,
+                    TextureMagFilter::Nearest,
+                )?;
+                ctx.texture_storage_2d(m, 1, &TextureFormat::rg16f(), ow, oh);
                 ctx.framebuffer_attach_color_texture_2d(taa.history[i].1, 1, m, 0);
                 taa.motions[i] = m;
             }

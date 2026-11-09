@@ -356,6 +356,8 @@ $("resolution").addEventListener("change", () => {
 });
 // RCAS after TAA (or any antialiasing): gives back the detail it softens.
 slider("sharpen", (v) => (v ? v.toFixed(2) : "off"), (v) => scene.setSharpening(v));
+// TAA upscaling: the scene renders smaller and TAA rebuilds the full size.
+slider("render-scale", (v) => `${Math.round(v * 100)}%`, (v) => scene.setRenderScale(v));
 // Variance; the threshold follows it from Filament's 0.2 up to 0.5.
 slider("spec-aa", (v) => v.toFixed(2), (v) => scene.setSpecularAntialiasing(v, Math.max(0.2, Math.min(0.5, v))));
 // Glass behind glass: depth-peeled transmission layers.
