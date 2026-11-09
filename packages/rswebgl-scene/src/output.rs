@@ -53,6 +53,9 @@ struct Taa {
     f_reactive: ParamField,
     // Sized with the target: (texture, framebuffer) each.
     history: [(TextureId, FramebufferId); 2],
+    // The motion each history's resolve used, per pixel (its second color
+    // attachment): the next resolve's velocity disocclusion.
+    motions: [TextureId; 2],
     depth: TextureId,
     // Moving meshes' motion (uv now − uv last frame; elsewhere the clear
     // value, VELOCITY_NONE).
@@ -194,6 +197,7 @@ impl HdrOutput {
                 &ParamLayoutBuilder::new()
                     .texture("u_current")
                     .texture("u_history")
+                    .texture("u_prev_motion")
                     .texture("u_depth")
                     .texture("u_velocity")
                     .texture("u_opaque")
@@ -211,6 +215,7 @@ impl HdrOutput {
                 f_jitter: ctx.param_field(layout, "u_jitter")?,
                 f_reactive: ctx.param_field(layout, "u_reactive")?,
                 history: [(TextureId::NULL, FramebufferId::NULL); 2],
+                motions: [TextureId::NULL; 2],
                 depth: TextureId::NULL,
                 velocity: (TextureId::NULL, FramebufferId::NULL),
                 opaque: (TextureId::NULL, FramebufferId::NULL),
@@ -369,6 +374,7 @@ impl HdrOutput {
         let _ = out_tex;
         ctx.param_set_texture_by_name(taa.group, "u_current", color);
         ctx.param_set_texture_by_name(taa.group, "u_history", taa.history[taa.current].0);
+        ctx.param_set_texture_by_name(taa.group, "u_prev_motion", taa.motions[taa.current]);
         ctx.param_set_texture_by_name(taa.group, "u_depth", taa.depth);
         ctx.param_set_texture_by_name(taa.group, "u_velocity", taa.velocity.0);
         ctx.param_set_floats(taa.group, taa.f_reproject, &reproject.to_cols_array());
@@ -748,6 +754,13 @@ impl HdrOutput {
                 ctx.framebuffer_attach_color_texture_2d(fb, 0, t, 0);
                 *h_slot = (t, fb);
             }
+            // Each resolve's motion next to its history (renderable with
+            // the half-float color the HDR target needs).
+            for i in 0..2 {
+                let m = tex(&TextureFormat::rg16f(), TextureMinFilter::Nearest)?;
+                ctx.framebuffer_attach_color_texture_2d(taa.history[i].1, 1, m, 0);
+                taa.motions[i] = m;
+            }
             let v = tex(&TextureFormat::rg16f(), TextureMinFilter::Nearest)?;
             let fb = ctx.create_framebuffer(w, h)?;
             ctx.framebuffer_attach_color_texture_2d(fb, 0, v, 0);
@@ -786,6 +799,11 @@ impl HdrOutput {
             }
             if !taa.depth.is_null() {
                 ctx.destroy_texture(std::mem::replace(&mut taa.depth, TextureId::NULL));
+            }
+            for m in std::mem::replace(&mut taa.motions, [TextureId::NULL; 2]) {
+                if !m.is_null() {
+                    ctx.destroy_texture(m);
+                }
             }
             let (v, fb) =
                 std::mem::replace(&mut taa.velocity, (TextureId::NULL, FramebufferId::NULL));

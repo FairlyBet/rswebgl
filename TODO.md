@@ -105,9 +105,9 @@ attached. Left:
   frame) cuts the history where they show while the pixel moves or one of
   them moved. While still they accumulate like the rest. The mask is
   binary (FSR2's sample settings); per-material reactivity would be finer.
-- Next: TAAU (render below the output size and upsample in the resolve),
-  Godot's velocity disocclusion (needs last frame's velocity for every
-  pixel, not only moving meshes).
+- Godot's velocity disocclusion: each resolve keeps the motion it used per
+  pixel (a second attachment of the history), the next compares.
+- Next: TAAU (render below the output size and upsample in the resolve).
 
 ## From the review (deferred)
 
