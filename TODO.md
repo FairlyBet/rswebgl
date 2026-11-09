@@ -7,8 +7,25 @@ Known limits and deferred work.
 In the order we mean to take them (TAAU, npm publishing and a gem shader are
 set aside for now).
 
-1. **Frame-time spikes on phones**: profile them (`rswebgl::trace`, the
-   viewer's Profiling panel) and fix what the traces show.
+1. **Antialiasing on phones** (next). On the Mali-G57 test phone (half
+   resolution, OpenPBR, IridescentDishWithOlives from above) no AA runs
+   at 60 fps, TAA at ~40 (~8 ms: the opaque copy, the motion pass, a
+   resolve of ~25 RGBA16F taps per pixel, history + RG16F motion writes,
+   RCAS). In order:
+   - try MSAA 4× there first (tile GPUs resolve in tile memory, but our
+     resolve is a separate `blitFramebuffer` and may not be cheap through
+     ANGLE): measure with the viewer's "Measure what this view costs";
+   - **FXAA** as a third mode next to MSAA and TAA: one post pass, ~1 ms,
+     no history (no ghosting, no glass jitter), worse on specular shimmer.
+     Port FXAA 3.11 (three.js `FXAAShader`, NVIDIA's, public domain);
+     run it on the tone-mapped image (in `present` or a pass after it);
+     the viewer picks it on touch devices;
+   - a lighter TAA (`setTaaQuality("low")`): history by 5-tap Catmull-Rom
+     (Jimenez 2016 / Unreal) instead of Godot's 9, a 5-tap cross
+     neighbourhood instead of 3×3 (Karis), 3 depth taps — about half the
+     resolve's reads.
+   Frame spikes on phones turned out to be the viewer panel's
+   backdrop-filter (fixed); the profiler stays (`rswebgl::trace`).
 2. **`EXT_texture_webp` / `EXT_texture_avif`**: not handled; gltf-transform
    writes WebP often. The browser decodes both (`createImageBitmap`); the
    texture's source moves to the extension's, as for `KHR_texture_basisu`.
