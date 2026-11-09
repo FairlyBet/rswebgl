@@ -39,3 +39,13 @@ Open a report in <https://ui.perfetto.dev>, or summarize its slowest frames:
 ```bash
 node scripts/trace-summary.mjs traces/<file>.json
 ```
+
+## Uniform upload benchmark
+
+`ubo-bench.html` (linked from the Profiling panel) draws N quads with 80
+bytes of uniform data each and changes it every frame in different ways:
+plain uniforms, one small UBO rewritten per draw, one big UBO uploaded at
+once or written per draw, a ring of three, orphaning, and with only a tenth
+of the draws changing. Raw WebGL2, recorded with the same profiler: the
+page shows a table (CPU submit time, frame interval, fence latency) and
+sends or downloads the trace like the viewer.

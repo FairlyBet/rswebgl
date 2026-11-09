@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>rswebgl UBO upload benchmark</title>
+  <style>
+    :root {
+      --text: #d8dae0;
+      --dim: #8b8f9a;
+      --line: rgba(255, 255, 255, 0.1);
+      color-scheme: dark;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      background: #0c0d10;
+      color: var(--text);
+      font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+
+    /* The canvas and the controls don't overlap: nothing composited over
+       the canvas while it measures. */
+    #c {
+      display: block;
+      width: 100%;
+      height: 45vh;
+    }
+
+    main {
+      padding: 10px 12px 24px;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin: 6px 0;
+      flex-wrap: wrap;
+    }
+
+    button,
+    select {
+      font: inherit;
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: #1b1d24;
+      color: var(--text);
+    }
+
+    #status {
+      color: var(--dim);
+      white-space: pre-wrap;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      font: 11px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
+      margin-top: 8px;
+    }
+
+    th,
+    td {
+      text-align: right;
+      padding: 3px 4px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    th:first-child,
+    td:first-child {
+      text-align: left;
+    }
+
+    .note {
+      color: var(--dim);
+      font-size: 12px;
+    }
+  </style>
+</head>
+
+<body>
+  <canvas id="c"></canvas>
+  <main>
+    <div class="row">
+      <span>Draws</span>
+      <select id="draws">
+        <option>250</option>
+        <option selected>1000</option>
+        <option>2000</option>
+        <option>4000</option>
+      </select>
+      <span>Seconds per case</span>
+      <select id="seconds">
+        <option>2</option>
+        <option selected>3</option>
+        <option>5</option>
+      </select>
+    </div>
+    <div class="row">
+      <button id="run">Run all cases</button>
+      <button id="download" disabled>Download the report</button>
+      <button id="send" disabled>Send it to the computer</button>
+    </div>
+    <div id="status">Ready.</div>
+    <table id="results"></table>
+    <p class="note">
+      Each case draws the same quads, each with its own 80 bytes of uniform data (a mat4 and a vec4), and
+      changes that data every frame in a different way: plain uniforms, one small uniform buffer rewritten
+      before every draw, one big buffer uploaded once or in a write per draw, a ring of three big buffers,
+      orphaning, and the same with only a tenth of the draws changing. "submit" is the CPU time of a frame's
+      GL calls; "frame" the interval between frames; "gpu" how long a fence set after a frame's calls took to pass
+      (checked every few ms: an upper bound on the frame's GPU and driver time). Every case runs twice, in reverse order the second time (heat and clocks drift over a run). Keep the screen on and don't touch it while it runs.
+    </p>
+  </main>
+  <script type="module" src="./ubo-bench.js"></script>
+</body>
+
+</html>

@@ -36,7 +36,7 @@ set aside for now).
    2048² RGBA8 with mips is ~21 MB, BC1 / ETC2 ~2.8 MB. BC6H for the IBL
    cubes on desktop.
 7. **Uniform uploads on mobile**: measure many `bufferSubData` runs against
-   one upload per frame with the profiler on a phone; then decide whether
+   one upload per frame on a phone (`examples/viewer/ubo-bench.html`); then decide whether
    materials move into one shared UBO (`bindBufferRange` per draw) instead
    of plain uniforms.
 8. Later: bloom, LOD by meshoptimizer's simplifier, `KHR_animation_pointer`,
