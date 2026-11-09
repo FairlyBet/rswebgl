@@ -634,4 +634,25 @@ impl Context {
             }
         }
     }
+
+    /// `remap_group_handles` for uniform buffers: each block bound to an
+    /// `old` buffer is bound to its `new` (same range). An app that put its
+    /// own uniform buffer in a group recreates it after a context loss and
+    /// repoints the groups here.
+    pub fn remap_group_blocks(
+        &self,
+        buffers: &std::collections::HashMap<UniformBufferId, UniformBufferId>,
+    ) {
+        if buffers.is_empty() {
+            return;
+        }
+        let mut res = self.res();
+        for group in res.param_groups.values_mut() {
+            for (b, _) in &mut group.blocks {
+                if let Some(&new) = buffers.get(b) {
+                    *b = new;
+                }
+            }
+        }
+    }
 }

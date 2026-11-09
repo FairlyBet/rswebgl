@@ -109,15 +109,14 @@ attached. Left:
   pixel (a second attachment of the history), the next compares.
 - Next: TAAU (render below the output size and upsample in the resolve).
 
-## From the review (deferred)
+## From the review (done)
 
-- `remap_group_handles` repoints textures and samplers after a reload, not
-  uniform buffers: a group holding an app's own UBO needs it set again after a
-  restore (the scene recreates its own).
-- Auto-resize sizes from the CSS box × devicePixelRatio when the observer
-  fires: a DPR change alone (zoom, moving the window to another screen)
-  doesn't fire it, and a browser-clamped drawing buffer isn't noticed.
-- `bind_read_source` (readback) rebinds READ_FRAMEBUFFER behind the cache.
+- Uniform buffers after a restore: `remap_group_blocks` repoints groups at
+  an app's recreated buffers (as `remap_group_handles` does textures).
+- Auto-resize: device pixels from `device-pixel-content-box` where the
+  browser has it, a media query for devicePixelRatio changes alone, and the
+  viewport from the drawing buffer the browser actually gave.
+- Readback forgets the renderer's cached target after binding its source.
 
 ## Context loss
 

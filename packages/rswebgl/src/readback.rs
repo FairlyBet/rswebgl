@@ -199,12 +199,13 @@ impl Context {
                     "read: framebuffer has no color attachment {attachment}"
                 ));
             }
-            // Only the read binding changes; the renderer's draw target (and
-            // its cache of it) is untouched.
             gl.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(&f.raw));
             gl.read_buffer(Gl::COLOR_ATTACHMENT0 + attachment);
             f.size()
         };
+        // The read binding no longer matches the renderer's cached target
+        // (it binds both): the next pass binds its target in full.
+        self.gl_state().forget_target();
         if r.width < 1
             || r.height < 1
             || r.x < 0

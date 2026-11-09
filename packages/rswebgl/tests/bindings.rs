@@ -179,3 +179,19 @@ void main() {
 
     assert_eq!(read_quads(&f.gl), [BLACK, [255, 0, 255, 255], BLACK]);
 }
+
+// A group's block repointed from one buffer to another (as after a context
+// loss, the app's buffer recreated) draws with the new one.
+#[wasm_bindgen_test]
+fn remapped_blocks_draw_with_the_new_buffer() {
+    let f = fixture();
+    let prog = f.ctx.create_program(VERT, BLOCK_A_FRAG).expect("program");
+    let old = color_block(&f.ctx, "a_color", RED);
+    let new = color_block(&f.ctx, "a_color", GREEN);
+    let g = block_group(&f, "BlockA", old);
+    f.ctx
+        .remap_group_blocks(&std::collections::HashMap::from([(old, new)]));
+    render(&f, vec![quad_batch(&f, prog, 1, g)]);
+
+    assert_eq!(read_quads(&f.gl), [BLACK, GREEN, BLACK]);
+}

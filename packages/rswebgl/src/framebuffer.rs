@@ -178,28 +178,77 @@ struct DefaultFramebufferInner {
     observer: Option<ResizeObserver>,
     // Kept alive so the ResizeObserver callback stays valid; dropped on disable.
     #[allow(dead_code)]
-    resize_closure: Option<Closure<dyn FnMut()>>,
+    resize_closure: Option<Closure<dyn FnMut(js_sys::Array)>>,
+    // A devicePixelRatio change alone (zoom, another screen) doesn't resize
+    // the CSS box: a media query on the current ratio notices it, re-armed
+    // on each change (MDN's devicePixelRatio example).
+    dpr_query: Option<web_sys::MediaQueryList>,
+    #[allow(dead_code)]
+    dpr_closure: Option<Closure<dyn FnMut()>>,
+}
+
+impl DefaultFramebufferInner {
+    // Stops observing (the observer and the media query).
+    fn stop_observing(&mut self) {
+        if let Some(observer) = self.observer.take() {
+            observer.disconnect();
+        }
+        if let (Some(query), Some(closure)) = (self.dpr_query.take(), &self.dpr_closure) {
+            let _ = query
+                .remove_event_listener_with_callback("change", closure.as_ref().unchecked_ref());
+        }
+    }
 }
 
 // The observer outlives us in the browser unless disconnected: it would call
 // the closure dropped with us ("closure invoked ... after being dropped").
 impl Drop for DefaultFramebufferInner {
     fn drop(&mut self) {
-        if let Some(observer) = self.observer.take() {
-            observer.disconnect();
-        }
+        self.stop_observing();
     }
 }
 
-// Resizes the drawing buffer to the canvas's CSS size × devicePixelRatio and
-// updates the viewport. Only touches the backing store when it actually changed
-// (setting width/height clears the canvas).
-fn resize_to_display(inner: &Rc<RefCell<DefaultFramebufferInner>>, canvas: &HtmlCanvasElement) {
+// The canvas's content box in device pixels: exact from a ResizeObserver
+// entry's devicePixelContentBoxSize where the browser gives one (Chrome,
+// Firefox), else the CSS size × devicePixelRatio (webglfundamentals'
+// "WebGL Resizing the Canvas").
+fn device_size(
+    entry: Option<&web_sys::ResizeObserverEntry>,
+    canvas: &HtmlCanvasElement,
+) -> (i32, i32) {
+    if let Some(entry) = entry {
+        let sizes = js_sys::Reflect::get(entry, &JsValue::from_str("devicePixelContentBoxSize"))
+            .ok()
+            .filter(|v| v.is_object())
+            .map(|v| js_sys::Array::from(&v));
+        if let Some(size) = sizes
+            .filter(|s| s.length() > 0)
+            .map(|s| s.get(0).unchecked_into::<web_sys::ResizeObserverSize>())
+        {
+            return (
+                size.inline_size().round() as i32,
+                size.block_size().round() as i32,
+            );
+        }
+    }
     let dpr = web_sys::window()
         .map(|w| w.device_pixel_ratio())
         .unwrap_or(1.0);
-    let w = (canvas.client_width().max(0) as f64 * dpr).round() as i32;
-    let h = (canvas.client_height().max(0) as f64 * dpr).round() as i32;
+    (
+        (canvas.client_width().max(0) as f64 * dpr).round() as i32,
+        (canvas.client_height().max(0) as f64 * dpr).round() as i32,
+    )
+}
+
+// Resizes the drawing buffer to `(w, h)` device pixels and updates the
+// viewport to what the browser gave (it may clamp a large buffer: the
+// drawing buffer's size, not the canvas's). Only touches the backing store
+// when it actually changed (setting width/height clears the canvas).
+fn resize_to_display(
+    inner: &Rc<RefCell<DefaultFramebufferInner>>,
+    canvas: &HtmlCanvasElement,
+    (w, h): (i32, i32),
+) {
     if w <= 0 || h <= 0 {
         return;
     }
@@ -209,7 +258,24 @@ fn resize_to_display(inner: &Rc<RefCell<DefaultFramebufferInner>>, canvas: &Html
     if canvas.height() != h as u32 {
         canvas.set_height(h as u32);
     }
-    inner.borrow_mut().viewport = Viewport::new(0, 0, w, h);
+    let mut s = inner.borrow_mut();
+    let (bw, bh) = (s.gl.drawing_buffer_width(), s.gl.drawing_buffer_height());
+    s.viewport = Viewport::new(0, 0, bw.max(1), bh.max(1));
+}
+
+// Listens for the devicePixelRatio leaving its current value.
+fn arm_dpr_query(inner: &mut DefaultFramebufferInner) {
+    let Some(closure) = &inner.dpr_closure else {
+        return;
+    };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let query = format!("(resolution: {}dppx)", window.device_pixel_ratio());
+    if let Ok(Some(mql)) = window.match_media(&query) {
+        let _ = mql.add_event_listener_with_callback("change", closure.as_ref().unchecked_ref());
+        inner.dpr_query = Some(mql);
+    }
 }
 
 #[wasm_bindgen]
@@ -233,6 +299,8 @@ impl DefaultFramebuffer {
                 canvas,
                 observer: None,
                 resize_closure: None,
+                dpr_query: None,
+                dpr_closure: None,
             })),
         }
     }
@@ -293,10 +361,14 @@ impl DefaultFramebuffer {
         self.inner.borrow_mut().clear_stencil = s;
     }
 
-    /// Starts observing the canvas and keeps the drawing buffer sized to its CSS
-    /// size × devicePixelRatio, updating the viewport. Fires once immediately for
-    /// the current size. No-op if already enabled; errors if there is no canvas
-    /// (context created from a raw gl). Opt-in — call `disable_auto_resize` to stop.
+    /// Starts observing the canvas and keeps the drawing buffer sized to its
+    /// content box in device pixels (CSS size × devicePixelRatio, exact
+    /// where the browser reports device pixels), also when only the ratio
+    /// changes (zoom, another screen); the viewport follows the drawing
+    /// buffer the browser actually gave (it may clamp a huge one). Fires once
+    /// immediately for the current size. No-op if already enabled; errors if
+    /// there is no canvas (context created from a raw gl). Opt-in — call
+    /// `disable_auto_resize` to stop.
     #[wasm_bindgen(js_name = enableAutoResize)]
     pub fn enable_auto_resize(&self) -> Result<(), Error> {
         let mut s = self.inner.borrow_mut();
@@ -308,30 +380,62 @@ impl DefaultFramebuffer {
             .clone()
             .ok_or("auto-resize needs a canvas (context was created from a raw gl)")?;
 
-        // Weak so the closure (owned by the inner) doesn't keep the inner alive.
+        // Weak so the closures (owned by the inner) don't keep it alive.
         let weak = Rc::downgrade(&self.inner);
         let cb_canvas = canvas.clone();
-        let closure = Closure::<dyn FnMut()>::new(move || {
+        let closure = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
             if let Some(inner) = weak.upgrade() {
-                resize_to_display(&inner, &cb_canvas);
+                let entry = entries
+                    .get(0)
+                    .dyn_into::<web_sys::ResizeObserverEntry>()
+                    .ok();
+                let size = device_size(entry.as_ref(), &cb_canvas);
+                resize_to_display(&inner, &cb_canvas, size);
             }
         });
         let observer = ResizeObserver::new(closure.as_ref().unchecked_ref())
             .map_err(|_| "ResizeObserver is not supported")?;
-        observer.observe(&canvas);
+        // Device pixels where supported (Safari throws on the box name).
+        let options = web_sys::ResizeObserverOptions::new();
+        options.set_box(web_sys::ResizeObserverBoxOptions::DevicePixelContentBox);
+        let observed = js_sys::Reflect::get(&observer, &JsValue::from_str("observe"))
+            .ok()
+            .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+            .is_some_and(|f| f.call2(&observer, &canvas, &options).is_ok());
+        if !observed {
+            observer.observe(&canvas);
+        }
+
+        let weak = Rc::downgrade(&self.inner);
+        let dpr_canvas = canvas.clone();
+        let dpr_closure = Closure::<dyn FnMut()>::new(move || {
+            if let Some(inner) = weak.upgrade() {
+                resize_to_display(&inner, &dpr_canvas, device_size(None, &dpr_canvas));
+                // The ratio moved on: listen for it leaving the new one.
+                let mut s = inner.borrow_mut();
+                if let (Some(query), Some(closure)) = (s.dpr_query.take(), &s.dpr_closure) {
+                    let _ = query.remove_event_listener_with_callback(
+                        "change",
+                        closure.as_ref().unchecked_ref(),
+                    );
+                }
+                arm_dpr_query(&mut s);
+            }
+        });
 
         s.observer = Some(observer);
         s.resize_closure = Some(closure);
+        s.dpr_closure = Some(dpr_closure);
+        arm_dpr_query(&mut s);
         Ok(())
     }
 
     #[wasm_bindgen(js_name = disableAutoResize)]
     pub fn disable_auto_resize(&self) {
         let mut s = self.inner.borrow_mut();
-        if let Some(observer) = s.observer.take() {
-            observer.disconnect();
-        }
+        s.stop_observing();
         s.resize_closure = None;
+        s.dpr_closure = None;
     }
 
     #[wasm_bindgen(js_name = isAutoResizeEnabled)]
