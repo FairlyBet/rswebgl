@@ -568,6 +568,7 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
     // copied out, and holding both would double the peak memory.
     let (mut json, blob) = {
         let bytes = fetch::fetch_bytes(url).await.map_err(js_err)?;
+        let _s = tracing::info_span!("gltf.parse", bytes = bytes.len()).entered();
         split(&bytes)?
     };
     patch_basisu_sources(&mut json);
@@ -594,9 +595,15 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
         })
         .unwrap_or_default();
     // (On the JSON: such a file is only a valid document once decoded.)
-    meshopt::decode_views(&json, &mut buffers)?;
+    {
+        let _s = tracing::info_span!("gltf.meshopt").entered();
+        meshopt::decode_views(&json, &mut buffers)?;
+    }
     draco::decode(&mut json, &mut buffers).await?;
-    let document = document(&json)?;
+    let document = {
+        let _s = tracing::info_span!("gltf.document").entered();
+        document(&json)?
+    };
 
     // Assemble textures, packing separate occlusion + metallic-roughness maps
     // into one ORM texture where safe; `remap` rewrites material texture indices
@@ -608,6 +615,7 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
     }
     // Everything below is created synchronously, in this generation.
     let generation = ctx.generation();
+    let _build = tracing::info_span!("gltf.build").entered();
     let set = pack::build_texture_set(ctx, &document, &buffers, &base)?;
     let mut materials: Vec<Material> = document
         .materials()

@@ -668,6 +668,7 @@ impl SceneRenderer {
         mut late: Option<&mut Pass>,
         mut glass: Option<&mut Pass>,
     ) -> RenderStats {
+        let _span = tracing::info_span!("scene.collect", meshes = tracing::field::Empty).entered();
         self.stats = RenderStats::default();
         self.release_removed(world, ctx);
         self.instances.clear();
@@ -829,6 +830,8 @@ impl SceneRenderer {
         self.batches = batches;
         self.batches.clear();
         self.stats.moving = self.motion.as_ref().map_or(0, MotionVectors::count);
+        _span.record("meshes", self.stats.drawn);
+        let _upload = tracing::info_span!("scene.uploadInstances").entered();
         if let Err(err) = self
             .instances
             .upload(ctx, self.frame_group, self.f_instances)

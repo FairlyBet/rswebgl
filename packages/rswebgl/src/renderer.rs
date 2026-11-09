@@ -117,6 +117,12 @@ impl Context {
     /// Executes several passes in order. Rust-only: a `&[Pass]` doesn't cross
     /// the wasm_bindgen boundary.
     pub fn render_passes(&self, passes: &[Pass]) {
+        let _span = tracing::info_span!(
+            "gl.render",
+            passes = passes.len(),
+            draws = passes.iter().map(Pass::draw_count).sum::<usize>()
+        )
+        .entered();
         let gl = self.gl();
         // Every call would be a no-op anyway, but program/framebuffer status
         // queries would report bogus failures (and mark programs invalid).

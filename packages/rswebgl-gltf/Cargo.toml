@@ -12,6 +12,7 @@ wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = "0.4"
 js-sys = { workspace = true }
 glam = { workspace = true }
+tracing = { workspace = true }
 base64 = "0.22"
 # The JSON is patched before the gltf crate validates it (KHR_texture_basisu
 # sources, KHR_draco_mesh_compression accessors); extension values are read.

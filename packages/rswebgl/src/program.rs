@@ -660,6 +660,7 @@ impl Context {
         frag_src: &ShaderSource,
         feedback: Option<(&[String], FeedbackMode)>,
     ) -> Result<ProgramId, Error> {
+        let _span = tracing::info_span!("gl.createProgram").entered();
         self.check_alive()?;
         let parallel = self.is_extension_enabled(Extension::KhrParallelShaderCompile);
         let obj = ProgramObj::new(
@@ -714,6 +715,7 @@ impl Context {
             .as_bool()
             .unwrap_or(false);
         if complete {
+            let _span = tracing::info_span!("gl.linkFinished").entered();
             p.ensure_linked(gl);
         }
         p.ready
@@ -782,6 +784,7 @@ impl Context {
             .as_bool()
             .unwrap_or(false);
         if complete {
+            let _span = tracing::info_span!("gl.linkFinished").entered();
             p.ensure_linked(gl);
         }
         !p.ready

@@ -7,13 +7,17 @@
 // interface and prints this machine's local-network addresses, so a phone on
 // the same Wi-Fi can open the viewer (allow Node through the firewall if
 // asked).
+//
+// POST /trace saves a profiling report the page sends (its Profiling panel)
+// under traces/ at the repository root.
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
+const traces = fileURLToPath(new URL("../../traces/", import.meta.url));
 const args = process.argv.slice(2);
 const lan = args.includes("--lan");
 const port = Number(args.find((a) => /^\d+$/.test(a)) ?? 8091);
@@ -26,6 +30,23 @@ const types = {
 };
 
 createServer(async (req, res) => {
+  if (req.method === "POST") {
+    const url = new URL(req.url ?? "/", "http://x");
+    if (url.pathname !== "/trace") {
+      res.writeHead(404).end();
+      return;
+    }
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    // A plain file name in traces/, nothing else.
+    const name = (url.searchParams.get("name") ?? "trace").replace(/[^\w.-]+/g, "_").replace(/^\.+/, "").replace(/(\.json)?$/, ".json");
+    await mkdir(traces, { recursive: true });
+    const file = join(traces, name);
+    await writeFile(file, Buffer.concat(chunks));
+    console.log(`trace saved: ${file}`);
+    res.writeHead(200, { "content-type": "text/plain" }).end(`traces/${name}`);
+    return;
+  }
   const path = normalize(decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname));
   const file = join(root, /[\\/]$/.test(path) ? path + "index.html" : path);
   if (!file.startsWith(root)) {

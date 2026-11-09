@@ -11,6 +11,7 @@ A glTF viewer built on `rswebgl-scene`:
 - **Antialiasing.** MSAA or TAA, with a Sharpen slider (RCAS).
 - **Variants.** Models with `KHR_materials_variants` (the shoe) list their variants to switch between.
 - **Context loss.** A button simulates losing the WebGL context; the scene restores itself.
+- **Profiling.** Records a trace to download or send to the computer (see below).
 
 ## Run
 
@@ -21,3 +22,20 @@ node examples/viewer/serve.mjs --lan    # also on this machine's LAN addresses, 
 ```
 
 The models and HDRIs are fetched from GitHub (KhronosGroup/glTF-Sample-Assets, mrdoob/three.js), so the device needs internet access.
+
+## Profiling a device
+
+The Profiling panel records a trace for a few seconds: the library's spans
+(`renderFrame` and its stages, GL passes, uploads, shader links), frame
+intervals, GPU progress by fences (works without timer queries, as on most
+phones), wasm memory, and the browser's long animation frames. The panel
+then shows frame-time percentiles; **Download the report** saves the JSON,
+**Send it to the computer** posts it to `serve.mjs`, which saves it under
+`traces/` at the repository root (the phone opens the viewer through
+`--lan`).
+
+Open a report in <https://ui.perfetto.dev>, or summarize its slowest frames:
+
+```bash
+node scripts/trace-summary.mjs traces/<file>.json
+```

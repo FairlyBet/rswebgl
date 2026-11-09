@@ -10,11 +10,13 @@ import init, {
   Context,
   ContextOptions,
   Scene,
+  Trace,
   Viewport,
   loadModel,
   setDracoDecoderPath,
   setKtx2TranscoderPath,
 } from "./pkg/rswebgl_scene.js";
+import { createProfiling } from "./profiling.js";
 
 const SAMPLES = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models";
 const glb = (/** @type {string} */ name) =>
@@ -75,7 +77,7 @@ const ENVS = [
   ["san_giuseppe_bridge_2k", "San Giuseppe bridge (2k)"],
 ];
 
-await init();
+const wasm = await init();
 // Decoders for compressed models (KTX2 textures, Draco meshes), fetched on
 // first use and run in workers: three.js' copy of the Basis Universal
 // transcoder, and Google's Draco decoder.
@@ -100,6 +102,29 @@ const scene = new Scene(ctx);
 if (matchMedia("(pointer: coarse)").matches) scene.setTransmissionResolution(0.5);
 // GPU time per pass, where the browser exposes timer queries.
 const gpuTiming = scene.setGpuProfiling(true);
+// The Profiling panel: traces to download or send to the serving computer.
+const profiling = createProfiling({
+  wasm,
+  canvas,
+  $,
+  describe: () => {
+    /** @type {Record<string, string>} */
+    const d = {
+      model: modelLabel,
+      modelUrl,
+      hdr: String(scene.isHdr()),
+      shading: scene.shadingModel(),
+      drawn: String(scene.drawn()),
+      drawCalls: String(scene.drawCalls()),
+    };
+    // Every setting in the panel, by its id.
+    for (const el of document.querySelectorAll("aside input[id], aside select[id]")) {
+      const input = /** @type {HTMLInputElement} */ (el);
+      d[`ui.${input.id}`] = input.type === "checkbox" ? String(input.checked) : input.value;
+    }
+    return d;
+  },
+});
 // For poking from the devtools console.
 Object.assign(globalThis, { viewer: { ctx, scene } });
 
@@ -116,6 +141,7 @@ function resize() {
     canvas.width = w;
     canvas.height = h;
     fb.setViewport(new Viewport(0, 0, w, h));
+    Trace.instant(`canvas ${w}x${h}`);
   }
 }
 addEventListener("resize", resize);
@@ -200,6 +226,8 @@ function zoom(/** @type {number} */ factor) {
 // --- models --------------------------------------------------------------------
 
 let root = 0;
+let modelLabel = "";
+let modelUrl = "";
 Object.assign(/** @type {any} */ (globalThis).viewer, { root: () => root });
 let loading = 0;
 async function load(/** @type {string} */ url, /** @type {string} */ label) {
@@ -212,8 +240,11 @@ async function load(/** @type {string} */ url, /** @type {string} */ label) {
       model.destroy(ctx); // a newer load won
       return;
     }
+    Trace.instant(`model: ${label}`);
     if (root) scene.despawn(root);
     root = scene.addModel(model);
+    modelLabel = label;
+    modelUrl = url;
     const [cx, cy, cz, r] = scene.modelBounds(root);
     orbit.target = [cx, cy, cz];
     orbit.radius = r || 1;
@@ -537,6 +568,8 @@ function gpuLine() {
 
 function frame(/** @type {number} */ now) {
   const dt = last < 0 ? 16.7 : Math.max(0, now - last);
+  Trace.begin("frame");
+  Trace.counter("rAF interval (ms)", dt);
   last = now;
   frameTimes.push(dt);
   if (frameTimes.length > 180) frameTimes.shift();
@@ -551,6 +584,7 @@ function frame(/** @type {number} */ now) {
 
   if (now - lastStats > 250) {
     lastStats = now;
+    Trace.begin("viewer.stats");
     const recent = frameTimes.slice(-60);
     const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
     const worst = Math.max(...recent);
@@ -575,7 +609,10 @@ function frame(/** @type {number} */ now) {
       g.fillStyle = t <= 17.5 ? "#6fd08c" : t <= 34 ? "#e8b85c" : "#e86c6c";
       g.fillRect(i, 36 - hgt, 1, hgt);
     });
+    Trace.end();
   }
+  profiling.frameEnd();
+  Trace.end();
   requestAnimationFrame(frame);
 }
 

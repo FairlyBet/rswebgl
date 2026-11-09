@@ -370,6 +370,18 @@
     </details>
 
     <details>
+      <summary>Profiling</summary>
+      <div class="body">
+        <div class="row"><span>Length</span><select id="trace-seconds"><option value="5">5 s</option><option value="10" selected>10 s</option><option value="30">30 s</option><option value="60">60 s</option></select><span></span></div>
+        <button id="trace-record">Record a trace</button>
+        <div class="note" id="trace-summary"></div>
+        <button id="trace-download" disabled>Download the report</button>
+        <button id="trace-send" disabled>Send it to the computer serving this page</button>
+        <div class="note">Open the report in ui.perfetto.dev. Keep interacting as usual while it records (spin, orbit).</div>
+      </div>
+    </details>
+
+    <details>
       <summary>Robustness</summary>
       <div class="body">
         <button id="lose">Simulate a WebGL context loss</button>

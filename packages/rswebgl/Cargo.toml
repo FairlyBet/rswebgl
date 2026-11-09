@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 wasm-bindgen-futures = "0.4"
 rswebgl-foundation = { path = "../rswebgl-foundation" }
 smallvec = { workspace = true }
+tracing = { workspace = true }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 web-sys = { workspace = true, features = [

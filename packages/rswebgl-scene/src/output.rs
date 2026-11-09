@@ -278,7 +278,11 @@ impl HdrOutput {
     /// share of the target (0.25…1, default 1): lower saves memory and the
     /// copy's time, blurring what shows through glass.
     pub fn set_transmission_scale(&mut self, scale: f32) {
-        let scale = if scale.is_finite() { scale.clamp(0.25, 1.0) } else { 1.0 };
+        let scale = if scale.is_finite() {
+            scale.clamp(0.25, 1.0)
+        } else {
+            1.0
+        };
         if scale != self.grab_scale {
             self.grab_scale = scale;
             self.size = (0, 0); // remade at the next prepare

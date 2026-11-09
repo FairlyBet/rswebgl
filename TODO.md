@@ -2,6 +2,53 @@
 
 Known limits and deferred work.
 
+## Planned
+
+In the order we mean to take them (TAAU, npm publishing and a gem shader are
+set aside for now).
+
+1. **Frame-time spikes on phones**: profile them (`rswebgl::trace`, the
+   viewer's Profiling panel) and fix what the traces show.
+2. **`EXT_texture_webp` / `EXT_texture_avif`**: not handled; gltf-transform
+   writes WebP often. The browser decodes both (`createImageBitmap`); the
+   texture's source moves to the extension's, as for `KHR_texture_basisu`.
+3. **Quantized vertex attributes on the GPU**: everything is dequantized to
+   f32 today. Upload `KHR_mesh_quantization` attributes as they are
+   (positions i16 / i8, normals and tangents i8 normalized, UVs u16
+   normalized; the dequantization is in the node matrix), and quantize
+   plain files ourselves (normals / tangents to i8, UVs to u16 or half,
+   morph deltas to half): about half the vertex memory. CPU-side users
+   (bounds, MikkTSpace) keep a temporary f32 copy.
+4. **`R11F_G11F_B10F`**: for the IBL cubes (half of RGBA16F; Filament does
+   it) and, if no pass needs its alpha, the HDR scene target (RGBA16F with
+   4× MSAA at 2560×1440 is ~118 MB).
+5. **Shadows**: directional and spot shadow maps (depth texture,
+   `sampler2DShadow` hardware PCF, Castaño's optimized PCF as in Filament /
+   Bevy, normal-offset bias, the shadow camera fitted to the scene bounds;
+   cascades for large scenes; point lights later). Then screen-space contact
+   shadows (a short march toward the light through the depth buffer; MSAA
+   needs a resolved depth). For environment-only scenes: GTAO (XeGTAO, as
+   Godot / Bevy) and a ground shadow (three.js' contact-shadows example).
+6. **Runtime texture compression**: glTF images that came uncompressed,
+   encoded on the GPU in fragment shaders (Godot's Betsy, MIT: BC1/BC4/BC5/
+   BC6H, ETC2), read back through a PBO and uploaded compressed — BC on
+   desktop, ETC2 / EAC on mobile, two-channel formats for normal maps.
+   2048² RGBA8 with mips is ~21 MB, BC1 / ETC2 ~2.8 MB. BC6H for the IBL
+   cubes on desktop.
+7. **Uniform uploads on mobile**: measure many `bufferSubData` runs against
+   one upload per frame with the profiler on a phone; then decide whether
+   materials move into one shared UBO (`bindBufferRange` per draw) instead
+   of plain uniforms.
+8. Later: bloom, LOD by meshoptimizer's simplifier, `KHR_animation_pointer`,
+   `KHR_node_visibility`, `KHR_materials_volume_scatter`, `ctx.gpuInfo()`.
+
+Texture arrays to cut texture switches: not planned in general. Layers
+share one size and format (glTF textures don't: resampling loses quality),
+and texture binds are cheap next to program switches and draw calls. They
+pay off for shadow cascades, or to merge draws of different materials into
+one instanced draw (a layer index per instance); look at `frameStats`'
+texture binds on real scenes first.
+
 ## Core (`packages/rswebgl`)
 
 ### Errors and GL limits
@@ -21,7 +68,9 @@ sub-image regions are checked against their level. Left:
 
 - Scattered writes upload as separate runs; whether many small
   `bufferSubData` runs beat one larger one on mobile drivers is unmeasured
-  (a gap threshold could merge runs a few chunks apart).
+  (a gap threshold could merge runs a few chunks apart). See "Planned" 7:
+  the scene itself has two blocks written once a frame, so it matters
+  only once materials live in UBOs.
 - Layout validation is size-only (`UNIFORM_BLOCK_DATA_SIZE` vs our std140
   size): same-size permutations and per-field offset errors slip through.
 - `bindBufferRange` (several blocks in one buffer) is wired

@@ -556,6 +556,13 @@ impl Scene {
     /// `ctx.defaultFramebuffer().setClearColor`). Returns the draws made.
     #[wasm_bindgen(js_name = renderFrame)]
     pub fn render_frame(&mut self, camera: Entity) -> usize {
+        let _span = tracing::info_span!("renderFrame").entered();
+        let drawn = self.render_frame_inner(camera);
+        rswebgl::trace::gpu_fence(&self.ctx);
+        drawn
+    }
+
+    fn render_frame_inner(&mut self, camera: Entity) -> usize {
         let fb = self.ctx.default_framebuffer();
         let (w, h) = (fb.width(), fb.height());
         let aspect = w.max(1) as f32 / h.max(1) as f32;
@@ -569,7 +576,10 @@ impl Scene {
         let mut late = std::mem::replace(&mut self.late_pass, Pass::to_default());
         pass.clear_draws();
         late.clear_draws();
-        let hdr = self.prepare_output(&mut pass, &mut late, w, h);
+        let hdr = {
+            let _s = tracing::info_span!("scene.prepareOutput").entered();
+            self.prepare_output(&mut pass, &mut late, w, h)
+        };
         // TAA: this frame's subpixel offset (Bevy's Halton (2, 3) − 0.5
         // sequence, in pixels) and a sharper LOD for the maps.
         let taa = hdr && self.hdr.as_ref().is_some_and(|o| o.taa());
@@ -610,9 +620,12 @@ impl Scene {
                 Some(&mut late),
                 peeling.then_some(&mut glass),
             );
-            pass.sort();
-            self.time(&mut pass, "opaque");
-            self.ctx.render(&pass);
+            {
+                let _s = tracing::info_span!("scene.opaque").entered();
+                pass.sort();
+                self.time(&mut pass, "opaque");
+                self.ctx.render(&pass);
+            }
             if !peeling && let Some(out) = &mut self.hdr {
                 out.release_peel(&self.ctx);
             }
@@ -621,23 +634,31 @@ impl Scene {
                 && (glass.draw_count() > 0 || late.draw_count() > 0)
                 && let Some(out) = &mut self.hdr
             {
+                let _s = tracing::info_span!("scene.copyOpaque").entered();
                 out.keep_opaque_color(&self.ctx);
             }
             if glass.draw_count() > 0 {
+                let _s = tracing::info_span!("scene.peelGlass").entered();
                 self.peel_glass(&mut glass, &mut late);
             } else if self.stats.transmissive > 0
                 && let Some(out) = &self.hdr
             {
+                let _s = tracing::info_span!("scene.grab").entered();
                 out.grab(&self.ctx);
             }
             self.glass_pass = glass;
-            late.sort();
-            self.time(&mut late, "late");
-            self.ctx.render(&late);
+            {
+                let _s = tracing::info_span!("scene.late").entered();
+                late.sort();
+                self.time(&mut late, "late");
+                self.ctx.render(&late);
+            }
             if taa {
+                let _s = tracing::info_span!("scene.taa").entered();
                 self.resolve_taa(camera);
             }
             if let Some(out) = &self.hdr {
+                let _s = tracing::info_span!("scene.present").entered();
                 out.present(
                     &self.ctx,
                     self.renderer.exposure(),
@@ -651,6 +672,7 @@ impl Scene {
         } else {
             self.renderer.set_scene_color(&self.ctx, None);
             let drawn = self.render(camera, &mut pass);
+            let _s = tracing::info_span!("scene.opaque").entered();
             pass.sort();
             self.time(&mut pass, "opaque");
             self.ctx.render(&pass);
@@ -1036,10 +1058,16 @@ impl Scene {
         if !self.sync_context() {
             return 0; // lost: nothing to draw with
         }
-        self.apply_reloads();
-        self.apply_environment();
-        self.apply_pending_variants();
-        self.transforms.update(&mut self.world);
+        {
+            let _s = tracing::info_span!("scene.apply").entered();
+            self.apply_reloads();
+            self.apply_environment();
+            self.apply_pending_variants();
+        }
+        {
+            let _s = tracing::info_span!("scene.transforms").entered();
+            self.transforms.update(&mut self.world);
+        }
         self.stats = self
             .renderer
             .render_split(&self.world, &self.ctx, camera, pass, late, glass);

@@ -31,3 +31,6 @@ examples/*/pkg
 examples/npm-consumer/node_modules
 examples/npm-consumer/out
 examples/npm-consumer/package-lock.json
+
+# Profiling reports the viewer sends (examples/viewer/serve.mjs)
+traces/

@@ -100,6 +100,7 @@ impl Scene {
     /// call once a frame with the time since the last, before `renderFrame`.
     #[wasm_bindgen(js_name = advanceAnimations)]
     pub fn advance_animations(&mut self, seconds: f32) {
+        let _span = tracing::info_span!("scene.advanceAnimations").entered();
         advance(&mut self.world, seconds);
     }
 }

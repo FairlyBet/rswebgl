@@ -155,7 +155,10 @@ impl PbrKey {
             (TRANSMISSION, transmissive),
             (VOLUME, volume),
             (CLEARCOAT, material.clearcoat() > 0.0),
-            (DISPERSION, transmissive && volume && material.dispersion() > 0.0),
+            (
+                DISPERSION,
+                transmissive && volume && material.dispersion() > 0.0,
+            ),
             (DIFFUSE_ROUGHNESS, material.diffuse_roughness() > 0.0),
             (SHEEN, material.sheen_color().iter().any(|&c| c > 0.0)),
             (IRIDESCENCE, material.iridescence() > 0.0),

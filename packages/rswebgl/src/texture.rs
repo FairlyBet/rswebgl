@@ -981,6 +981,12 @@ impl Context {
         format: &TextureFormat,
         unpack: &PixelUnpack,
     ) {
+        let _span = tracing::info_span!(
+            "gl.texSubImage2D(bitmap)",
+            w = bitmap.width(),
+            h = bitmap.height()
+        )
+        .entered();
         self.with_texture(tex, "texture_sub_image_2d_from_bitmap", |gl, t, _| {
             unpack.apply(gl);
             if let Err(e) = gl.tex_sub_image_2d_with_u32_and_u32_and_image_bitmap(
@@ -1372,6 +1378,7 @@ impl Context {
             console::error(&format!("[rswebgl] texture_generate_mipmaps: {problem}"));
             return;
         }
+        let _span = tracing::info_span!("gl.generateMipmap").entered();
         self.with_texture(tex, "texture_generate_mipmaps", |gl, t, _| {
             gl.generate_mipmap(t)
         });
