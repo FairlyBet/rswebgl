@@ -62,6 +62,22 @@ pub(crate) fn build_texture(
     // browser image's natural orientation and WebGL's default unpack — no flip.
     let flip_y = false;
 
+    // KTX2 (KHR_texture_basisu): transcoded in a worker, not decoded by the
+    // browser.
+    if is_ktx2(&tex.source()) {
+        load_ktx2(
+            ctx,
+            out,
+            &tex.source(),
+            buffers,
+            base,
+            srgb,
+            generate_mipmaps,
+            on_load,
+        );
+        return Ok(out);
+    }
+
     match tex.source().source() {
         gltf::image::Source::Uri { uri, mime_type } => {
             if let Some(decoded) = decode_data_uri(uri) {
@@ -126,6 +142,81 @@ pub(crate) fn build_texture(
     }
 
     Ok(out)
+}
+
+// Whether an image is a KTX2 file (by its type, or its URI's extension).
+fn is_ktx2(image: &gltf::Image) -> bool {
+    match image.source() {
+        gltf::image::Source::View { mime_type, .. } => mime_type == "image/ktx2",
+        gltf::image::Source::Uri { uri, mime_type } => {
+            mime_type == Some("image/ktx2")
+                || data_uri_mime(uri).is_some_and(|m| m == "image/ktx2")
+                || uri
+                    .split(['?', '#'])
+                    .next()
+                    .is_some_and(|p| p.ends_with(".ktx2"))
+        }
+    }
+}
+
+// A KTX2 image's bytes (fetched first if external) to `ktx2::load`.
+#[allow(clippy::too_many_arguments)]
+fn load_ktx2(
+    ctx: &Context,
+    out: TextureId,
+    image: &gltf::Image,
+    buffers: &[Vec<u8>],
+    base: &str,
+    srgb: bool,
+    mips: bool,
+    on_load: js_sys::Function,
+) {
+    if !crate::ktx2::has_transcoder() {
+        console::error(
+            "[rswebgl-gltf] a KTX2 texture (KHR_texture_basisu) without a fallback image \
+             needs the transcoder: setKtx2TranscoderPath",
+        );
+        return failed_later(on_load);
+    }
+    let bytes = match image.source() {
+        gltf::image::Source::View { view, .. } => {
+            let start = view.offset();
+            buffers
+                .get(view.buffer().index())
+                .and_then(|b| b.get(start..start + view.length()))
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| "image bufferView out of range".to_string())
+        }
+        gltf::image::Source::Uri { uri, .. } => match decode_data_uri(uri) {
+            Some(decoded) => decoded.map_err(|e| format!("image data URI: {e:?}")),
+            None => {
+                // External: fetched, then transcoded.
+                let ctx = ctx.clone();
+                let url = resolve_url(base, uri);
+                wasm_bindgen_futures::spawn_local(async move {
+                    let fetched = match url {
+                        Ok(url) => crate::fetch::fetch_bytes(&url).await,
+                        Err(e) => Err(e),
+                    };
+                    match fetched {
+                        Ok(bytes) => crate::ktx2::load(&ctx, out, bytes, srgb, mips, on_load),
+                        Err(e) => {
+                            console::error(&format!("[rswebgl-gltf] KTX2 image: {e:?}"));
+                            failed_later(on_load);
+                        }
+                    }
+                });
+                return;
+            }
+        },
+    };
+    match bytes {
+        Ok(bytes) => crate::ktx2::load(ctx, out, bytes, srgb, mips, on_load),
+        Err(e) => {
+            console::error(&format!("[rswebgl-gltf] KTX2 image: {e}"));
+            failed_later(on_load);
+        }
+    }
 }
 
 /// Texture indices used in an sRGB role (base color, emissive, specular

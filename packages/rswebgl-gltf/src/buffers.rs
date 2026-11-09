@@ -5,26 +5,40 @@
 //! by URI. The whole load is async, so external buffers are fetched on demand.
 
 use base64::Engine;
-use gltf::buffer::Source;
 use wasm_bindgen::prelude::*;
 
 use crate::fetch::{fetch_bytes, resolve_url};
 
-/// One `Vec<u8>` per `document.buffers()`, in index order.
+/// One `Vec<u8>` per buffer of the glTF `json`, in index order. Read from
+/// the JSON, before the document is validated (Draco and meshopt files are
+/// only valid once decoded).
 pub async fn resolve_buffers(
-    doc: &gltf::Document,
+    json: &serde_json::Value,
     glb_blob: Option<Vec<u8>>,
     base: &str,
 ) -> Result<Vec<Vec<u8>>, JsValue> {
     let mut blob = glb_blob;
-    let mut out = Vec::with_capacity(doc.buffers().count());
-    for buffer in doc.buffers() {
-        let data = match buffer.source() {
-            // The GLB BIN chunk backs exactly the first buffer (index 0).
-            Source::Bin => blob.take().ok_or_else(|| {
+    let list = json["buffers"].as_array().map_or(&[][..], Vec::as_slice);
+    let mut out = Vec::with_capacity(list.len());
+    for buffer in list {
+        let length = buffer["byteLength"].as_u64().unwrap_or(0) as usize;
+        // A meshopt fallback buffer is what the compressed bufferViews
+        // decode into: zeroed, never fetched (its URI, if any, is for
+        // loaders without the extension).
+        let fallback = ["EXT_meshopt_compression", "KHR_meshopt_compression"]
+            .iter()
+            .filter_map(|e| buffer.get("extensions")?.get(e))
+            .any(|v| v.get("fallback").and_then(serde_json::Value::as_bool) == Some(true));
+        if fallback {
+            out.push(vec![0; length]);
+            continue;
+        }
+        let data = match buffer["uri"].as_str() {
+            // No URI: the GLB BIN chunk (the first buffer).
+            None => blob.take().ok_or_else(|| {
                 JsValue::from_str("glTF references a GLB buffer but none present")
             })?,
-            Source::Uri(uri) => match decode_data_uri(uri) {
+            Some(uri) => match decode_data_uri(uri) {
                 Some(bytes) => bytes?,
                 None => {
                     let abs = resolve_url(base, uri)?;

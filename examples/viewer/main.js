@@ -6,10 +6,19 @@
 //
 // Build the bundle first (see README.md), then serve this folder.
 
-import init, { Context, ContextOptions, Scene, Viewport, loadModel } from "./pkg/rswebgl_scene.js";
+import init, {
+  Context,
+  ContextOptions,
+  Scene,
+  Viewport,
+  loadModel,
+  setDracoDecoderPath,
+  setKtx2TranscoderPath,
+} from "./pkg/rswebgl_scene.js";
 
 const SAMPLES = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models";
-const glb = (/** @type {string} */ name) => `${SAMPLES}/${name}/glTF-Binary/${name}.glb`;
+const glb = (/** @type {string} */ name) =>
+  name.includes("/") ? `${SAMPLES}/${name}` : `${SAMPLES}/${name}/glTF-Binary/${name}.glb`;
 const MODELS = [
   ["DamagedHelmet", "Damaged helmet — base PBR, all five maps"],
   ["SheenChair", "Sheen chair — sheen / fuzz, texture transform"],
@@ -48,6 +57,12 @@ const MODELS = [
   ["MorphStressTest", "Morph stress test"],
   ["InterpolationTest", "Interpolation test — step, linear, cubic"],
   ["ABeautifulGame", "A beautiful game — chess set (large)"],
+  ["Avocado/glTF-Draco/Avocado.gltf", "Compressed: Avocado — Draco"],
+  ["BrainStem/glTF-Meshopt-EXT/BrainStem.gltf", "Compressed: brain stem — meshopt (EXT)"],
+  ["DragonAttenuation/glTF-Meshopt/DragonAttenuation.gltf", "Compressed: dragon — meshopt (KHR)"],
+  ["MeshoptCubeTest/glTF-Meshopt/MeshoptCubeTest.gltf", "Compressed: meshopt cube test"],
+  ["FlightHelmet/glTF-KTX-BasisU/FlightHelmet.gltf", "Compressed: flight helmet — KTX2"],
+  ["CarConcept/glTF-KTX-BasisU-Draco/CarConcept.gltf", "Compressed: car concept — KTX2 + Draco"],
 ];
 const HDRS = "https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/textures/equirectangular";
 const ENVS = [
@@ -61,6 +76,11 @@ const ENVS = [
 ];
 
 await init();
+// Decoders for compressed models (KTX2 textures, Draco meshes), fetched on
+// first use and run in workers: three.js' copy of the Basis Universal
+// transcoder, and Google's Draco decoder.
+setKtx2TranscoderPath("https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/basis/");
+setDracoDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.7/");
 
 const $ = (/** @type {string} */ id) => /** @type {any} */ (document.getElementById(id));
 const canvas = /** @type {HTMLCanvasElement} */ ($("c"));

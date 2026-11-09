@@ -130,11 +130,23 @@ impl GeometryCache {
             return None;
         };
         let vertex_count = pos_accessor.count() as i32;
-        let (aabb_min, aabb_max) = accessor_bounds(&pos_accessor).unwrap_or_else(|| {
+        // Normalized integer positions (KHR_mesh_quantization) have their min
+        // and max in integer units: computed from the data then.
+        let quantized =
+            pos_accessor.normalized() && pos_accessor.data_type() != gltf::accessor::DataType::F32;
+        let bounds = if quantized {
+            None
+        } else {
+            accessor_bounds(&pos_accessor)
+        };
+        let (aabb_min, aabb_max) = bounds.unwrap_or_else(|| {
             // Bounds are required by the spec for POSITION; compute if absent.
             let mut min = [f32::INFINITY; 3];
             let mut max = [f32::NEG_INFINITY; 3];
-            for p in reader.read_positions().into_iter().flatten() {
+            for p in crate::accessor::read_vecs::<3>(&pos_accessor, buffers)
+                .into_iter()
+                .flatten()
+            {
                 for i in 0..3 {
                     min[i] = min[i].min(p[i]);
                     max[i] = max[i].max(p[i]);
@@ -165,7 +177,7 @@ impl GeometryCache {
             let Some(accessor) = primitive.get(&semantic) else {
                 continue;
             };
-            let Some(buf) = self.vertex_buffer(ctx, &reader, &accessor, &semantic) else {
+            let Some(buf) = self.vertex_buffer(ctx, buffers, &reader, &accessor, &semantic) else {
                 continue;
             };
             ctx.vertex_array_attr(vao, loc, buf, &VertexAttr::float(size));
@@ -175,15 +187,15 @@ impl GeometryCache {
         let joints = primitive.get(&gltf::Semantic::Joints(0));
         let weights = primitive.get(&gltf::Semantic::Weights(0));
         if let (Some(j), Some(w)) = (joints, weights) {
-            let j = self.vertex_buffer(ctx, &reader, &j, &gltf::Semantic::Joints(0));
-            let w = self.vertex_buffer(ctx, &reader, &w, &gltf::Semantic::Weights(0));
+            let j = self.vertex_buffer(ctx, buffers, &reader, &j, &gltf::Semantic::Joints(0));
+            let w = self.vertex_buffer(ctx, buffers, &reader, &w, &gltf::Semantic::Weights(0));
             if let (Some(j), Some(w)) = (j, w) {
                 ctx.vertex_array_attr(vao, 6, j, &VertexAttr::float(4));
                 ctx.vertex_array_attr(vao, 7, w, &VertexAttr::float(4));
                 attributes |= ATTR_SKIN;
             }
         }
-        let morph = morph_texture(ctx, &reader, vertex_count as usize, attributes);
+        let morph = morph_texture(ctx, primitive, buffers, vertex_count as usize, attributes);
         if let Some((_, kinds)) = &morph {
             attributes |= kinds;
         }
@@ -219,6 +231,7 @@ impl GeometryCache {
     fn vertex_buffer<'a, 's, F>(
         &mut self,
         ctx: &Context,
+        buffers: &[Vec<u8>],
         reader: &gltf::mesh::Reader<'a, 's, F>,
         accessor: &gltf::Accessor,
         semantic: &gltf::Semantic,
@@ -230,10 +243,11 @@ impl GeometryCache {
             return Some(b);
         }
         let data: Vec<f32> = match semantic {
-            gltf::Semantic::Positions => flatten(reader.read_positions()?),
-            gltf::Semantic::Normals => flatten(reader.read_normals()?),
-            gltf::Semantic::TexCoords(n) => flatten(reader.read_tex_coords(*n)?.into_f32()),
-            gltf::Semantic::Tangents => flatten(reader.read_tangents()?),
+            // Any component type (KHR_mesh_quantization), dequantized.
+            gltf::Semantic::Positions
+            | gltf::Semantic::Normals
+            | gltf::Semantic::TexCoords(_)
+            | gltf::Semantic::Tangents => crate::accessor::read_floats(accessor, buffers)?,
             gltf::Semantic::Colors(n) => flatten(reader.read_colors(*n)?.into_rgba_f32()),
             // Indices as floats: exact up to 2^24, cast back in the shader.
             gltf::Semantic::Joints(n) => {
@@ -342,24 +356,19 @@ type TargetDeltas = (
 // the `ATTR_MORPH_*` kinds it holds. Normal and tangent deltas only where the
 // primitive has normals and tangents (glTF 2.0 §3.7.2.2). None without
 // targets, or when they don't fit a texture.
-fn morph_texture<'a, 's, F>(
+fn morph_texture(
     ctx: &Context,
-    reader: &gltf::mesh::Reader<'a, 's, F>,
+    primitive: &gltf::Primitive,
+    buffers: &[Vec<u8>],
     vertices: usize,
     attributes: u32,
-) -> Option<(MorphGpu, u32)>
-where
-    F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>,
-{
-    let targets: Vec<TargetDeltas> = reader
-        .read_morph_targets()
-        .map(|(p, n, t)| {
-            (
-                p.map(|i| i.collect()),
-                n.map(|i| i.collect()),
-                t.map(|i| i.collect()),
-            )
-        })
+) -> Option<(MorphGpu, u32)> {
+    // Deltas of any component type (KHR_mesh_quantization), dequantized.
+    let read =
+        |a: Option<gltf::Accessor>| a.and_then(|a| crate::accessor::read_vecs::<3>(&a, buffers));
+    let targets: Vec<TargetDeltas> = primitive
+        .morph_targets()
+        .map(|t| (read(t.positions()), read(t.normals()), read(t.tangents())))
         .collect();
     if targets.is_empty() {
         return None;

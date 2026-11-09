@@ -22,16 +22,22 @@
 //! }
 //! ```
 
+mod accessor;
 mod animation;
 mod buffers;
+mod draco;
 mod fetch;
 mod geometry;
+mod ktx2;
 mod material;
+mod meshopt;
 mod pack;
 mod scene;
 mod textures;
 
 pub use animation::{Animation, AnimationChannel, AnimationPath, Interpolation};
+pub use draco::set_draco_decoder_path;
+pub use ktx2::set_ktx2_transcoder_path;
 pub use material::{
     AlphaMode, EXTERNAL_TEXTURE, MAP_COUNT, MAP_NAMES, MAP_SLOTS, MapSlot, Material, PROPERTIES,
     Property, UV_IDENTITY, default_material, uv_matrix,
@@ -62,6 +68,11 @@ const HANDLED_EXTENSIONS: &[&str] = &[
     "KHR_materials_iridescence",
     "KHR_materials_anisotropy",
     "KHR_materials_dispersion",
+    "EXT_meshopt_compression",
+    "KHR_meshopt_compression",
+    "KHR_texture_basisu",
+    "KHR_draco_mesh_compression",
+    "KHR_mesh_quantization",
 ];
 
 // Optional vertex attributes a primitive can have (`DrawItem::attributes`).
@@ -522,15 +533,22 @@ pub fn load_model_js(ctx: &Context, url: String) -> js_sys::Promise {
 pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
     // The file itself goes as soon as it's parsed: a GLB's binary chunk is
     // copied out, and holding both would double the peak memory.
-    let (document, blob) = {
+    let (mut json, blob) = {
         let bytes = fetch::fetch_bytes(url).await.map_err(js_err)?;
-        parse(&bytes)?
+        split(&bytes)?
     };
+    patch_basisu_sources(&mut json);
 
     let base = fetch::absolute_base(url).map_err(js_err)?;
-    let buffers = buffers::resolve_buffers(&document, blob, &base)
+    let mut buffers = buffers::resolve_buffers(&json, blob, &base)
         .await
         .map_err(js_err)?;
+    // Compressed geometry, decoded in place (meshopt) or into a buffer of
+    // its own the accessors are pointed at (Draco).
+    // (On the JSON: such a file is only a valid document once decoded.)
+    meshopt::decode_views(&json, &mut buffers)?;
+    draco::decode(&mut json, &mut buffers).await?;
+    let document = document(&json)?;
 
     // Assemble textures, packing separate occlusion + metallic-roughness maps
     // into one ORM texture where safe; `remap` rewrites material texture indices
@@ -603,22 +621,50 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
     })
 }
 
-// A .gltf / .glb file → the validated document and the GLB binary chunk.
-// Extensions we handle are dropped from `extensionsRequired` before
-// validation, which would otherwise reject them as unsupported.
-fn parse(bytes: &[u8]) -> Result<(gltf::Document, Option<Vec<u8>>), Error> {
+// A .gltf / .glb file → its JSON (patched before validation) and the GLB
+// binary chunk.
+fn split(bytes: &[u8]) -> Result<(serde_json::Value, Option<Vec<u8>>), Error> {
     let (json, blob) = if bytes.starts_with(b"glTF") {
         let glb = gltf::Glb::from_slice(bytes).map_err(|e| format!("GLB parse failed: {e}"))?;
-        (glb.json.into_owned(), glb.bin.map(|b| b.into_owned()))
+        let json = serde_json::from_slice(&glb.json);
+        (json, glb.bin.map(|b| b.into_owned()))
     } else {
-        (bytes.to_vec(), None)
+        (serde_json::from_slice(bytes), None)
     };
-    let mut root =
-        gltf::json::Root::from_slice(&json).map_err(|e| format!("glTF parse failed: {e}"))?;
+    let json = json.map_err(|e| format!("glTF parse failed: {e}"))?;
+    Ok((json, blob))
+}
+
+// The validated document. Extensions we handle are dropped from
+// `extensionsRequired` first, which would otherwise reject them as
+// unsupported.
+fn document(json: &serde_json::Value) -> Result<gltf::Document, Error> {
+    let mut root: gltf::json::Root =
+        serde_json::from_value(json.clone()).map_err(|e| format!("glTF parse failed: {e}"))?;
     root.extensions_required
         .retain(|e| !HANDLED_EXTENSIONS.contains(&e.as_str()));
-    let document = gltf::Document::from_json(root).map_err(|e| format!("glTF invalid: {e}"))?;
-    Ok((document, blob))
+    gltf::Document::from_json(root).map_err(|e| format!("glTF invalid: {e}").into())
+}
+
+// KHR_texture_basisu: with a transcoder, a texture's source becomes its
+// KTX2 image (textures.rs knows it by its type); without, it keeps its
+// PNG/JPEG fallback — or, with none (no `source`, which the gltf crate
+// requires), gets the KTX2 image anyway, to fail visibly at load.
+fn patch_basisu_sources(json: &mut serde_json::Value) {
+    let prefer = ktx2::has_transcoder();
+    let Some(textures) = json.get_mut("textures").and_then(|t| t.as_array_mut()) else {
+        return;
+    };
+    for t in textures {
+        let ext = t.pointer("/extensions/KHR_texture_basisu/source").cloned();
+        if let (Some(source), Some(obj)) = (ext, t.as_object_mut()) {
+            if prefer {
+                obj.insert("source".into(), source);
+            } else {
+                obj.entry("source").or_insert(source);
+            }
+        }
+    }
 }
 
 // Every skin: its joints and inverse bind matrices (identity where the file
@@ -746,8 +792,12 @@ mod tests {
             "KHR_lights_punctual",
         ];
         for name in HANDLED_EXTENSIONS.iter().chain(&crate_parsed) {
-            assert!(parse(doc(name).as_bytes()).is_ok(), "{name}");
+            assert!(
+                document(&split(doc(name).as_bytes()).unwrap().0).is_ok(),
+                "{name}"
+            );
         }
-        assert!(parse(doc("KHR_draco_mesh_compression").as_bytes()).is_err());
+        let unknown = split(doc("EXT_unknown_extension").as_bytes()).unwrap().0;
+        assert!(document(&unknown).is_err());
     }
 }

@@ -176,7 +176,19 @@ texture) into VAOs/textures/draw-list with spec-correct render state. Deferred:
 - **UV sets** — TEXCOORD_0 and _1 are read (locations 2 and 5); _2+ aren't.
   `KHR_texture_transform` isn't applied. Extension textures (clearcoat, sheen,
   transmission, …) aren't read yet (E5c).
-- **KTX2/Basis, Draco, meshopt** compression — needs decoders; not wired.
+- **Compression.** `EXT_meshopt_compression` / `KHR_meshopt_compression`
+  (bitstream v0 and v1, all four filters) decoded in Rust (`meshopt.rs`,
+  meshoptimizer's port), on the main thread (fast: it's a memcpy-class
+  codec). `KHR_texture_basisu` (KTX2, ETC1S / UASTC; not HDR) and
+  `KHR_draco_mesh_compression` decode in worker pools (`decoders.js`) with
+  the transcoder / decoder the app points at (`setKtx2TranscoderPath`,
+  `setDracoDecoderPath`, three.js' conventions); KTX2 picks ASTC → BC7 →
+  ETC2 → BC1/3 → RGBA8 as three.js does, sRGB formats for color maps.
+  `KHR_mesh_quantization` attributes and morph deltas are dequantized on
+  load (`accessor.rs`; uploads stay f32). Not covered by automated tests
+  beyond meshoptimizer's vectors (the decoders are fetched from CDNs);
+  checked with the Khronos samples in the viewer. A file's KTX2 image is
+  used only when a transcoder is set, else its PNG/JPEG fallback.
 - **Sparse accessors** — read through the `gltf` crate (with or without a
   base view), tested by reading the uploaded buffer back.
 - **Materials → shaders** live in `rswebgl-scene` (`PbrShaders`, E5a): the

@@ -291,6 +291,7 @@ dependencies = [
  "gltf",
  "js-sys",
  "rswebgl",
+ "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

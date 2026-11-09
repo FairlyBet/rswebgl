@@ -13,6 +13,9 @@ wasm-bindgen-futures = "0.4"
 js-sys = { workspace = true }
 glam = { workspace = true }
 base64 = "0.22"
+# The JSON is patched before the gltf crate validates it (KHR_texture_basisu
+# sources, KHR_draco_mesh_compression accessors); extension values are read.
+serde_json = "1"
 
 # No `import`/`image` default features: those pull `std::fs` and the heavy
 # `image` crate. We resolve buffers/images ourselves (async fetch + the browser
