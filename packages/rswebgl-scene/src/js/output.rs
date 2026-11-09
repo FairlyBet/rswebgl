@@ -108,26 +108,6 @@ impl Scene {
     pub fn sharpening(&self) -> f32 {
         self.sharpness
     }
-
-    /// TAA upscaling: the scene renders at `scale` (0.25–1, default 1) of
-    /// the canvas's size and TAA's resolve reconstructs the full size from
-    /// the jittered frames (more jitter phases and a sharper texture LOD
-    /// as FSR2 does). 0.5–0.75 cuts the shading cost to 25–55% for a
-    /// little softness in motion; pair it with `setSharpening`. Only with
-    /// `setTaa(true)`; without TAA the scene renders at the canvas's size.
-    #[wasm_bindgen(js_name = setRenderScale)]
-    pub fn set_render_scale(&mut self, scale: f32) {
-        self.render_scale = if scale.is_finite() {
-            scale.clamp(0.25, 1.0)
-        } else {
-            1.0
-        };
-    }
-
-    #[wasm_bindgen(js_name = renderScale)]
-    pub fn render_scale(&self) -> f32 {
-        self.render_scale
-    }
 }
 
 impl Scene {
@@ -153,7 +133,6 @@ impl Scene {
             }
         }
         if let Some(out) = &mut self.hdr {
-            out.set_render_scale(self.render_scale);
             match out.prepare_split(&self.ctx, w, h, pass, false) {
                 Ok(()) => {
                     out.prepare_late(late);

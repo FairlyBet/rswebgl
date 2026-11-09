@@ -24,11 +24,7 @@
 //   elopezr's "Temporal AA and the quest for the Holy Trail"): where the
 //   motion differs from what the history's pixel moved by last frame, the
 //   history belongs to another surface (just uncovered), and counts for
-//   less. Each resolve keeps its motion per pixel for the next;
-// - upscaling (TAAU): this frame may be smaller than the history; each
-//   pixel then reconstructs it from the 3×3 input samples nearest its
-//   (jittered) position and takes as much of it as the nearest sample
-//   is near (Karis 2014 / Unreal's TAAU weighting).
+//   less. Each resolve keeps its motion per pixel for the next.
 // Needs nothing from the scene prelude.
 
 precision highp float;
@@ -93,6 +89,11 @@ vec3 sample_history(vec2 uv) {
     return tonemap(textureLod(u_history, uv, 0.0).rgb);
 }
 
+vec3 sample_current(ivec2 p) {
+    ivec2 size = textureSize(u_current, 0);
+    return rgb_to_ycocg(tonemap(texelFetch(u_current, clamp(p, ivec2(0), size - 1), 0).rgb));
+}
+
 float depth_at(vec2 uv) {
     return textureLod(u_depth, uv, 0.0).r;
 }
@@ -125,24 +126,13 @@ vec3 history_catmull_rom(vec2 uv, vec2 size) {
 }
 
 void main() {
-    // This frame (and its depth, velocity) may be smaller than the output
-    // (TAAU: the history is the output's size).
-    vec2 in_size = vec2(textureSize(u_current, 0));
-    vec2 out_size = vec2(textureSize(u_history, 0));
-    vec2 texel = 1.0 / in_size;
-    vec2 uv = gl_FragCoord.xy / out_size;
+    vec2 size = vec2(textureSize(u_current, 0));
+    vec2 texel = 1.0 / size;
+    vec2 uv = gl_FragCoord.xy * texel;
     ivec2 px = ivec2(gl_FragCoord.xy);
-    bool upscale = in_size != out_size;
-    // The input texel whose (jittered) sample lies nearest this pixel:
-    // input texel q shows the unjittered point q + 0.5 − jitter.
-    vec2 jitter_px = u_jitter * 0.5 * in_size;
-    vec2 p = uv * in_size;
-    ivec2 ip = upscale ? ivec2(floor(p + jitter_px)) : px;
-    ip = clamp(ip, ivec2(0), ivec2(in_size) - 1);
-    vec4 original = texelFetch(u_current, ip, 0);
+    vec4 original = texelFetch(u_current, px, 0);
     if (u_taa.x > 0.5) {
-        // Upscaling, a start to refine (see the running average below).
-        frag_color = vec4(original.rgb, upscale ? 1.0 : 1.0 / MIN_HISTORY_BLEND_RATE);
+        frag_color = vec4(original.rgb, 1.0 / MIN_HISTORY_BLEND_RATE);
         frag_motion = vec4(0.0);
         return;
     }
@@ -169,7 +159,7 @@ void main() {
     // jitter, was last frame).
     vec2 motion = vec2(1000.0);
     if (u_taa.z > 0.5) {
-        ivec2 at = clamp(ivec2(closest_uv * in_size), ivec2(0), ivec2(in_size) - 1);
+        ivec2 at = clamp(ivec2(closest_uv * size), ivec2(0), ivec2(size) - 1);
         motion = texelFetch(u_velocity, at, 0).xy;
     }
     if (motion.x > 100.0) {
@@ -180,91 +170,44 @@ void main() {
     }
 
     vec2 history_uv = uv - motion;
-    vec3 history = history_catmull_rom(history_uv, out_size);
+    vec3 history = history_catmull_rom(history_uv, size);
 
-    // The 3×3 input neighborhood: its spread in YCoCg clips the history
-    // (Salvi 2016). Upscaling, it also reconstructs this frame at the
-    // pixel — each sample weighted by its distance, in output pixels,
-    // to the pixel (a Gaussian as Karis' TAA / Unreal's TAAU weight their
-    // samples, here exp(−6 d²): as wide as a pixel, σ ≈ 1/√12, so the
-    // result is as sharp as TAA at full size; their exp(−2.29 d²)
-    // blurred edges by about a pixel) — and how near the nearest sample
-    // came says how much of this frame to take. Its box then weights the
-    // samples too, by their distance in input pixels (FSR2's rectification box,
-    // exp(−2.3 d²)): the 3×3 input texels span 6×6 pixels at half size,
-    // and an edge in them would let a wrong history through.
+    // Clipped to the 3×3 neighborhood's spread in YCoCg (Salvi 2016).
     vec3 m1 = vec3(0.0);
     vec3 m2 = vec3(0.0);
-    float box = 0.0;
-    vec3 sum = vec3(0.0);
-    float weights = 0.0;
-    float nearest = 0.0;
-    ivec2 last = ivec2(in_size) - 1;
     for (int y = -1; y <= 1; y++) {
         for (int x = -1; x <= 1; x++) {
-            ivec2 q = ip + ivec2(x, y);
-            // Past the frame's edge: no sample there.
-            if (any(lessThan(q, ivec2(0))) || any(greaterThan(q, last))) continue;
-            vec3 c = (x == 0 && y == 0) ? current : tonemap(texelFetch(u_current, q, 0).rgb);
-            vec3 s = rgb_to_ycocg(c);
-            vec2 d_in = p - (vec2(q) + 0.5 - jitter_px);
-            float b = upscale ? exp(-2.3 * dot(d_in, d_in)) : 1.0;
-            m1 += s * b;
-            m2 += s * s * b;
-            box += b;
-            vec2 d = d_in * out_size / in_size;
-            float w = exp(-6.0 * dot(d, d));
-            sum += c * w;
-            weights += w;
-            nearest = max(nearest, w);
+            vec3 s = (x == 0 && y == 0) ? rgb_to_ycocg(current) : sample_current(px + ivec2(x, y));
+            m1 += s;
+            m2 += s * s;
         }
     }
-    float sample_weight = 1.0;
-    if (upscale) {
-        current = sum / max(weights, 1e-5);
-        sample_weight = nearest;
-    }
-    vec3 mean = m1 / box;
-    vec3 sd = sqrt(max(m2 / box - mean * mean, vec3(0.0)));
-    vec3 clipped = ycocg_to_rgb(clip_towards_aabb_center(rgb_to_ycocg(history), mean - sd, mean + sd));
-    // Upscaling, a box from samples far from this pixel says little about
-    // it: clipped as much as the nearest sample is near (as FSR2 eases its
-    // rectification by its confidence in the history).
-    history = mix(history, clipped, sample_weight);
+    vec3 mean = m1 / 9.0;
+    vec3 sd = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));
+    history = ycocg_to_rgb(clip_towards_aabb_center(rgb_to_ycocg(history), mean - sd, mean + sd));
 
     // Confidence grows while the pixel holds still, resets when it moves.
     float confidence = texelFetch(u_history, px, 0).a;
-    vec2 pixel_motion = abs(motion) * out_size;
-    bool still = pixel_motion.x < 0.01 && pixel_motion.y < 0.01;
-    float factor;
-    if (upscale) {
-        // Upscaling: a running average of the samples by their weights
-        // (the alpha keeps their total, as FSR2's accumulation does) — the
-        // first image is coarse, so each sample counts as much as those
-        // before it; moving, Bevy's default rate.
-        confidence = still ? min(confidence + sample_weight, 1000.0) : 1.0 / DEFAULT_HISTORY_BLEND_RATE;
-        factor = clamp(sample_weight / confidence, MIN_HISTORY_BLEND_RATE * sample_weight, 1.0);
-    } else {
-        confidence = still ? min(confidence + 10.0, 1000.0) : 1.0;
-        factor = clamp(1.0 / confidence, MIN_HISTORY_BLEND_RATE, DEFAULT_HISTORY_BLEND_RATE);
-    }
+    vec2 pixel_motion = abs(motion) * size;
+    confidence = (pixel_motion.x < 0.01 && pixel_motion.y < 0.01) ? min(confidence + 10.0, 1000.0) : 1.0;
+    float factor = clamp(1.0 / confidence, MIN_HISTORY_BLEND_RATE, DEFAULT_HISTORY_BLEND_RATE);
     // Reactive: how much a transmissive or transparent surface changed the
     // opaque scene here (FSR2: |post − pre| tonemapped, thresholded to a
     // binary value). It takes from the history's weight (FSR2's
     // accumulation × (1 − reactive)) where the history may be off: the
     // pixel moves, or such a mesh moved. Still, the history is right and
     // smooths them as anything else.
-    if (u_reactive.x > 0.5 && (!still || u_reactive.y > 0.5)) {
-        vec3 delta = abs(tonemap(original.rgb) - tonemap(texelFetch(u_opaque, ip, 0).rgb));
+    if (u_reactive.x > 0.5 && (confidence <= 1.0 || u_reactive.y > 0.5)) {
+        vec3 delta = abs(current - tonemap(texelFetch(u_opaque, px, 0).rgb));
         float reactive = max3(delta) * REACTIVE_SCALE;
         reactive = reactive < REACTIVE_THRESHOLD ? 0.0 : REACTIVE_BINARY;
         factor = mix(factor, 1.0, reactive);
         confidence = reactive > 0.0 ? 1.0 : confidence;
     }
     // Disocclusion: the history's pixel moved otherwise last frame.
-    ivec2 then = clamp(ivec2(history_uv * out_size), ivec2(0), ivec2(out_size) - 1);
+    ivec2 then = clamp(ivec2(history_uv * size), ivec2(0), ivec2(size) - 1);
     vec2 prev_motion = texelFetch(u_prev_motion, then, 0).xy;
-    float disocclusion = (length((prev_motion - motion) * out_size) - DISOCCLUSION_THRESHOLD) * DISOCCLUSION_SCALE;
+    float disocclusion = (length((prev_motion - motion) * size) - DISOCCLUSION_THRESHOLD) * DISOCCLUSION_SCALE;
     if (disocclusion > 0.0) {
         factor = min(factor + disocclusion, 1.0);
         confidence = 1.0;

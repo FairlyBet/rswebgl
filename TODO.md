@@ -107,14 +107,7 @@ attached. Left:
   binary (FSR2's sample settings); per-material reactivity would be finer.
 - Godot's velocity disocclusion: each resolve keeps the motion it used per
   pixel (a second attachment of the history), the next compares.
-- Upscaling (TAAU): `setRenderScale(0.25…1)` renders the scene smaller; the
-  resolve reconstructs each output pixel from the 3×3 input samples nearest
-  its jittered position (a pixel-wide Gaussian), keeps a running average by
-  sample weight, clips by an FSR2-style distance-weighted box eased by that
-  weight; FSR2's jitter phase count and LOD bias. A half-size still scene
-  converges to within ~3 levels of full-size TAA on average (test); the
-  canvas's edge pixels converge last. Not tuned for motion yet (no
-  per-pixel locks as FSR2 has): thin detail softens while moving.
+- Next: TAAU (render below the output size and upsample in the resolve).
 
 ## From the review (done)
 

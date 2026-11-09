@@ -11,8 +11,7 @@ in vec2 v_ndc;
 out vec4 frag_color;
 
 uniform sampler2D u_hdr;
-uniform sampler2D u_coverage; // the frame's coverage (u_hdr is TAA's history then,
-                              // maybe larger: TAA upscaling)
+uniform sampler2D u_coverage; // the frame's coverage (u_hdr is TAA's history then)
 uniform float u_exposure;
 uniform int u_tone_mapping;
 uniform float u_dither; // 0 off, 1 on
@@ -23,16 +22,10 @@ float ign(vec2 p) {
     return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
 }
 
-// The coverage at output pixel p (this frame's, maybe smaller).
-float coverage(ivec2 p) {
-    vec2 scale = vec2(textureSize(u_coverage, 0)) / vec2(textureSize(u_hdr, 0));
-    return texelFetch(u_coverage, ivec2(vec2(p) * scale), 0).a;
-}
-
 // The tone-mapped (display-linear) color at p, unpremultiplied.
 vec3 display(ivec2 p) {
     p = clamp(p, ivec2(0), textureSize(u_hdr, 0) - 1);
-    float a = coverage(p);
+    float a = texelFetch(u_coverage, p, 0).a;
     vec3 c = a > 0.0 ? texelFetch(u_hdr, p, 0).rgb / a : vec3(0.0);
     return tone_map(c * u_exposure, u_tone_mapping);
 }
@@ -70,7 +63,7 @@ vec3 rcas(ivec2 sp, vec3 e) {
 
 void main() {
     ivec2 p = ivec2(gl_FragCoord.xy);
-    float a = coverage(p);
+    float a = texelFetch(u_coverage, p, 0).a;
     vec3 c = display(p);
     if (u_sharpness > 0.0) {
         c = clamp(rcas(p, c), 0.0, 1.0);
