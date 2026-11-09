@@ -53,10 +53,16 @@ vec3 shade_gltf(Surface s) {
 #ifdef HAS_IRIDESCENCE
     // The film's Fresnel over each base, seen along the view.
     float iridescence = s.iridescence_thickness > 0.0 ? s.iridescence : 0.0;
-    vec3 irid_dielectric = gltf_iridescence(1.0, s.iridescence_ior, NdotV,
-                                            s.iridescence_thickness, f0_dielectric);
-    vec3 irid_metal = gltf_iridescence(1.0, s.iridescence_ior, NdotV,
-                                       s.iridescence_thickness, base);
+    // Only over the bases present (the film is costly): mixed in by weights
+    // that are zero otherwise.
+    vec3 irid_dielectric = vec3(0.0);
+    vec3 irid_metal = vec3(0.0);
+    if (iridescence > 0.0 && s.metallic < 1.0)
+        irid_dielectric = gltf_iridescence(1.0, s.iridescence_ior, NdotV,
+                                           s.iridescence_thickness, f0_dielectric);
+    if (iridescence > 0.0 && s.metallic > 0.0)
+        irid_metal = gltf_iridescence(1.0, s.iridescence_ior, NdotV,
+                                      s.iridescence_thickness, base);
 #endif
 
 #ifdef HAS_SHEEN

@@ -137,13 +137,24 @@ OpenPbr openpbr_setup(Surface s, float NdotV, float coat_NdotV) {
     o.film = s.iridescence_thickness > 0.0 ? s.iridescence : 0.0;
     // Mirror albedo = the film's Fresnel at the view; rough = the fit with
     // its normal-incidence value; blended by √α (MaterialX).
-    float blend = sqrt(alpha);
-    vec3 fg_film_d = mix(film_dielectric(s, o, NdotV),
-                         ggx_dir_albedo(NdotV, alpha, film_dielectric(s, o, 1.0), vec3(1.0)), blend);
-    vec3 fg_film_m = mix(film_metal(s, o, NdotV),
-                         ggx_dir_albedo(NdotV, alpha, film_metal(s, o, 1.0), vec3(1.0)), blend);
-    o.fg_dielectric = mix(o.fg_dielectric, fg_film_d * o.comp_dielectric, o.film);
-    o.fg_metal = mix(o.fg_metal, s.specular_weight * fg_film_m * o.comp_metal, o.film);
+    // The film is costly (each call: four spectral sensitivities, each with
+    // four cos and exp): evaluated only over the layers present — glass
+    // (metallic 0) skips the metal's, a pure metal the dielectric's.
+    if (o.film > 0.0) {
+        float blend = sqrt(alpha);
+        if (s.metallic < 1.0) {
+            vec3 fg_film_d = mix(film_dielectric(s, o, NdotV),
+                                 ggx_dir_albedo(NdotV, alpha, film_dielectric(s, o, 1.0), vec3(1.0)),
+                                 blend);
+            o.fg_dielectric = mix(o.fg_dielectric, fg_film_d * o.comp_dielectric, o.film);
+        }
+        if (s.metallic > 0.0) {
+            vec3 fg_film_m = mix(film_metal(s, o, NdotV),
+                                 ggx_dir_albedo(NdotV, alpha, film_metal(s, o, 1.0), vec3(1.0)),
+                                 blend);
+            o.fg_metal = mix(o.fg_metal, s.specular_weight * fg_film_m * o.comp_metal, o.film);
+        }
+    }
 #endif
 
     // Transmission is tinted by the base color, with or without a volume
@@ -293,8 +304,8 @@ vec3 shade_openpbr(Surface s) {
             vec3 f_m = fresnel_f82(VdotH, o.f0_metal, s.specular_color);
 #ifdef HAS_IRIDESCENCE
             if (o.film > 0.0) {
-                f_d = mix(f_d, film_dielectric(s, o, VdotH), o.film);
-                f_m = mix(f_m, film_metal(s, o, VdotH), o.film);
+                if (s.metallic < 1.0) f_d = mix(f_d, film_dielectric(s, o, VdotH), o.film);
+                if (s.metallic > 0.0) f_m = mix(f_m, film_metal(s, o, VdotH), o.film);
             }
 #endif
             vec3 spec_d = dv * f_d * s.specular_color * o.comp_dielectric;
