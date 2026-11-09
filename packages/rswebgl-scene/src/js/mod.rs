@@ -604,6 +604,13 @@ impl Scene {
             if !peeling && let Some(out) = &mut self.hdr {
                 out.release_peel(&self.ctx);
             }
+            // TAA: the opaque scene alone, for the reactive mask.
+            if taa
+                && (glass.draw_count() > 0 || late.draw_count() > 0)
+                && let Some(out) = &mut self.hdr
+            {
+                out.keep_opaque_color(&self.ctx);
+            }
             if glass.draw_count() > 0 {
                 self.peel_glass(&mut glass, &mut late);
             } else if self.stats.transmissive > 0
@@ -858,6 +865,7 @@ impl Scene {
             self.renderer.jitter(),
             self.renderer.exposure(),
             velocity,
+            self.renderer.late_moved(),
         );
         self.taa_previous = Some((camera, now));
     }

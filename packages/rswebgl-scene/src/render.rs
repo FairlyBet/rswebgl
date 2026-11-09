@@ -566,6 +566,12 @@ impl SceneRenderer {
         }
     }
 
+    /// Whether a transparent or transmissive mesh moved in the last
+    /// `render` (with motion vectors on).
+    pub fn late_moved(&self) -> bool {
+        self.motion.as_ref().is_some_and(MotionVectors::late_moved)
+    }
+
     /// The motion-vector shaders built so far (`set_motion_vectors`).
     pub(crate) fn motion_programs(&self) -> Vec<ProgramId> {
         self.motion
@@ -710,11 +716,9 @@ impl SceneRenderer {
             } else {
                 Dest::Opaque
             };
-            if dest == Dest::Opaque
-                && !mesh.transparent
-                && let Some(motion) = &mut self.motion
-            {
-                motion.track(world, e, &m, mesh, &mut self.instances);
+            if let Some(motion) = &mut self.motion {
+                let opaque = dest == Dest::Opaque && !mesh.transparent;
+                motion.track(world, e, &m, mesh, opaque, &mut self.instances);
             }
             let kind = self.program_kind(ctx, mesh.program);
             // Opaque meshes of a shader that reads its instance draw

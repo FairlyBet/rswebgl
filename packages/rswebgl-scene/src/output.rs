@@ -50,12 +50,18 @@ struct Taa {
     f_reproject: ParamField,
     f_taa: ParamField,
     f_jitter: ParamField,
+    f_reactive: ParamField,
     // Sized with the target: (texture, framebuffer) each.
     history: [(TextureId, FramebufferId); 2],
     depth: TextureId,
     // Moving meshes' motion (uv now − uv last frame; elsewhere the clear
     // value, VELOCITY_NONE).
     velocity: (TextureId, FramebufferId),
+    // The opaque scene alone, copied before transmissive and transparent
+    // meshes draw (made on first need), and whether this frame copied it:
+    // the resolve's reactive mask compares it with the final frame.
+    opaque: (TextureId, FramebufferId),
+    opaque_kept: bool,
     // The history the last resolve wrote; whether the next starts over.
     current: usize,
     reset: bool,
@@ -190,9 +196,11 @@ impl HdrOutput {
                     .texture("u_history")
                     .texture("u_depth")
                     .texture("u_velocity")
+                    .texture("u_opaque")
                     .uniform("u_reproject", UniformType::Mat4)
                     .uniform("u_taa", UniformType::Vec4)
-                    .uniform("u_jitter", UniformType::Vec2),
+                    .uniform("u_jitter", UniformType::Vec2)
+                    .uniform("u_reactive", UniformType::Vec2),
             )?;
             Some(Taa {
                 program,
@@ -201,9 +209,12 @@ impl HdrOutput {
                 f_reproject: ctx.param_field(layout, "u_reproject")?,
                 f_taa: ctx.param_field(layout, "u_taa")?,
                 f_jitter: ctx.param_field(layout, "u_jitter")?,
+                f_reactive: ctx.param_field(layout, "u_reactive")?,
                 history: [(TextureId::NULL, FramebufferId::NULL); 2],
                 depth: TextureId::NULL,
                 velocity: (TextureId::NULL, FramebufferId::NULL),
+                opaque: (TextureId::NULL, FramebufferId::NULL),
+                opaque_kept: false,
                 current: 0,
                 reset: true,
             })
@@ -281,12 +292,63 @@ impl HdrOutput {
         Some((pass, taa.depth))
     }
 
+    /// With TAA, copies the opaque scene (after the opaque pass, before
+    /// transmissive and transparent meshes draw): this frame's resolve
+    /// then knows where they changed it (its reactive mask).
+    pub fn keep_opaque_color(&mut self, ctx: &Context) {
+        let (w, h) = self.size;
+        let Some(taa) = &mut self.taa else {
+            return;
+        };
+        if taa.opaque.1.is_null() {
+            let made = (|| -> Result<(TextureId, FramebufferId), Error> {
+                let t = ctx.create_texture(
+                    TextureTarget::Texture2D,
+                    TextureMinFilter::Nearest,
+                    TextureMagFilter::Nearest,
+                )?;
+                ctx.texture_storage_2d(t, 1, &TextureFormat::rgba16f(), w, h);
+                let fb = match ctx.create_framebuffer(w, h) {
+                    Ok(fb) => fb,
+                    Err(e) => {
+                        ctx.destroy_texture(t);
+                        return Err(e);
+                    }
+                };
+                ctx.framebuffer_attach_color_texture_2d(fb, 0, t, 0);
+                Ok((t, fb))
+            })();
+            match made {
+                Ok(o) => taa.opaque = o,
+                Err(e) => {
+                    rswebgl::console::error_once(&format!(
+                        "[rswebgl-scene] TAA reactive mask: {e}"
+                    ));
+                    return;
+                }
+            }
+        }
+        let r = Viewport::new(0, 0, w, h);
+        ctx.blit_framebuffer(
+            self.resolve_fb,
+            &r,
+            taa.opaque.1,
+            &r,
+            &ClearMask::color(),
+            TextureMagFilter::Nearest,
+        );
+        taa.opaque_kept = true;
+    }
+
     /// Resolves this frame into the TAA history: the resolved color, the
     /// last history reprojected — by the velocity target where `velocity`
     /// (`motion_pass` drew into it this frame), else by `reproject` (clip
     /// now, unjittered → clip last frame) through the depth — and clipped.
     /// `jitter` is this frame's projection offset (NDC), `exposure` the
-    /// display's. After the scene's passes, before `present`.
+    /// display's. Where transmissive or transparent meshes changed the
+    /// opaque scene (`keep_opaque_color` this frame), the history counts
+    /// less while the pixel moves, or anywhere if `late_moved` (one of them
+    /// moved). After the scene's passes, before `present`.
     pub fn taa_resolve(
         &mut self,
         ctx: &Context,
@@ -294,6 +356,7 @@ impl HdrOutput {
         jitter: glam::Vec2,
         exposure: f32,
         velocity: bool,
+        late_moved: bool,
     ) {
         let (w, h) = self.size;
         let reverse = self.reverse_z;
@@ -317,6 +380,19 @@ impl HdrOutput {
         ];
         ctx.param_set_floats(taa.group, taa.f_taa, &flags);
         ctx.param_set_floats(taa.group, taa.f_jitter, &[jitter.x, jitter.y]);
+        // The copy's texture is bound either way (a sampler needs one).
+        let opaque = if taa.opaque.0.is_null() {
+            color
+        } else {
+            taa.opaque.0
+        };
+        ctx.param_set_texture_by_name(taa.group, "u_opaque", opaque);
+        let reactive = [
+            if taa.opaque_kept { 1.0 } else { 0.0 },
+            if late_moved { 1.0 } else { 0.0 },
+        ];
+        ctx.param_set_floats(taa.group, taa.f_reactive, &reactive);
+        taa.opaque_kept = false;
         let mut pass = Pass::new(out_fb);
         pass.set_viewport(&Viewport::new(0, 0, w, h));
         let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
@@ -387,10 +463,10 @@ impl HdrOutput {
 
     fn finish_pass(&self, pass: &mut Pass, last: bool) {
         let mut discard = InvalidateMask::none();
-        // After the last pass depth isn't read again, nor the multisampled
-        // color once resolved: telling tiled (mobile) GPUs saves writing
-        // them back.
-        discard.depth = last;
+        // After the last pass depth isn't read again (except by TAA: its
+        // motion pass and resolve), nor the multisampled color once
+        // resolved: telling tiled (mobile) GPUs saves writing them back.
+        discard.depth = last && self.taa.is_none();
         if self.fb != self.resolve_fb {
             pass.set_resolve(self.resolve_fb);
             discard.color = last;
@@ -719,6 +795,15 @@ impl HdrOutput {
             if !v.is_null() {
                 ctx.destroy_texture(v);
             }
+            let (o, fb) =
+                std::mem::replace(&mut taa.opaque, (TextureId::NULL, FramebufferId::NULL));
+            if !fb.is_null() {
+                ctx.destroy_framebuffer(fb);
+            }
+            if !o.is_null() {
+                ctx.destroy_texture(o);
+            }
+            taa.opaque_kept = false;
         }
         if let Some(peel) = self.peel.take() {
             peel.free(ctx);

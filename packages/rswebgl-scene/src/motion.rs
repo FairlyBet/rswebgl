@@ -65,6 +65,10 @@ pub(crate) struct MotionVectors {
     next: HashMap<Entity, State>,
     prev_view_proj: Mat4,
     draws: Vec<MotionDraw>,
+    // Whether a mesh drawn without motion vectors (transparent,
+    // transmissive) moved this frame: the resolve's reactive mask then
+    // applies where the camera holds still too.
+    late_moved: bool,
     // Built on first need; None once it failed.
     programs: HashMap<u32, Option<ProgramId>>,
     globals_layout: ParamLayoutId,
@@ -115,6 +119,7 @@ impl MotionVectors {
             next: HashMap::new(),
             prev_view_proj: Mat4::IDENTITY,
             draws: Vec::new(),
+            late_moved: false,
             programs: HashMap::new(),
             globals: ctx.create_param_group(globals_layout)?,
             f_prev_view_proj: ctx.param_field(globals_layout, "u_prev_view_proj")?,
@@ -143,18 +148,22 @@ impl MotionVectors {
         std::mem::swap(&mut self.prev, &mut self.next);
         self.next.clear();
         self.draws.clear();
+        self.late_moved = false;
         self.prev_view_proj = prev_view_proj;
     }
 
-    /// Notes an opaque mesh drawn this frame (with model matrix `m`); if it
-    /// moved since the last, its state then and now into `instances` and a
-    /// motion draw.
+    /// Notes a mesh drawn this frame (with model matrix `m`). If it moved
+    /// since the last: an `opaque` one gets its state then and now in
+    /// `instances` and a motion draw; another (transparent, transmissive:
+    /// the velocity target holds what's behind it) counts for
+    /// `late_moved`.
     pub fn track(
         &mut self,
         world: &World,
         e: Entity,
         m: &Mat4,
         mesh: &MeshRenderer,
+        opaque: bool,
         instances: &mut Instances,
     ) {
         if mesh.command.instance_count != 1 {
@@ -190,6 +199,13 @@ impl MotionVectors {
             let weights = node.and_then(|n| world.get::<MorphWeights>(n));
             now.weights.extend(weights.map_or(&[][..], |w| &w.0[..]));
             now.weights.resize(morph.targets as usize, 0.0);
+        }
+        if !opaque {
+            if self.prev.get(&e).is_some_and(|prev| *prev != now) {
+                self.late_moved = true;
+            }
+            self.next.insert(e, now);
+            return;
         }
         if let Some(prev) = self.prev.get(&e)
             && *prev != now
@@ -239,6 +255,11 @@ impl MotionVectors {
     /// Meshes that moved this frame.
     pub fn count(&self) -> usize {
         self.draws.len()
+    }
+
+    /// Whether a transparent or transmissive mesh moved this frame.
+    pub fn late_moved(&self) -> bool {
+        self.late_moved
     }
 
     /// Whether anything moved this frame.

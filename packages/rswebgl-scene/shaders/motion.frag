@@ -2,7 +2,9 @@
 // last frame (uv now − uv then, unjittered) where it is what the scene
 // shows. The depth test is by hand against the scene's depth (the motion
 // target has none), with a tolerance: this pass's vertices are computed by
-// another program than the scene's.
+// another program than the scene's. Equal, not only nearer: where the mesh
+// lies in front of what the scene shows there, its material discarded the
+// fragment (alpha-masked cutouts): what shows there moves on its own.
 
 in vec4 v_now;
 in vec4 v_prev;
@@ -18,7 +20,7 @@ void main() {
     bool reverse = u_motion.z > 0.5;
     float q = reverse ? gl_FragCoord.z : 1.0 - gl_FragCoord.z;
     float q_scene = reverse ? scene : 1.0 - scene;
-    if (q < q_scene * (1.0 - 2e-3) || v_prev.w <= 0.0) discard;
+    if (abs(q - q_scene) > q_scene * 2e-3 || v_prev.w <= 0.0) discard;
     vec2 motion = (v_now.xy / v_now.w - v_prev.xy / v_prev.w) * 0.5;
     frag_color = vec4(motion, 0.0, 1.0);
 }

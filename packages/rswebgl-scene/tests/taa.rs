@@ -20,12 +20,13 @@ const SIZE: i32 = 32;
 
 // One white unlit quad, turned 30° about z.
 fn asset_url() -> String {
-    quad_url(0.258_819, 0.965_925_8, false)
+    quad_url(0.258_819, 0.965_925_8, false, false)
 }
 
 // A unit unlit quad turned by the z rotation (sin, cos of half the angle);
-// `gradient`: black on the left to white on the right (vertex colors).
-fn quad_url(qz: f32, qw: f32, gradient: bool) -> String {
+// `gradient`: black on the left to white on the right (vertex colors);
+// `blend`: alpha-blended (a transparent mesh, drawn after the opaque ones).
+fn quad_url(qz: f32, qw: f32, gradient: bool, blend: bool) -> String {
     let mut bin = Vec::new();
     #[rustfmt::skip]
     let floats = [-0.5f32, -0.5, 0.0, 0.5, -0.5, 0.0, 0.5, 0.5, 0.0, -0.5, 0.5, 0.0];
@@ -41,6 +42,11 @@ fn quad_url(qz: f32, qw: f32, gradient: bool) -> String {
         bin.extend_from_slice(&v.to_le_bytes());
     }
     let color = if gradient { r#", "COLOR_0": 2"# } else { "" };
+    let alpha = if blend {
+        r#""alphaMode": "BLEND", "#
+    } else {
+        ""
+    };
     let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
     let json = format!(
         r#"{{
@@ -58,7 +64,7 @@ fn quad_url(qz: f32, qw: f32, gradient: bool) -> String {
     {{ "bufferView": 1, "componentType": 5123, "count": 6, "type": "SCALAR" }},
     {{ "bufferView": 2, "componentType": 5126, "count": 4, "type": "VEC3" }}
   ],
-  "materials": [{{ "pbrMetallicRoughness": {{ "baseColorFactor": [1, 1, 1, 1] }},
+  "materials": [{{ {alpha}"pbrMetallicRoughness": {{ "baseColorFactor": [1, 1, 1, 1] }},
                    "extensions": {{ "KHR_materials_unlit": {{}} }} }}],
   "meshes": [{{ "primitives": [{{ "attributes": {{ "POSITION": 0{color} }}, "indices": 1, "material": 0 }}] }}],
   "nodes": [{{ "mesh": 0, "rotation": [0, 0, {qz}, {qw}] }}],
@@ -68,6 +74,7 @@ fn quad_url(qz: f32, qw: f32, gradient: bool) -> String {
         len = bin.len(),
         bin = b64(&bin),
         color = color,
+        alpha = alpha,
         qz = qz,
         qw = qw,
     );
@@ -276,7 +283,7 @@ async fn taa_moving_detail_follows_motion_vectors() {
     scene.set_camera(camera, cam).unwrap();
     scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
     let root = scene.add_model(
-        load_model(&ctx, &quad_url(0.0, 1.0, true))
+        load_model(&ctx, &quad_url(0.0, 1.0, true, false))
             .await
             .expect("load"),
     );
@@ -298,6 +305,79 @@ async fn taa_moving_detail_follows_motion_vectors() {
     // The quad's inner pixels on the middle row (its edges antialias).
     let row = (SIZE / 2 * SIZE) as usize;
     let error: i32 = (10..24)
+        .map(|x| (img[row + x] as i32 - reference[row + x] as i32).abs())
+        .max()
+        .unwrap();
+    assert!(
+        error <= 4,
+        "off by {error}: {:?} vs {:?}",
+        &img[row + 8..row + 24],
+        &reference[row + 8..row + 24]
+    );
+    s.scene.destroy();
+}
+
+// A transparent mesh gets no motion vectors (the velocity target holds what
+// is behind it): sliding over a still background, the reactive mask keeps
+// its history from lagging behind — the frame matches the same one
+// rendered without TAA where it covers the background enough to count.
+#[wasm_bindgen_test]
+async fn taa_reactive_mask_keeps_transparent_meshes_from_lagging() {
+    let canvas: HtmlCanvasElement = web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .create_element("canvas")
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    canvas.set_width(SIZE as u32);
+    canvas.set_height(SIZE as u32);
+    let mut options = ContextOptions::new();
+    options.antialias = false;
+    let ctx = Context::from_canvas(&canvas, &options).expect("ctx");
+    let gl: Gl = canvas
+        .get_context("webgl2")
+        .unwrap()
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    let mut scene = Scene::new(&ctx).expect("scene");
+    if !scene.is_hdr() {
+        return;
+    }
+    scene.set_tone_mapping("none").unwrap();
+    scene.set_dither(false);
+    scene.set_samples(0);
+    let camera = scene.spawn();
+    let cam =
+        js_sys::JSON::parse(r#"{ "type": "orthographic", "ymag": 1, "znear": 0.1, "zfar": 100 }"#)
+            .unwrap();
+    scene.set_camera(camera, cam).unwrap();
+    scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
+    let root = scene.add_model(
+        load_model(&ctx, &quad_url(0.0, 1.0, true, true))
+            .await
+            .expect("load"),
+    );
+    let mut s = Setup { gl, scene, camera };
+    s.scene.set_translation(root, 0.0, 0.0, 0.0);
+    let reference = s.frames(1).await;
+    s.scene.set_translation(root, -0.5, 0.0, 0.0);
+
+    assert!(s.scene.set_taa(true));
+    s.frames(16).await;
+    let mut img = Vec::new();
+    for i in 1..=8 {
+        s.scene
+            .set_translation(root, -0.5 + i as f32 / 16.0, 0.0, 0.0);
+        img = s.frames(1).await;
+        assert_eq!(s.scene.moving_meshes(), 0, "transparent: no motion draw");
+    }
+    // The brighter half of the gradient, inside its edges (the dim end
+    // changes the background too little to be marked reactive).
+    let row = (SIZE / 2 * SIZE) as usize;
+    let error: i32 = (16..23)
         .map(|x| (img[row + x] as i32 - reference[row + x] as i32).abs())
         .max()
         .unwrap();
