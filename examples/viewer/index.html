@@ -101,7 +101,9 @@
       overflow-y: auto;
       border-radius: 10px;
       background: var(--panel);
-      backdrop-filter: blur(8px);
+      /* No backdrop-filter: the canvas under the panel changes every frame,
+         so the compositor re-blurs it every frame — on a phone's GPU that
+         alone made frames miss vsync while the panel was open. */
       transition: transform 0.2s;
     }
 
