@@ -65,6 +65,7 @@ export function createProfiling({ wasm, canvas, $, describe }) {
     const meta = {
       userAgent: navigator.userAgent,
       gpu: gpuName(),
+      extensions: (/** @type {WebGL2RenderingContext | null} */ (canvas.getContext("webgl2"))?.getSupportedExtensions() ?? []).join(" "),
       devicePixelRatio: String(devicePixelRatio),
       canvas: `${canvas.width}x${canvas.height}`,
       hardwareConcurrency: String(navigator.hardwareConcurrency ?? ""),

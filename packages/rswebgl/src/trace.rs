@@ -496,6 +496,9 @@ fn write_json(s: &State) -> String {
     let mut meta = s.metadata.clone();
     meta.push(("events".into(), s.events.len().to_string()));
     meta.push(("truncated".into(), s.full.to_string()));
+    for (i, m) in crate::console::recent().into_iter().enumerate() {
+        meta.push((format!("console {i:02}"), m));
+    }
     for (i, (k, v)) in meta.iter().enumerate() {
         if i > 0 {
             out.push(',');
