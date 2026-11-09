@@ -99,15 +99,9 @@ impl Scene {
         self.pbr.set_model(old_pbr.model());
         self.pending_variants.clear();
         let mut remap: HashMap<ProgramId, ProgramId> = HashMap::new();
-        let in_use: Vec<ProgramId> = self
-            .world
-            .storage::<MeshRenderer>()
-            .map(|m| m.data().iter().map(|m| m.program).collect())
-            .unwrap_or_default();
+        // Every one, used or not: the app may hold a handle for later
+        // (`currentProgram` maps it).
         self.scene_programs.retain_mut(|p| {
-            if !in_use.contains(&p.id) {
-                return false; // gone with the old context and unused: forget it
-            }
             match create_scene_program(&self.ctx, &p.vert, &p.frag) {
                 Ok(new) => {
                     remap.insert(p.id, new);
@@ -120,6 +114,14 @@ impl Scene {
                 }
             }
         });
+        // Handles from before (this loss or earlier ones) lead to the new.
+        for target in self.program_aliases.values_mut() {
+            if let Some(&new) = remap.get(target) {
+                *target = new;
+            }
+        }
+        self.program_aliases
+            .extend(remap.iter().map(|(&old, &new)| (old, new)));
         let meshes: Vec<(Entity, ProgramId)> = self
             .world
             .storage::<MeshRenderer>()
@@ -197,6 +199,19 @@ impl Scene {
     fn reload_models(&mut self) {
         for (&root, model) in &self.models {
             if !model.is_lost(&self.ctx) {
+                continue;
+            }
+            if !self.restore_models || model.source().is_empty() {
+                // The app reloads it (setRestoreModels(false)).
+                console::warn_once(
+                    "[rswebgl-scene] restore: models aren't fetched again \
+                     (setRestoreModels(false)): their meshes stay out of frames until replaced",
+                );
+                for e in descendants(&self.world, root) {
+                    if self.world.get::<MeshRenderer>(e).is_some() {
+                        self.world.insert(e, Reloading);
+                    }
+                }
                 continue;
             }
             for e in descendants(&self.world, root) {
@@ -279,5 +294,45 @@ impl Scene {
                 self.world.remove::<Reloading>(e);
             }
         }
+    }
+}
+
+#[wasm_bindgen]
+impl Scene {
+    /// The live handle of a `createProgram` shader: after a context loss the
+    /// scene compiles it again under a new handle, and this maps the one you
+    /// hold to it (the same handle when there was no loss). `setMesh` and
+    /// `addModelWithProgram` accept either.
+    #[wasm_bindgen(js_name = currentProgram)]
+    pub fn current_program(&self, program: ProgramId) -> ProgramId {
+        self.program_aliases
+            .get(&program)
+            .copied()
+            .unwrap_or(program)
+    }
+
+    /// Whether models are fetched again from their URL after a context loss
+    /// (default true). Off, the scene keeps no model sources (a `data:` URI
+    /// can be a whole file): after a loss their meshes stay out of frames and
+    /// the app loads them again itself (`ctx.setOnRestored`).
+    #[wasm_bindgen(js_name = setRestoreModels)]
+    pub fn set_restore_models(&mut self, on: bool) {
+        self.restore_models = on;
+        if !on {
+            for model in self.models.values_mut() {
+                model.forget_source();
+            }
+        }
+    }
+}
+
+impl Scene {
+    // Keeps a model added to the scene (its source too, unless
+    // `setRestoreModels(false)`).
+    pub(crate) fn keep_model(&mut self, root: Entity, mut model: Model) {
+        if !self.restore_models {
+            model.forget_source();
+        }
+        self.models.insert(root, model);
     }
 }

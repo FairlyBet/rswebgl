@@ -739,6 +739,18 @@ async fn the_scene_comes_back_after_a_context_loss() {
         "{background:?}"
     );
 
+    // A scene shader the app keeps for later, drawn with nothing.
+    let unused = s
+        .scene
+        .create_program(
+            "layout(location = 0) in vec3 a_position;
+\n             void main() { gl_Position = u_view_proj * u_model * vec4(a_position, 1.0); }",
+            "out vec4 frag_color;
+void main() { frag_color = vec4(1.0); }",
+        )
+        .unwrap();
+    assert_eq!(s.scene.current_program(unused), unused);
+
     let errors = js_sys::Array::new();
     let console = js_sys::Reflect::get(&js_sys::global(), &"console".into()).unwrap();
     let original = js_sys::Reflect::get(&console, &"error".into()).unwrap();
@@ -785,6 +797,11 @@ async fn the_scene_comes_back_after_a_context_loss() {
     );
     let prim = rswebgl_scene::children(s.scene.world(), stone_a)[0];
     assert_eq!(s.scene.mesh_material(prim), blue_stone);
+    // The kept shader: compiled again, its old handle leading to it.
+    let live = s.scene.current_program(unused);
+    assert_ne!(live, unused);
+    s.ctx.program_active_uniform_names(live); // waits for the link
+    assert!(s.ctx.program_is_valid(live));
     assert!(s.scene.has_environment());
     s.scene.destroy();
 }

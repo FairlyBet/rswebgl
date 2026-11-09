@@ -3,7 +3,10 @@
 A grid of cubes driven from plain JS through the generated bindings: no Rust
 of its own, rendered through a 4× MSAA framebuffer resolved into the canvas.
 Press **S** to toggle draw-list sorting and watch the program / state switch
-counts in the corner; **M** toggles MSAA.
+counts in the corner; **M** toggles MSAA. **L** loses the WebGL context and
+restores it half a second later: `ctx.setOnRestored` makes the GPU objects
+again (programs, the cube's vertex array, the MSAA target); parameter groups
+and render states survive a loss.
 
 
 

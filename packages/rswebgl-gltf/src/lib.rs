@@ -486,6 +486,13 @@ impl Model {
         self.source.clone()
     }
 
+    /// Drops the kept source URL (a `data:` URI can be the whole file):
+    /// the model can't be reloaded after a context loss then.
+    #[wasm_bindgen(js_name = forgetSource)]
+    pub fn forget_source(&mut self) {
+        self.source = String::new();
+    }
+
     /// Whether its GPU objects belong to an earlier context generation (lost
     /// since): reload it and `adopt` the reload.
     #[wasm_bindgen(js_name = isLost)]

@@ -82,6 +82,11 @@ pub struct Scene {
     generation: u32,
     // `createProgram` shaders, recompiled after a loss.
     scene_programs: Vec<SceneProgram>,
+    // A `createProgram` handle from before a loss → its recompiled shader
+    // (`currentProgram`; setMesh and addModelWithProgram take either).
+    program_aliases: HashMap<ProgramId, ProgramId>,
+    // Whether models are fetched again after a loss (`setRestoreModels`).
+    restore_models: bool,
     // The `.hdr` bytes and cube size of the environment, baked again after
     // a loss.
     env_source: Option<(Vec<u8>, u32)>,
@@ -163,6 +168,8 @@ impl Scene {
             textures: Vec::new(),
             generation: ctx.generation(),
             scene_programs: Vec::new(),
+            program_aliases: HashMap::new(),
+            restore_models: true,
             env_source: None,
             env_baker: None,
             env_pending: None,
@@ -427,7 +434,8 @@ impl Scene {
         draw: &DrawCommand,
     ) -> Result<(), Error> {
         let mesh = MeshRenderer {
-            program: ProgramId::from_raw(options::u32_or(&mesh, "program", 0)?),
+            program: self
+                .current_program(ProgramId::from_raw(options::u32_or(&mesh, "program", 0)?)),
             state: StateId::from_raw(options::u32_or(&mesh, "state", 0)?),
             vao: VertexArrayId::from_raw(options::u32_or(&mesh, "vao", 0)?),
             material: ParamGroupId::from_raw(options::u32_or(&mesh, "material", 0)?),
@@ -508,7 +516,7 @@ impl Scene {
                 .ok()
         });
         self.register_materials(&model);
-        self.models.insert(root, model);
+        self.keep_model(root, model);
         root
     }
 
@@ -518,9 +526,10 @@ impl Scene {
     #[wasm_bindgen(js_name = addModelWithProgram)]
     pub fn add_model_with_program(&mut self, model: Model, program: ProgramId) -> Entity {
         self.sync_context();
+        let program = self.current_program(program);
         let root = spawn_model(&mut self.world, &model, |_| Some(program));
         self.register_materials(&model);
-        self.models.insert(root, model);
+        self.keep_model(root, model);
         root
     }
 

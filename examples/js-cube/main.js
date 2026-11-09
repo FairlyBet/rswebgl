@@ -49,6 +49,7 @@ out vec4 frag_color;
 void main() { frag_color = vec4(mix(v_color, u_tint, 0.6), 1.0); }`;
 
 const GRID = 12; // GRID × GRID cubes
+const NULL_ID = 0;
 
 await init();
 
@@ -63,27 +64,39 @@ fb.enableAutoResize();
 
 // --- resources: plain numbers from here on ---------------------------------
 
-const colorProgram = ctx.createProgram(VERT, FRAG_COLOR);
-const tintProgram = ctx.createProgram(VERT, FRAG_TINT);
+// GPU objects go with a lost context (programs, vertex arrays, buffers,
+// framebuffers); `createGpu` makes them, at start and again on restore.
+// Parameter groups and render states are CPU-side: they survive.
+let colorProgram = NULL_ID;
+let tintProgram = NULL_ID;
+let cube = NULL_ID;
+function createGpu() {
+  colorProgram = ctx.createProgram(VERT, FRAG_COLOR);
+  tintProgram = ctx.createProgram(VERT, FRAG_TINT);
+  cube = buildCube();
+}
 
-const vb = new VaoBuilder(ctx);
-// prettier-ignore
-vb.addF32(0, AttrKind.F32x3, new Float32Array([
-  -.5, -.5, -.5,  .5, -.5, -.5,  .5, .5, -.5,  -.5, .5, -.5,
-  -.5, -.5,  .5,  .5, -.5,  .5,  .5, .5,  .5,  -.5, .5,  .5,
-]));
-// prettier-ignore
-vb.addF32(1, AttrKind.F32x3, new Float32Array([
-  0, 0, 0,  1, 0, 0,  1, 1, 0,  0, 1, 0,
-  0, 0, 1,  1, 0, 1,  1, 1, 1,  0, 1, 1,
-]));
-// prettier-ignore
-vb.addIndicesU16(new Uint16Array([
-  0, 2, 1, 0, 3, 2,  4, 5, 6, 4, 6, 7,  0, 4, 7, 0, 7, 3,
-  1, 2, 6, 1, 6, 5,  0, 1, 5, 0, 5, 4,  3, 7, 6, 3, 6, 2,
-]));
-const cube = vb.build();
-// `build()` consumed the builder (it is freed); `cube` is a plain number.
+function buildCube() {
+  const vb = new VaoBuilder(ctx);
+  // prettier-ignore
+  vb.addF32(0, AttrKind.F32x3, new Float32Array([
+    -.5, -.5, -.5,  .5, -.5, -.5,  .5, .5, -.5,  -.5, .5, -.5,
+    -.5, -.5,  .5,  .5, -.5,  .5,  .5, .5,  .5,  -.5, .5,  .5,
+  ]));
+  // prettier-ignore
+  vb.addF32(1, AttrKind.F32x3, new Float32Array([
+    0, 0, 0,  1, 0, 0,  1, 1, 0,  0, 1, 0,
+    0, 0, 1,  1, 0, 1,  1, 1, 1,  0, 1, 1,
+  ]));
+  // prettier-ignore
+  vb.addIndicesU16(new Uint16Array([
+    0, 2, 1, 0, 3, 2,  4, 5, 6, 4, 6, 7,  0, 4, 7, 0, 7, 3,
+    1, 2, 6, 1, 6, 5,  0, 1, 5, 0, 5, 4,  3, 7, 6, 3, 6, 2,
+  ]));
+  // `build()` consumes the builder (it is freed); the result is a plain number.
+  return vb.build();
+}
+createGpu();
 
 // Render states are interned: build once, keep the number.
 const solid = new RenderState();
@@ -114,7 +127,7 @@ for (let i = 0; i < GRID * GRID; i++) {
   const tinted = i % 2 === 1; // interleaved on purpose
   objects.push({
     group: ctx.createParamGroup(objectLayout),
-    program: tinted ? tintProgram : colorProgram,
+    tinted,
     state: tinted ? openState : solidState,
     material: tinted ? tint : NULL,
     x: (i % GRID) - (GRID - 1) / 2,
@@ -168,6 +181,16 @@ function framePass(w, h) {
   return pass;
 }
 
+// After a context loss and restore: the GPU objects again, the MSAA target
+// and pass rebuilt at the next frame. (WEBGL_lose_context simulates one:
+// press L.)
+ctx.setOnRestored(() => {
+  createGpu();
+  msaaFb = NULL;
+  pass?.free();
+  pass = null;
+});
+
 // --- math (column-major, like GLSL) ----------------------------------------
 
 function perspective(fovy, aspect, near, far) {
@@ -203,6 +226,10 @@ let sorted = true;
 window.addEventListener("keydown", (e) => {
   if (e.key === "s" || e.key === "S") sorted = !sorted;
   if (e.key === "m" || e.key === "M") msaa = !msaa;
+  if (e.key === "l" || e.key === "L") {
+    ctx.simulateContextLoss();
+    setTimeout(() => ctx.simulateContextRestore(), 500);
+  }
 });
 
 function frame(ms) {
@@ -215,7 +242,7 @@ function frame(ms) {
     mul(proj, model(o.x, o.y, t + o.x * 0.3, m), mvp);
     ctx.paramSetFloats(o.group, fMvp, mvp);
     // Slots: 0 frame, 1 material, 2 object.
-    pass.push(o.program, o.state, cube, NULL, o.material, o.group, NULL, draw);
+    pass.push(o.tinted ? tintProgram : colorProgram, o.state, cube, NULL, o.material, o.group, NULL, draw);
   }
   if (sorted) pass.sort();
 
@@ -223,7 +250,7 @@ function frame(ms) {
   ctx.render(pass);
   const s = ctx.frameStats();
   statsEl.textContent =
-    `draws ${s.draws}  (S: sort ${sorted ? "on" : "off"}, M: MSAA ${msaa ? "4x" : "off"})\n` +
+    `draws ${s.draws}  (S: sort ${sorted ? "on" : "off"}, M: MSAA ${msaa ? "4x" : "off"}, L: lose the context)\n` +
     `programs ${s.programs}  states ${s.states}  vaos ${s.vertexArrays}\n` +
     `uniforms ${s.uniforms}  textures ${s.textures}  blocks ${s.blocks}`;
   s.free();
