@@ -28,6 +28,7 @@
 // Needs nothing from the scene prelude.
 
 precision highp float;
+precision highp int;
 precision highp sampler2D;
 
 in vec2 v_ndc;

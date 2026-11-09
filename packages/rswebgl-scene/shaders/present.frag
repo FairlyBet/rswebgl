@@ -3,6 +3,9 @@
 // encoding, and a little dither against banding in dark gradients.
 
 precision highp float;
+precision highp int;
+// Samplers default to lowp, which can clip HDR values on mobile GPUs.
+precision highp sampler2D;
 
 #include "color.glsl"
 #include "tonemap.glsl"

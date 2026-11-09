@@ -4,6 +4,10 @@
 
 precision highp float;
 precision highp int;
+// Samplers default to lowp in vertex shaders too: the instance, joint and
+// morph textures hold matrices and positions that need full precision.
+precision highp sampler2D;
+precision highp samplerCube;
 
 #include "common.glsl"
 #include "frame.glsl"

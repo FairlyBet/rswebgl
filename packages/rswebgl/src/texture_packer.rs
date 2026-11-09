@@ -144,6 +144,7 @@ void main() {
 const PACK_FRAG: &str = r#"#version 300 es
 precision highp float;
 precision highp int;
+precision highp sampler2D;
 in vec2 v_uv;
 uniform sampler2D u_src0;
 uniform sampler2D u_src1;
