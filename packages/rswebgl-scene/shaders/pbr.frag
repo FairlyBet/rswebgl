@@ -14,7 +14,7 @@
 //   alpha      ALPHAMODE_OPAQUE | ALPHAMODE_MASK | ALPHAMODE_BLEND
 //   shading    MATERIAL_UNLIT (KHR_materials_unlit)
 //   layers     HAS_TRANSMISSION HAS_VOLUME HAS_CLEARCOAT HAS_DISPERSION
-//              HAS_DIFFUSE_ROUGHNESS HAS_SHEEN HAS_IRIDESCENCE HAS_ANISOTROPY — a layer the material doesn't use isn't
+//              HAS_DIFFUSE_ROUGHNESS HAS_SHEEN HAS_IRIDESCENCE HAS_ANISOTROPY HAS_DIFFUSE_TRANSMISSION — a layer the material doesn't use isn't
 //              compiled at all
 
 // The model's scale per axis, from the vertex stage (volume thickness is in
@@ -117,6 +117,10 @@ uniform float u_iridescence_thickness; // nm
 uniform float u_anisotropy_strength;
 uniform float u_anisotropy_rotation;  // radians, from the tangent
 #endif
+#ifdef HAS_DIFFUSE_TRANSMISSION
+uniform float u_diffuse_transmission;
+uniform vec3 u_diffuse_transmission_color;
+#endif
 // KHR_texture_transform: each map's UV matrix (its <MAP>_UV applies it).
 #if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_BASE_COLOR_MAP)
 uniform mat3 u_base_color_uv;
@@ -169,6 +173,12 @@ uniform mat3 u_iridescence_thickness_uv;
 #if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_ANISOTROPY_MAP)
 uniform mat3 u_anisotropy_uv;
 #endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_DIFFUSE_TRANSMISSION_MAP)
+uniform mat3 u_diffuse_transmission_uv;
+#endif
+#if defined(HAS_TEXTURE_TRANSFORM) && defined(HAS_DIFFUSE_TRANSMISSION_COLOR_MAP)
+uniform mat3 u_diffuse_transmission_color_uv;
+#endif
 
 // Extension maps (channels as their extensions define them).
 #ifdef HAS_CLEARCOAT_MAP
@@ -208,6 +218,12 @@ uniform float u_iridescence_thickness_min;
 #endif
 #ifdef HAS_ANISOTROPY_MAP
 uniform sampler2D u_anisotropy_tex;             // RG direction, B strength
+#endif
+#ifdef HAS_DIFFUSE_TRANSMISSION_MAP
+uniform sampler2D u_diffuse_transmission_tex;   // A
+#endif
+#ifdef HAS_DIFFUSE_TRANSMISSION_COLOR_MAP
+uniform sampler2D u_diffuse_transmission_color_tex; // RGB (sRGB)
 #endif
 
 out vec4 frag_color;
@@ -452,6 +468,20 @@ void main() {
     s.anisotropy_t = normalize(at_dir - frame.n * dot(frame.n, at_dir));
     s.anisotropy_b = normalize(cross(frame.n, s.anisotropy_t));
     s.anisotropy = clamp(strength, 0.0, 1.0);
+#endif
+    s.diffuse_transmission = 0.0;
+    s.diffuse_transmission_color = vec3(1.0);
+#ifdef HAS_DIFFUSE_TRANSMISSION
+    float dt = u_diffuse_transmission;
+#ifdef HAS_DIFFUSE_TRANSMISSION_MAP
+    dt *= texture(u_diffuse_transmission_tex, DIFFUSE_TRANSMISSION_UV).a;
+#endif
+    s.diffuse_transmission = clamp(dt, 0.0, 1.0);
+    s.diffuse_transmission_color = u_diffuse_transmission_color;
+#ifdef HAS_DIFFUSE_TRANSMISSION_COLOR_MAP
+    s.diffuse_transmission_color *=
+        texture(u_diffuse_transmission_color_tex, DIFFUSE_TRANSMISSION_COLOR_UV).rgb;
+#endif
 #endif
     s.emission = u_emissive_factor * u_emissive_strength;
 #ifdef HAS_EMISSIVE_MAP

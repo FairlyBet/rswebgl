@@ -82,6 +82,10 @@ pub struct Material {
     // value 0 (the maximum is at 1).
     pub(crate) clearcoat_normal_scale: f32,
     pub(crate) iridescence_thickness_min: f32,
+    // KHR_materials_diffuse_transmission: the share of diffuse light passed
+    // through (thin), and its color.
+    pub(crate) diffuse_transmission: f32,
+    pub(crate) diffuse_transmission_color: [f32; 3],
 }
 
 #[wasm_bindgen]
@@ -232,6 +236,12 @@ impl Material {
     pub fn sheen_color(&self) -> Vec<f32> {
         self.sheen_color.to_vec()
     }
+    /// `KHR_materials_diffuse_transmission` factor (0: none).
+    #[wasm_bindgen(getter, js_name = diffuseTransmission)]
+    pub fn diffuse_transmission(&self) -> f32 {
+        self.diffuse_transmission
+    }
+
     /// `KHR_materials_iridescence` factor (0: no thin film).
     #[wasm_bindgen(getter)]
     pub fn iridescence(&self) -> f32 {
@@ -279,7 +289,7 @@ const fn prop(name: &'static str, uniform: &'static str, len: usize) -> Property
 }
 
 /// Every numeric property a material group carries, by glTF name.
-pub const PROPERTIES: [Property; 37] = [
+pub const PROPERTIES: [Property; 39] = [
     prop("baseColorFactor", "u_base_color_factor", 4),
     prop("metallicFactor", "u_metallic_factor", 1),
     prop("roughnessFactor", "u_roughness_factor", 1),
@@ -321,11 +331,17 @@ pub const PROPERTIES: [Property; 37] = [
         "u_iridescence_thickness_min",
         1,
     ),
+    prop("diffuseTransmissionFactor", "u_diffuse_transmission", 1),
+    prop(
+        "diffuseTransmissionColorFactor",
+        "u_diffuse_transmission_color",
+        3,
+    ),
 ];
 
 impl Material {
     // The storage of each of `PROPERTIES`, in the same order.
-    fn values_mut(&mut self) -> [&mut [f32]; 37] {
+    fn values_mut(&mut self) -> [&mut [f32]; 39] {
         [
             &mut self.base_color_factor,
             std::slice::from_mut(&mut self.metallic),
@@ -364,6 +380,8 @@ impl Material {
             std::slice::from_mut(&mut self.anisotropy_rotation),
             std::slice::from_mut(&mut self.clearcoat_normal_scale),
             std::slice::from_mut(&mut self.iridescence_thickness_min),
+            std::slice::from_mut(&mut self.diffuse_transmission),
+            &mut self.diffuse_transmission_color,
         ]
     }
 
@@ -446,7 +464,7 @@ const fn slot(
 }
 
 /// How many kinds of maps a material has.
-pub const MAP_COUNT: usize = 17;
+pub const MAP_COUNT: usize = 19;
 
 /// Every material map: the core five, then the extensions'
 /// (KHR_materials_clearcoat, _transmission, _volume, _specular, _sheen,
@@ -570,6 +588,20 @@ pub const MAP_SLOTS: [MapSlot; MAP_COUNT] = [
         "u_anisotropy_uv",
         "ANISOTROPY",
         false,
+    ),
+    slot(
+        "diffuseTransmissionTexture",
+        "u_diffuse_transmission_tex",
+        "u_diffuse_transmission_uv",
+        "DIFFUSE_TRANSMISSION",
+        false,
+    ),
+    slot(
+        "diffuseTransmissionColorTexture",
+        "u_diffuse_transmission_color_tex",
+        "u_diffuse_transmission_color_uv",
+        "DIFFUSE_TRANSMISSION_COLOR",
+        true,
     ),
 ];
 
@@ -750,6 +782,14 @@ pub(crate) fn doc_maps(mat: &gltf::Material) -> [Option<DocMap>; MAP_COUNT] {
         json("KHR_materials_iridescence", "iridescenceTexture"),
         json("KHR_materials_iridescence", "iridescenceThicknessTexture"),
         json("KHR_materials_anisotropy", "anisotropyTexture"),
+        json(
+            "KHR_materials_diffuse_transmission",
+            "diffuseTransmissionTexture",
+        ),
+        json(
+            "KHR_materials_diffuse_transmission",
+            "diffuseTransmissionColorTexture",
+        ),
     ]
 }
 
@@ -831,6 +871,18 @@ pub fn translate(mat: &gltf::Material) -> Material {
             "iridescenceThicknessMinimum",
             100.0,
         ),
+        diffuse_transmission: ext_f32(
+            mat,
+            "KHR_materials_diffuse_transmission",
+            "diffuseTransmissionFactor",
+            0.0,
+        ),
+        diffuse_transmission_color: ext_vec3(
+            mat,
+            "KHR_materials_diffuse_transmission",
+            "diffuseTransmissionColorFactor",
+            [1.0; 3],
+        ),
     }
 }
 
@@ -899,6 +951,8 @@ pub fn default_material() -> Material {
         anisotropy_rotation: 0.0,
         clearcoat_normal_scale: 1.0,
         iridescence_thickness_min: 100.0,
+        diffuse_transmission: 0.0,
+        diffuse_transmission_color: [1.0; 3],
     }
 }
 

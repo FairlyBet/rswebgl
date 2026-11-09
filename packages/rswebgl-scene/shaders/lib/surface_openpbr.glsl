@@ -242,6 +242,12 @@ vec3 shade_openpbr(Surface s) {
     diffuse_ibl *= diffuse_weight;
 #endif
     vec3 under = scene_irradiance(n) * diffuse_ibl * s.ao;
+#ifdef HAS_DIFFUSE_TRANSMISSION
+    // KHR_materials_diffuse_transmission, as the glTF model: a share of
+    // the diffuse is the light from the other side, by its own color.
+    under = mix(under, scene_irradiance(-n) * s.diffuse_transmission_color * diffuse_weight * s.ao,
+                s.diffuse_transmission);
+#endif
 #ifdef HAS_TRANSMISSION
     under += s.transmission * o.tint * env_transmission(s, o.eta_refract, o.roughness);
 #endif
@@ -293,6 +299,9 @@ vec3 shade_openpbr(Surface s) {
             vec3 spec_d = dv * f_d * s.specular_color * o.comp_dielectric;
             vec3 diff = diffuse_weight
                 * diffuse_brdf(s.base_color, s.diffuse_roughness, NdotL, NdotV, dot(l, v));
+#ifdef HAS_DIFFUSE_TRANSMISSION
+            diff *= 1.0 - s.diffuse_transmission;
+#endif
 #ifdef HAS_SUBSURFACE
             diff *= 1.0 - s.subsurface;
 #endif
@@ -305,6 +314,16 @@ vec3 shade_openpbr(Surface s) {
                                          s.subsurface_radius);
         lit += (1.0 - s.metallic) * (1.0 - o.fg_dielectric) * (1.0 - s.transmission)
             * s.subsurface * sss;
+#endif
+#ifdef HAS_DIFFUSE_TRANSMISSION
+        if (NdotL < 0.0) {
+            // Diffusely through, with the Fresnel of the light mirrored to
+            // the eye's side (the Khronos sample renderer).
+            float m_VdotH = clamp(dot(v, normalize(reflect(l, n) + v)), 0.0, 1.0);
+            lit += (1.0 - s.metallic) * (1.0 - fresnel_dielectric(m_VdotH, o.eta))
+                * diffuse_weight * s.diffuse_transmission * s.diffuse_transmission_color
+                * INV_PI * -NdotL;
+        }
 #endif
 #ifdef HAS_TRANSMISSION
         // Light from behind, through the surface (as glTF's reference does).

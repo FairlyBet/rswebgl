@@ -74,6 +74,7 @@ const HANDLED_EXTENSIONS: &[&str] = &[
     "KHR_draco_mesh_compression",
     "KHR_mesh_quantization",
     "KHR_materials_variants",
+    "KHR_materials_diffuse_transmission",
 ];
 
 // Optional vertex attributes a primitive can have (`DrawItem::attributes`).

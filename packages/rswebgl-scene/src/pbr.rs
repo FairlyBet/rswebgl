@@ -24,8 +24,9 @@ const FRAG: &str = include_str!("../shaders/pbr.frag");
 // Key layout (u64): bits 0..5 the primitive's ATTR_* bits; 5..7 the alpha
 // mode; 7 unlit; 8..12 transmission, volume, clearcoat, dispersion; 12 the
 // glTF reference model; 13 EON diffuse; 14..17 sheen, thin film,
-// anisotropy; 17..34 which maps the material has (`MAP_SLOTS` order);
-// 34..51 which of them read TEXCOORD_1; 51 KHR_texture_transform.
+// anisotropy; 17.. which maps the material has (`MAP_SLOTS` order), then
+// which of them read TEXCOORD_1, KHR_texture_transform, and the features
+// after it (deformers, subsurface, eight joints, diffuse transmission).
 const ATTRS: [(u64, &str); 5] = [
     (ATTR_NORMAL as u64, "HAS_NORMAL"),
     (ATTR_UV0 as u64, "HAS_UV0"),
@@ -62,9 +63,12 @@ const MORPH: u64 = MORPH_POSITION | MORPH_NORMAL | MORPH_TANGENT;
 const SUBSURFACE: u64 = TEXTURE_TRANSFORM << 5;
 // Eight joint influences (JOINTS_1 / WEIGHTS_1 as well).
 const SKIN8: u64 = TEXTURE_TRANSFORM << 6;
-const TOP_BIT: u64 = SKIN8;
+// KHR_materials_diffuse_transmission.
+const DIFFUSE_TRANSMISSION: u64 = TEXTURE_TRANSFORM << 7;
+const TOP_BIT: u64 = DIFFUSE_TRANSMISSION;
 // Feature defines, by bit.
-const FEATURES: [(u64, &str); 17] = [
+const FEATURES: [(u64, &str); 18] = [
+    (DIFFUSE_TRANSMISSION, "HAS_DIFFUSE_TRANSMISSION"),
     (SKIN8, "HAS_SKIN8"),
     (SUBSURFACE, "HAS_SUBSURFACE"),
     (TEXTURE_TRANSFORM, "HAS_TEXTURE_TRANSFORM"),
@@ -92,7 +96,9 @@ const FRAME_SAMPLERS: u32 = 5;
 
 // Maps left out first when a variant would need more texture units than
 // the device has: the subtlest effects first, the base color last.
-const DROP_ORDER: [usize; MAP_COUNT] = [16, 15, 14, 13, 7, 6, 10, 11, 9, 12, 5, 8, 3, 4, 1, 2, 0];
+const DROP_ORDER: [usize; MAP_COUNT] = [
+    16, 15, 14, 13, 18, 7, 6, 10, 11, 17, 9, 12, 5, 8, 3, 4, 1, 2, 0,
+];
 
 const MAP_LAYERS: [u64; MAP_COUNT] = [
     0,
@@ -112,6 +118,8 @@ const MAP_LAYERS: [u64; MAP_COUNT] = [
     IRIDESCENCE,
     IRIDESCENCE, // iridescence, its thickness
     ANISOTROPY,  // anisotropy
+    DIFFUSE_TRANSMISSION,
+    DIFFUSE_TRANSMISSION, // diffuse transmission, its color
 ];
 
 /// A shader variant: which features one program is compiled with.
@@ -152,6 +160,7 @@ impl PbrKey {
             (ANISOTROPY, material.anisotropy_strength() != 0.0),
             // Through the base only: not under a full transmission.
             (SUBSURFACE, material.subsurface_weight() > 0.0),
+            (DIFFUSE_TRANSMISSION, material.diffuse_transmission() > 0.0),
         ];
         for (bit, on) in present {
             if on {
@@ -372,13 +381,14 @@ mod tests {
 
     #[test]
     fn too_many_maps_drop_the_subtlest_first() {
-        let all = PbrKey::from_bits(0x1ffff << MAP_SHIFT | 0x1ffff << UV1_SHIFT);
-        // 17 maps + the frame's 4 on 16 units: 5 go.
+        let mask = (1u64 << MAP_COUNT) - 1;
+        let all = PbrKey::from_bits(mask << MAP_SHIFT | mask << UV1_SHIFT);
+        // 19 maps + the frame's 5 on 16 units: 8 go.
         let (fit, dropped) = all.within_texture_units(16);
-        assert_eq!(dropped, [16, 15, 14, 13, 7]);
-        let maps = |k: PbrKey| (k.0 >> MAP_SHIFT) & 0x1ffff;
+        assert_eq!(dropped, [16, 15, 14, 13, 18, 7, 6, 10]);
+        let maps = |k: PbrKey| (k.0 >> MAP_SHIFT) & mask;
         assert_eq!(maps(fit).count_ones() + FRAME_SAMPLERS, 16);
-        for gone in [16, 15, 14, 13, 7] {
+        for gone in [16, 15, 14, 13, 18, 7, 6, 10] {
             assert_eq!(maps(fit) & 1 << gone, 0, "{}", MAP_SLOTS[gone].name);
             assert_eq!(fit.0 & 1 << (UV1_SHIFT + gone as u64), 0, "its UV bit too");
         }

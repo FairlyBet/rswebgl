@@ -66,6 +66,12 @@ vec3 shade_gltf(Surface s) {
 
     // Image-based light.
     vec3 f_diffuse = scene_irradiance(n) * base;
+#ifdef HAS_DIFFUSE_TRANSMISSION
+    // KHR_materials_diffuse_transmission (Khronos sample renderer): a share
+    // of the diffuse is the light from the other side, by its own color.
+    f_diffuse = mix(f_diffuse, scene_irradiance(-n) * s.diffuse_transmission_color,
+                    s.diffuse_transmission);
+#endif
 #ifdef HAS_TRANSMISSION
     vec3 f_transmission = env_transmission(s, s.ior, roughness) * base;
     f_diffuse = mix(f_diffuse, f_transmission, s.transmission);
@@ -112,6 +118,18 @@ vec3 shade_gltf(Surface s) {
         vec3 intensity = light.color.rgb * light.color.w * light_attenuation(light, to_light);
 
         vec3 l_diffuse = intensity * NdotL * base * INV_PI;
+#ifdef HAS_DIFFUSE_TRANSMISSION
+        l_diffuse *= 1.0 - s.diffuse_transmission;
+        if (dot(n, l) < 0.0) {
+            vec3 btdf = intensity * clamp(dot(-n, l), 0.0, 1.0)
+                * s.diffuse_transmission_color * INV_PI;
+            // Its Fresnel as for the light mirrored to the eye's side.
+            vec3 l_mirror = reflect(l, n);
+            float m_VdotH = clamp(dot(v, normalize(l_mirror + v)), 0.0, 1.0);
+            dielectric_fresnel = F_Schlick(f0_dielectric * specular_weight, f90_dielectric, m_VdotH);
+            l_diffuse += btdf * s.diffuse_transmission;
+        }
+#endif
 #ifdef HAS_TRANSMISSION
         // Through the volume the light is met where the refracted view ray
         // leaves it.

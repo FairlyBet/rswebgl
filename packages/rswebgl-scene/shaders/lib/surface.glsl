@@ -47,6 +47,8 @@ struct Surface {
     float anisotropy;       // strength 0..1
     vec3 anisotropy_t;      // the stretch direction
     vec3 anisotropy_b;
+    float diffuse_transmission; // KHR_materials_diffuse_transmission share
+    vec3 diffuse_transmission_color;
 };
 
 // The roughness a refraction blurs with: none at IOR 1 (Khronos
