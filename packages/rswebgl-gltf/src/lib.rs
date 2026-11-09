@@ -592,6 +592,13 @@ pub async fn load_model(ctx: &Context, url: &str) -> Result<Model, Error> {
     let mut nodes = Vec::new();
     let mut geometry = geometry::GeometryCache::default();
     geometry.set_uv_sets(uv_sets);
+    // Normal-mapped materials (map 2, after their UV slots are set).
+    geometry.set_normal_slots(
+        materials
+            .iter()
+            .map(|m| (m.maps()[2].0 >= 0).then_some(m.maps()[2].1))
+            .collect(),
+    );
     let (center, radius) = scene::build_draw_list(
         ctx,
         &document,

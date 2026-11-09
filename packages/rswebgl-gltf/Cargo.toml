@@ -33,6 +33,7 @@ gltf = { version = "1.4", default-features = false, features = [
     "KHR_materials_volume",
     "KHR_lights_punctual",
 ] }
+bevy_mikktspace = "1"
 
 [dependencies.web-sys]
 workspace = true

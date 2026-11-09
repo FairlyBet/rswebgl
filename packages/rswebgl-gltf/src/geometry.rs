@@ -73,6 +73,10 @@ pub struct GeometryCache {
     // The TEXCOORD sets each material reads, in its two UV slots
     // (`material::assign_uv_slots`; [0, 1] for one not listed).
     uv_sets: Vec<[u32; 2]>,
+    // Per material, the UV slot its normal map reads, if it has one.
+    normal_slots: Vec<Option<u32>>,
+    // MikkTSpace tangents made (by POSITION, NORMAL, TEXCOORD, indices).
+    tangents: HashMap<(usize, usize, usize, Option<usize>), BufferId>,
     // Skin weights, renormalized (by WEIGHTS_0 and WEIGHTS_1 accessor).
     weights: HashMap<(usize, Option<usize>), (BufferId, Option<BufferId>)>,
 }
@@ -89,6 +93,7 @@ impl GeometryCache {
                     .values()
                     .flat_map(|(a, b)| std::iter::once(*a).chain(*b)),
             )
+            .chain(self.tangents.values().copied())
     }
 
     /// Every vertex array created, one per primitive of each built mesh.
@@ -113,6 +118,12 @@ impl GeometryCache {
     /// `uv_sets[m]` says (before building meshes).
     pub fn set_uv_sets(&mut self, uv_sets: Vec<[u32; 2]>) {
         self.uv_sets = uv_sets;
+    }
+
+    /// Which materials are normal-mapped, and the UV slot the map reads:
+    /// their primitives without TANGENT get MikkTSpace tangents.
+    pub fn set_normal_slots(&mut self, slots: Vec<Option<u32>>) {
+        self.normal_slots = slots;
     }
 
     /// The primitives of `mesh`, built on first request.
@@ -209,6 +220,21 @@ impl GeometryCache {
             ctx.vertex_array_attr(vao, loc, buf, &VertexAttr::float(size));
             attributes |= bit;
         }
+        // A normal map without TANGENT: MikkTSpace tangents, as glTF 2.0
+        // §3.7.2.1 asks (the shader's derivative frame otherwise).
+        let normal_slot = primitive
+            .material()
+            .index()
+            .and_then(|m| self.normal_slots.get(m).copied().flatten());
+        if attributes & ATTR_TANGENT == 0
+            && attributes & ATTR_NORMAL != 0
+            && primitive.mode() == gltf::mesh::Mode::Triangles
+            && let Some(slot) = normal_slot
+            && let Some(t) = self.mikktspace(ctx, primitive, buffers, uv[slot as usize & 1])
+        {
+            ctx.vertex_array_attr(vao, 3, t, &VertexAttr::float(4));
+            attributes |= ATTR_TANGENT;
+        }
         // Skinning needs both: four joint indices and their weights, and
         // four more with JOINTS_1 / WEIGHTS_1.
         let joints = primitive.get(&gltf::Semantic::Joints(0));
@@ -263,6 +289,60 @@ impl GeometryCache {
             aabb_max,
             morph: morph.map(|(m, _)| m),
         })
+    }
+
+    // MikkTSpace tangents (bevy_mikktspace, a byte-identical port of the
+    // reference) for a triangle primitive, from its positions, normals and
+    // TEXCOORD `set`, per vertex: a vertex shared by faces whose tangents
+    // differ keeps one (as Bevy and three.js do without welding).
+    fn mikktspace(
+        &mut self,
+        ctx: &Context,
+        primitive: &gltf::Primitive,
+        buffers: &[Vec<u8>],
+        set: u32,
+    ) -> Option<BufferId> {
+        let pos = primitive.get(&gltf::Semantic::Positions)?;
+        let nor = primitive.get(&gltf::Semantic::Normals)?;
+        let uv = primitive.get(&gltf::Semantic::TexCoords(set))?;
+        let key = (
+            pos.index(),
+            nor.index(),
+            uv.index(),
+            primitive.indices().map(|a| a.index()),
+        );
+        if let Some(&b) = self.tangents.get(&key) {
+            return Some(b);
+        }
+        let positions = crate::accessor::read_vecs::<3>(&pos, buffers)?;
+        let normals = crate::accessor::read_vecs::<3>(&nor, buffers)?;
+        let uvs = crate::accessor::read_vecs::<2>(&uv, buffers)?;
+        let n = positions.len();
+        if normals.len() != n || uvs.len() != n {
+            return None;
+        }
+        let reader = primitive.reader(|b| buffers.get(b.index()).map(|v| v.as_slice()));
+        let indices: Vec<u32> = match reader.read_indices() {
+            Some(i) => i.into_u32().collect(),
+            None => (0..n as u32).collect(),
+        };
+        if indices.iter().any(|&i| i as usize >= n) {
+            return None;
+        }
+        let mut mesh = Mikk {
+            positions: &positions,
+            normals: &normals,
+            uvs: &uvs,
+            indices: &indices,
+            out: vec![[1.0, 0.0, 0.0, 1.0]; n],
+        };
+        bevy_mikktspace::generate_tangents(&mut mesh).ok()?;
+        let b = ctx
+            .create_buffer(BufferUsage::StaticDraw, bytes_of(mesh.out.as_flattened()))
+            .inspect_err(|e| console::error(&format!("[rswebgl-gltf] tangents: {e}")))
+            .ok()?;
+        self.tangents.insert(key, b);
+        Some(b)
     }
 
     // The skin weights (WEIGHTS_0, and WEIGHTS_1 if given) as floats,
@@ -400,6 +480,59 @@ fn accessor_bounds(a: &gltf::Accessor) -> Option<([f32; 3], [f32; 3])> {
         Some(out)
     };
     Some((read(a.min())?, read(a.max())?))
+}
+
+// A triangle list for bevy_mikktspace, and the tangents it gives back.
+struct Mikk<'a> {
+    positions: &'a [[f32; 3]],
+    normals: &'a [[f32; 3]],
+    uvs: &'a [[f32; 2]],
+    indices: &'a [u32],
+    out: Vec<[f32; 4]>,
+}
+
+impl Mikk<'_> {
+    fn vertex(&self, face: usize, vert: usize) -> usize {
+        self.indices[face * 3 + vert] as usize
+    }
+}
+
+impl bevy_mikktspace::Geometry for Mikk<'_> {
+    fn num_faces(&self) -> usize {
+        self.indices.len() / 3
+    }
+
+    fn num_vertices_of_face(&self, _face: usize) -> usize {
+        3
+    }
+
+    fn position(&self, face: usize, vert: usize) -> [f32; 3] {
+        self.positions[self.vertex(face, vert)]
+    }
+
+    fn normal(&self, face: usize, vert: usize) -> [f32; 3] {
+        self.normals[self.vertex(face, vert)]
+    }
+
+    fn tex_coord(&self, face: usize, vert: usize) -> [f32; 2] {
+        self.uvs[self.vertex(face, vert)]
+    }
+
+    fn set_tangent(
+        &mut self,
+        tangent_space: Option<bevy_mikktspace::TangentSpace>,
+        face: usize,
+        vert: usize,
+    ) {
+        if let Some(t) = tangent_space {
+            let v = self.vertex(face, vert);
+            // xyz and the bitangent's sign. glTF's v runs down the image,
+            // MikkTSpace's up: w flips, as three.js'
+            // computeMikkTSpaceTangents and Khronos' sample renderer do.
+            let [x, y, z, w] = t.tangent_encoded();
+            self.out[v] = [x, y, z, -w];
+        }
+    }
 }
 
 /// glTF primitive topology → our `DrawMode` (the GL enum values are identical).
