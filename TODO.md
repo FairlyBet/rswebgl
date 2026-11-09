@@ -35,10 +35,16 @@ set aside for now).
    desktop, ETC2 / EAC on mobile, two-channel formats for normal maps.
    2048² RGBA8 with mips is ~21 MB, BC1 / ETC2 ~2.8 MB. BC6H for the IBL
    cubes on desktop.
-7. **Uniform uploads on mobile**: measure many `bufferSubData` runs against
-   one upload per frame on a phone (`examples/viewer/ubo-bench.html`); then decide whether
-   materials move into one shared UBO (`bindBufferRange` per draw) instead
-   of plain uniforms.
+7. **Uniform uploads on mobile**: measured (`examples/viewer/ubo-bench.html`,
+   Mali-G57 MC2, Chrome 157, 1000 draws × 80 bytes, CPU submit / fence ms):
+   one upload of a big UBO 1.31 / 13.0; a `bufferSubData` per draw into it
+   2.97 / 16.5; a small UBO rewritten per draw 2.31 / 21.0; plain uniforms
+   1.77 / 15.4; a ring of three or orphaning no better than one upload.
+   A tenth changing (100 scattered writes) ≈ uploading all 80 KB (1.13 vs
+   1.05): a write costs about as much as ~1 KB of upload. So: merge dirty
+   runs less than ~1 KB apart into one write (`uniform_buffer.rs`); a
+   shared material UBO would gain ~25% over plain uniforms — low priority,
+   per-object data already goes through the instance texture.
 8. Later: bloom, LOD by meshoptimizer's simplifier, `KHR_animation_pointer`,
    `KHR_node_visibility`, `KHR_materials_volume_scatter`, `ctx.gpuInfo()`.
 
