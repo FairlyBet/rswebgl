@@ -118,7 +118,7 @@ async fn peeled_glass_sees_the_glass_behind_it() {
     scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
     scene.add_model(load_model(&ctx, &asset_url()).await.expect("load"));
 
-    let mut center = async |scene: &mut Scene| -> [u8; 4] {
+    let center = async |scene: &mut Scene| -> [u8; 4] {
         wasm_bindgen_futures::JsFuture::from(scene.when_ready())
             .await
             .unwrap();

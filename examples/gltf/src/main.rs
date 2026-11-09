@@ -183,7 +183,7 @@ fn run(ctx: Context, model: Model) {
     let near = (dist - radius * 2.0).max(radius * 0.01).max(1e-4);
     let far = dist + radius * 2.0;
 
-    let f: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));
+    let f: FrameCallback = Rc::new(RefCell::new(None));
     let g = f.clone();
     let win = web_sys::window().expect("no window");
 
@@ -220,3 +220,6 @@ fn model_url() -> String {
         .and_then(|p| p.get("model"))
         .unwrap_or_else(|| MODEL_URL.to_string())
 }
+
+// The requestAnimationFrame callback, holding itself to schedule the next frame.
+type FrameCallback = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;

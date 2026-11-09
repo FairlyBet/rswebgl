@@ -167,7 +167,7 @@ fn main() {
     let view = Mat4::from_translation(Vec3::new(0.0, 0.0, -3.0));
 
     // requestAnimationFrame loop with self-reference via Rc<RefCell<Option<Closure>>>.
-    let f: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));
+    let f: FrameCallback = Rc::new(RefCell::new(None));
     let g = f.clone();
     let win = window.clone();
 
@@ -191,3 +191,6 @@ fn main() {
 
     let _ = window.request_animation_frame(g.borrow().as_ref().unwrap().as_ref().unchecked_ref());
 }
+
+// The requestAnimationFrame callback, holding itself to schedule the next frame.
+type FrameCallback = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;

@@ -398,7 +398,7 @@ async fn environments_bake_in_the_background() {
     scene.set_background(0.0);
     ready(&scene).await;
     let flat = |v: f32| encode_hdr(8, 4, &[v; 8 * 4 * 3]);
-    let mut sky = |scene: &mut Scene| look(scene, &ctx, &gl, camera, [0.0, 0.0, -1.0]);
+    let sky = |scene: &mut Scene| look(scene, &ctx, &gl, camera, [0.0, 0.0, -1.0]);
     let before = sky(&mut scene); // the default: white at 0.2
 
     scene.set_environment_hdr(&flat(0.05), 32).expect("start");
@@ -447,7 +447,7 @@ async fn subsurface_wraps_light_and_coat_anisotropy_stretches_highlights() {
     set(&mut scene, "base_metalness", "0");
     set(&mut scene, "specular_roughness", "1");
 
-    let mut row = |scene: &mut Scene| -> Vec<u8> {
+    let row = |scene: &mut Scene| -> Vec<u8> {
         let mut pass = Pass::to_default();
         pass.set_clear(&ClearMask::color_depth());
         scene.render(camera, &mut pass);

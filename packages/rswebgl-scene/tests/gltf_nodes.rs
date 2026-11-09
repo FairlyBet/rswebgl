@@ -115,7 +115,7 @@ async fn gltf_cameras_and_lights_become_entities() {
     let names: Vec<_> = lights.iter().map(|&e| scene.name(e)).collect();
     assert_eq!(names, [Some("bulb".into()), Some("spot".into())]);
 
-    let mut center = || {
+    let center = || {
         let mut px = [0u8; 4];
         gl.read_pixels_with_opt_u8_array(
             SIZE / 2,

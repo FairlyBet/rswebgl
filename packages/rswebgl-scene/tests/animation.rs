@@ -164,7 +164,7 @@ async fn skins_and_morph_targets_follow_the_animation() {
     assert_eq!(scene.animations(root), ["Move"]);
     assert!((scene.animation_duration(root, 0) - 1.0).abs() < 1e-6);
 
-    let mut frame = async |scene: &mut Scene| -> [[u8; 4]; 3] {
+    let frame = async |scene: &mut Scene| -> [[u8; 4]; 3] {
         wasm_bindgen_futures::JsFuture::from(scene.when_ready())
             .await
             .unwrap();
