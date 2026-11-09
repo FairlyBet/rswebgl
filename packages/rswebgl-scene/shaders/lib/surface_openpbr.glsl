@@ -245,8 +245,9 @@ vec3 shade_openpbr(Surface s) {
 #ifdef HAS_DIFFUSE_TRANSMISSION
     // KHR_materials_diffuse_transmission, as the glTF model: a share of
     // the diffuse is the light from the other side, by its own color.
-    under = mix(under, scene_irradiance(-n) * s.diffuse_transmission_color * diffuse_weight * s.ao,
-                s.diffuse_transmission);
+    vec3 dt_under = diffuse_through_volume(
+        scene_irradiance(-n) * s.diffuse_transmission_color, s) * diffuse_weight * s.ao;
+    under = mix(under, dt_under, s.diffuse_transmission);
 #endif
 #ifdef HAS_TRANSMISSION
     under += s.transmission * o.tint * env_transmission(s, o.eta_refract, o.roughness);
@@ -321,8 +322,8 @@ vec3 shade_openpbr(Surface s) {
             // the eye's side (the Khronos sample renderer).
             float m_VdotH = clamp(dot(v, normalize(reflect(l, n) + v)), 0.0, 1.0);
             lit += (1.0 - s.metallic) * (1.0 - fresnel_dielectric(m_VdotH, o.eta))
-                * diffuse_weight * s.diffuse_transmission * s.diffuse_transmission_color
-                * INV_PI * -NdotL;
+                * diffuse_weight * s.diffuse_transmission
+                * diffuse_through_volume(s.diffuse_transmission_color * INV_PI * -NdotL, s);
         }
 #endif
 #ifdef HAS_TRANSMISSION

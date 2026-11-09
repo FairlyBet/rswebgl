@@ -68,9 +68,10 @@ vec3 shade_gltf(Surface s) {
     vec3 f_diffuse = scene_irradiance(n) * base;
 #ifdef HAS_DIFFUSE_TRANSMISSION
     // KHR_materials_diffuse_transmission (Khronos sample renderer): a share
-    // of the diffuse is the light from the other side, by its own color.
-    f_diffuse = mix(f_diffuse, scene_irradiance(-n) * s.diffuse_transmission_color,
-                    s.diffuse_transmission);
+    // of the diffuse is the light from the other side, by its own color,
+    // through the volume's thickness.
+    vec3 dt_ibl = diffuse_through_volume(scene_irradiance(-n) * s.diffuse_transmission_color, s);
+    f_diffuse = mix(f_diffuse, dt_ibl, s.diffuse_transmission);
 #endif
 #ifdef HAS_TRANSMISSION
     vec3 f_transmission = env_transmission(s, s.ior, roughness) * base;
@@ -121,8 +122,8 @@ vec3 shade_gltf(Surface s) {
 #ifdef HAS_DIFFUSE_TRANSMISSION
         l_diffuse *= 1.0 - s.diffuse_transmission;
         if (dot(n, l) < 0.0) {
-            vec3 btdf = intensity * clamp(dot(-n, l), 0.0, 1.0)
-                * s.diffuse_transmission_color * INV_PI;
+            vec3 btdf = diffuse_through_volume(
+                intensity * clamp(dot(-n, l), 0.0, 1.0) * s.diffuse_transmission_color * INV_PI, s);
             // Its Fresnel as for the light mirrored to the eye's side.
             vec3 l_mirror = reflect(l, n);
             float m_VdotH = clamp(dot(v, normalize(l_mirror + v)), 0.0, 1.0);

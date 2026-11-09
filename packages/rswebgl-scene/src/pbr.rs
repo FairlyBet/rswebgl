@@ -146,14 +146,16 @@ impl PbrKey {
         if material.unlit() {
             key |= UNLIT;
         }
-        // Volume and dispersion only matter for light going through.
+        // Volume and dispersion only matter for light going through (the
+        // volume also for diffuse transmission, which it attenuates).
         let transmissive = material.transmission() > 0.0;
-        let volume = transmissive && material.thickness() > 0.0;
+        let diffuse_through = material.diffuse_transmission() > 0.0;
+        let volume = (transmissive || diffuse_through) && material.thickness() > 0.0;
         let present = [
             (TRANSMISSION, transmissive),
             (VOLUME, volume),
             (CLEARCOAT, material.clearcoat() > 0.0),
-            (DISPERSION, volume && material.dispersion() > 0.0),
+            (DISPERSION, transmissive && volume && material.dispersion() > 0.0),
             (DIFFUSE_ROUGHNESS, material.diffuse_roughness() > 0.0),
             (SHEEN, material.sheen_color().iter().any(|&c| c > 0.0)),
             (IRIDESCENCE, material.iridescence() > 0.0),

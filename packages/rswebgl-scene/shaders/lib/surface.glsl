@@ -72,6 +72,18 @@ vec3 volume_attenuation(vec3 radiance, float distance, vec3 color, float at_dist
     return pow(color, vec3(distance / at_distance)) * radiance;
 }
 
+// Diffusely transmitted light through the volume: the thickness scaled by
+// the model's mean scale (Khronos diffuseTransmissionThickness), straight
+// through. Unchanged without a volume.
+vec3 diffuse_through_volume(vec3 radiance, Surface s) {
+#ifdef HAS_VOLUME
+    float distance = s.thickness * (v_model_scale.x + v_model_scale.y + v_model_scale.z) / 3.0;
+    return volume_attenuation(radiance, distance, s.attenuation_color, s.attenuation_distance);
+#else
+    return radiance;
+#endif
+}
+
 // Light arriving through the surface, attenuated by the volume: met where
 // the refracted view ray leaves it (straight through when thin-walled),
 // each color channel bent by its own IOR with dispersion. The opaque scene

@@ -99,8 +99,6 @@ its owner.
   tangents differ keeps one (no welding split, as Bevy and three.js).
 - `EXT_mesh_gpu_instancing` with quantized instance attributes isn't read
   (drawn once, with a warning).
-- Diffuse transmission isn't attenuated by a volume (the Khronos renderer
-  does when the material also has `KHR_materials_volume`).
 
 ## Scene (`packages/rswebgl-scene`)
 
