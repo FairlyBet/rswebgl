@@ -110,10 +110,12 @@ pub struct HdrOutput {
     // The resolved (or directly rendered) radiance the display pass reads.
     resolve_fb: FramebufferId,
     color: TextureId,
-    // A half-size copy of the opaque scene with mips, for transmission.
+    // A copy of the opaque scene with mips, for transmission (`grab_scale` of the size).
     grab_fb: FramebufferId,
     grab: TextureId,
     grab_size: (i32, i32),
+    // The copy's share of the target's size (`set_transmission_scale`).
+    grab_scale: f32,
     size: (i32, i32),
     samples: i32,
     reverse_z: bool,
@@ -237,6 +239,7 @@ impl HdrOutput {
             grab_fb: FramebufferId::NULL,
             grab: TextureId::NULL,
             grab_size: (0, 0),
+            grab_scale: 1.0,
             color: TextureId::NULL,
             size: (0, 0),
             samples: samples.clamp(0, rswebgl::limits::max_samples() as i32),
@@ -269,6 +272,17 @@ impl HdrOutput {
     /// Whether temporal antialiasing is on.
     pub fn taa(&self) -> bool {
         self.taa.is_some()
+    }
+
+    /// The size of the opaque-scene copy transmission sees through, as a
+    /// share of the target (0.25…1, default 1): lower saves memory and the
+    /// copy's time, blurring what shows through glass.
+    pub fn set_transmission_scale(&mut self, scale: f32) {
+        let scale = if scale.is_finite() { scale.clamp(0.25, 1.0) } else { 1.0 };
+        if scale != self.grab_scale {
+            self.grab_scale = scale;
+            self.size = (0, 0); // remade at the next prepare
+        }
     }
 
     /// Starts the TAA history over (a camera cut: nothing to reuse).
@@ -490,7 +504,7 @@ impl HdrOutput {
     }
 
     /// Copies what the target holds (the resolved opaque scene) into the
-    /// half-size mipmapped texture transmissive surfaces see through.
+    /// mipmapped texture transmissive surfaces see through.
     pub fn grab(&self, ctx: &Context) {
         let (w, h) = self.size;
         let (gw, gh) = self.grab_size;
@@ -682,7 +696,8 @@ impl HdrOutput {
         ctx.framebuffer_attach_color_texture_2d(resolve_fb, 0, color, 0);
         self.resolve_fb = resolve_fb;
 
-        let (gw, gh) = ((w / 2).max(1), (h / 2).max(1));
+        let gw = ((w as f32 * self.grab_scale).round() as i32).max(1);
+        let gh = ((h as f32 * self.grab_scale).round() as i32).max(1);
         let grab = ctx.create_texture(
             TextureTarget::Texture2D,
             TextureMinFilter::LinearMipmapLinear,

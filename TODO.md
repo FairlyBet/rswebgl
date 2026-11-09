@@ -112,8 +112,11 @@ its owner.
   meshes, Godot's velocity disocclusion, FSR1 RCAS sharpening.
 - Motion vectors: custom instanced draws (`instance_count` > 1) get none; a
   mesh's first frame has no previous state.
-- The reactive mask is binary (FSR2's sample settings); per-material
-  reactivity would be finer.
+- The reactive mask is binary (FSR2's threshold, a value of 0.5 measured
+  on refracting glass); per-material reactivity would be finer. Through
+  glass, while still, the clip box is three times wider: the refraction
+  jumps with the jitter and a tight box flickered (DragonDispersion, still
+  camera: frame-to-frame change ~10x lower).
 - TAAU (render below the output size) was tried and reverted (3543d86): a
   Karis / Unreal-style reconstruction converged on a still scene but ghosted
   badly while turning. Next attempt: port FSR2's accumulate pass properly
@@ -138,7 +141,8 @@ its owner.
   targets (e.g. RGBM in RGBA8).
 - Materials: 19 maps; a variant needing more samplers than the device has
   drops the subtlest, reported. The coat's normal map uses the base's
-  tangent frame. Transmission sees a half-size copy of the opaque scene;
+  tangent frame. Transmission sees a copy of the opaque scene
+  (`setTransmissionResolution`, full size by default);
   glass behind glass needs depth peeling (`setTransmissionLayers(2..4)`;
   peeled glass isn't multisampled, deeper layers aren't drawn; dual peeling
   would halve the passes but needs `EXT_float_blend`). Volumes refract once

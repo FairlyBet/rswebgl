@@ -96,6 +96,8 @@ const ctx = Context.fromCanvas(canvas, options);
 const fb = ctx.defaultFramebuffer();
 fb.setClearColor(0.05, 0.05, 0.06, 1);
 const scene = new Scene(ctx);
+// Phones: a half-size copy of the scene behind glass (memory, time).
+if (matchMedia("(pointer: coarse)").matches) scene.setTransmissionResolution(0.5);
 // GPU time per pass, where the browser exposes timer queries.
 const gpuTiming = scene.setGpuProfiling(true);
 // For poking from the devtools console.

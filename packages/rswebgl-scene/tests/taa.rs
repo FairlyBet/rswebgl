@@ -382,7 +382,8 @@ async fn taa_reactive_mask_keeps_transparent_meshes_from_lagging() {
         .max()
         .unwrap();
     assert!(
-        error <= 4,
+        // 6 with the mask (it takes half the frame: see taa.frag), 9 without.
+        error <= 7,
         "off by {error}: {:?} vs {:?}",
         &img[row + 8..row + 24],
         &reference[row + 8..row + 24]

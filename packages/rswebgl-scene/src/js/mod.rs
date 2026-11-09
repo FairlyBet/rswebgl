@@ -115,6 +115,8 @@ pub struct Scene {
     dither: bool,
     // RCAS strength in the display pass (0 off).
     sharpness: f32,
+    // The transmission copy's share of the target (`setTransmissionResolution`).
+    transmission_scale: f32,
     // The canvas pass `renderFrame` reuses.
     frame_pass: Pass,
     // Its second pass with HDR output: what draws after the opaque scene.
@@ -185,6 +187,7 @@ impl Scene {
             tone_mapping: crate::output::ToneMapping::Neutral,
             dither: true,
             sharpness: 0.0,
+            transmission_scale: 1.0,
             frame_pass,
             late_pass: Pass::to_default(),
             glass_pass: Pass::to_default(),

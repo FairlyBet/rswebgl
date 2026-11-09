@@ -108,6 +108,24 @@ impl Scene {
     pub fn sharpening(&self) -> f32 {
         self.sharpness
     }
+
+    /// The resolution of the opaque-scene copy transmissive surfaces (glass)
+    /// see through, as a share of the canvas: 1 (the default) full size,
+    /// down to 0.25. Lower saves memory and the copy's time on phones;
+    /// what shows through glass gets blurrier. With HDR output.
+    #[wasm_bindgen(js_name = setTransmissionResolution)]
+    pub fn set_transmission_resolution(&mut self, scale: f32) {
+        self.transmission_scale = if scale.is_finite() {
+            scale.clamp(0.25, 1.0)
+        } else {
+            1.0
+        };
+    }
+
+    #[wasm_bindgen(js_name = transmissionResolution)]
+    pub fn transmission_resolution(&self) -> f32 {
+        self.transmission_scale
+    }
 }
 
 impl Scene {
@@ -133,6 +151,7 @@ impl Scene {
             }
         }
         if let Some(out) = &mut self.hdr {
+            out.set_transmission_scale(self.transmission_scale);
             match out.prepare_split(&self.ctx, w, h, pass, false) {
                 Ok(()) => {
                     out.prepare_late(late);
