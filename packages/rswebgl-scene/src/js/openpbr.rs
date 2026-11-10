@@ -9,7 +9,7 @@
 //! | base_color, geometry_opacity | baseColorFactor rgb, a |
 //! | base_metalness | metallicFactor |
 //! | specular_weight, specular_color, specular_roughness, specular_ior | specularFactor, specularColorFactor, roughnessFactor, ior |
-//! | specular_roughness_anisotropy | anisotropyStrength |
+//! | specular_roughness_anisotropy | anisotropyStrength (glTF's meaning: shaded as the Khronos lobe) |
 //! | transmission_weight, transmission_color, transmission_depth | transmissionFactor, attenuationColor, attenuationDistance |
 //! | transmission_dispersion_abbe_number | dispersion = 20 / Abbe |
 //! | coat_weight, coat_roughness, coat_ior, coat_color, coat_darkening | clearcoatFactor, clearcoatRoughnessFactor, coatIor, coatColor, coatDarkening |

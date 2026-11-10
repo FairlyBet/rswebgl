@@ -11,8 +11,10 @@
 // - every layer passes on (1 − its directional albedo), from MaterialX's
 //   analytic GGX fit with Turquin's multiple-scattering compensation;
 // - diffuse is EON (energy-preserving Oren-Nayar), Lambert at roughness 0;
-// - anisotropy: α_t = α √(2 / (1 + (1 − a)²)), α_b = (1 − a) α_t, the
-//   albedo at their geometric mean; image-based light along a bent normal;
+// - anisotropy: the strength is glTF's, so Khronos' lobe (α_t = mix(α, 1,
+//   a²), α_b = α) in place of OpenPBR's parametrization, the albedo at
+//   their geometric mean; image-based light along a bent normal; the
+//   coat's (OpenPBR-only) keeps OpenPBR's;
 // - thin film (Belcour-Barla, MaterialX's Airy form) on the dielectric's
 //   and the metal's reflection, its albedo blended from the mirror value
 //   to the rough fit by √α (MaterialX), not on transmission;
@@ -100,9 +102,14 @@ OpenPbr openpbr_setup(Surface s, float NdotV, float coat_NdotV) {
     o.alpha_t = alpha;
     o.alpha_b = alpha;
 #ifdef HAS_ANISOTROPY
-    float a1 = 1.0 - s.anisotropy;
-    o.alpha_t = alpha * sqrt(2.0 / (1.0 + a1 * a1));
-    o.alpha_b = max(a1 * o.alpha_t, 1e-4);
+    // The strength is glTF's (KHR_materials_anisotropy, what's stored), so
+    // its lobe as the Khronos renderer builds it: the tangent roughens
+    // toward 1 with strength², the bitangent keeps the material's. OpenPBR's
+    // own parametrization (α_t = α √(2 / (1 + (1 − a)²)), α_b = (1 − a) α_t)
+    // read from that strength sharpened the bitangent toward a mirror
+    // instead: a thin streak where the reference shows a broad brush.
+    o.alpha_t = mix(alpha, 1.0, s.anisotropy * s.anisotropy);
+    o.alpha_b = alpha;
     alpha = sqrt(o.alpha_t * o.alpha_b);
 #endif
     o.alpha = alpha;
