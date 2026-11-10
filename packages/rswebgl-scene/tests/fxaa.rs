@@ -138,6 +138,10 @@ async fn fxaa_smooths_edges() {
     assert!(between(&again) > 8, "after remake: {}", between(&again));
 
     assert!(!scene.set_fxaa(false));
-    assert_eq!(between(&frame(&gl, &mut scene, camera).await), 0, "off again");
+    assert_eq!(
+        between(&frame(&gl, &mut scene, camera).await),
+        0,
+        "off again"
+    );
     scene.destroy();
 }

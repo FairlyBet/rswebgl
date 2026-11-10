@@ -37,6 +37,7 @@ use crate::shader::chunk;
 const PRESENT_FRAG: &str = include_str!("../shaders/present.frag");
 const TAA_FRAG: &str = include_str!("../shaders/taa.frag");
 const FXAA_FRAG: &str = include_str!("../shaders/fxaa.frag");
+const GRAB_DOWN_FRAG: &str = include_str!("../shaders/grab_down.frag");
 /// The velocity target's clear value: no motion vector here (taa.frag
 /// reprojects the depth instead).
 const VELOCITY_NONE: f32 = 1000.0;
@@ -166,6 +167,8 @@ pub struct HdrOutput {
     color: TextureId,
     // A copy of the opaque scene with mips, for transmission (`grab_scale` of the size).
     grab_fb: FramebufferId,
+    // Its level 1 (drawn by `grab_down`, firefly-suppressed).
+    grab_fb1: FramebufferId,
     grab: TextureId,
     grab_size: (i32, i32),
     // The copy's share of the target's size (`set_transmission_scale`).
@@ -180,6 +183,8 @@ pub struct HdrOutput {
     f_tone_mapping: ParamField,
     f_dither: ParamField,
     f_sharpness: ParamField,
+    // The scene copy's first mip: program, its layout and group.
+    grab_down: (ProgramId, ParamLayoutId, ParamGroupId),
     state: StateId,
     generation: u32,
     // Depth peeling's targets, made on first use (`peel`).
@@ -284,6 +289,12 @@ impl HdrOutput {
         } else {
             None
         };
+        let grab_down = {
+            let frag = ShaderSource::plain("grab_down.frag", &format!("{prefix}{GRAB_DOWN_FRAG}"));
+            let program = ctx.create_program_from(&vert, &frag)?;
+            let layout = ctx.create_param_layout(&ParamLayoutBuilder::new().texture("u_source"))?;
+            (program, layout, ctx.create_param_group(layout)?)
+        };
         let mut state = RenderState::new();
         state.depth_test = false;
         state.depth_mask = false;
@@ -294,6 +305,7 @@ impl HdrOutput {
             resolve_fb: FramebufferId::NULL,
             grab_fb: FramebufferId::NULL,
             grab: TextureId::NULL,
+            grab_fb1: FramebufferId::NULL,
             grab_size: (0, 0),
             grab_scale: 1.0,
             color: TextureId::NULL,
@@ -307,6 +319,7 @@ impl HdrOutput {
             f_tone_mapping: ctx.param_field(layout, "u_tone_mapping")?,
             f_dither: ctx.param_field(layout, "u_dither")?,
             f_sharpness: ctx.param_field(layout, "u_sharpness")?,
+            grab_down,
             state: ctx.render_state(&state),
             generation: ctx.generation(),
             peel: None,
@@ -616,7 +629,36 @@ impl HdrOutput {
             &ClearMask::color(),
             TextureMagFilter::Linear,
         );
+        let levels = mip_levels(gw, gh) as i32;
+        if levels < 2 || self.grab_fb1.is_null() {
+            ctx.texture_generate_mipmaps(self.grab);
+            return;
+        }
+        // Level 1 from level 0, fireflies suppressed (grab_down.frag); the
+        // texture sampled at level 0 alone meanwhile (no feedback loop).
+        let (program, _, group) = self.grab_down;
+        ctx.texture_set_base_level(self.grab, 0);
+        ctx.texture_set_max_level(self.grab, 0);
+        ctx.param_set_texture_by_name(group, "u_source", self.grab);
+        let mut pass = Pass::new(self.grab_fb1);
+        pass.set_viewport(&Viewport::new(0, 0, (gw / 2).max(1), (gh / 2).max(1)));
+        pass.set_clear(&ClearMask::color()); // every texel written
+        let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
+        groups[0] = group;
+        pass.push_groups_with_key(
+            0,
+            program,
+            self.state,
+            VertexArrayId::NULL,
+            groups,
+            &DrawCommand::arrays(DrawMode::Triangles, 0, 3),
+        );
+        ctx.render(&pass);
+        // The rest from level 1 (box), then sampled whole again.
+        ctx.texture_set_base_level(self.grab, 1);
+        ctx.texture_set_max_level(self.grab, levels - 1);
         ctx.texture_generate_mipmaps(self.grab);
+        ctx.texture_set_base_level(self.grab, 0);
     }
 
     // The depth format of the target (what depth blits copy between).
@@ -854,6 +896,12 @@ impl HdrOutput {
         let grab_fb = ctx.create_framebuffer(gw, gh)?;
         ctx.framebuffer_attach_color_texture_2d(grab_fb, 0, grab, 0);
         (self.grab, self.grab_fb, self.grab_size) = (grab, grab_fb, (gw, gh));
+        if mip_levels(gw, gh) > 1 {
+            let (w1, h1) = ((gw / 2).max(1), (gh / 2).max(1));
+            let fb1 = ctx.create_framebuffer(w1, h1)?;
+            ctx.framebuffer_attach_color_texture_2d(fb1, 0, grab, 1);
+            self.grab_fb1 = fb1;
+        }
 
         // Multisampled if the device takes it for this format; else straight
         // into the texture. No more samples than both formats take.
@@ -995,6 +1043,10 @@ impl HdrOutput {
         if !self.grab_fb.is_null() {
             ctx.destroy_framebuffer(self.grab_fb);
         }
+        if !self.grab_fb1.is_null() {
+            ctx.destroy_framebuffer(self.grab_fb1);
+        }
+        self.grab_fb1 = FramebufferId::NULL;
         if !self.grab.is_null() {
             ctx.destroy_texture(self.grab);
         }
@@ -1019,6 +1071,11 @@ impl HdrOutput {
     pub fn destroy(mut self, ctx: &Context) {
         ctx.destroy_param_group(self.group);
         ctx.destroy_param_layout(self.layout);
+        ctx.destroy_param_group(self.grab_down.2);
+        ctx.destroy_param_layout(self.grab_down.1);
+        if self.generation == ctx.generation() {
+            ctx.destroy_program(self.grab_down.0);
+        }
         if let Some(taa) = &self.taa {
             ctx.destroy_param_group(taa.group);
             ctx.destroy_param_layout(taa.layout);
