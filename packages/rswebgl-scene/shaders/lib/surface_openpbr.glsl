@@ -7,7 +7,11 @@
 // Follows the spec where it is explicit and MaterialX's reference graph
 // (libraries/bxdf/open_pbr_surface.mtlx, Apache-2.0) where it leaves room:
 // - the dielectric's specular_weight modulates its IOR, and the exact
-//   Fresnel of that IOR shades it; specular_color tints reflection only;
+//   Fresnel of that IOR shades it; glTF's specular semantics (what's
+//   stored, KHR_materials_specular): specular_color tints F0 only
+//   (clamped, grazing stays white), neither touches the metal (no F82
+//   tint) or the refraction angle; under a coat the base keeps its own
+//   IOR against air (glTF's clearcoat leaves the base as it is);
 // - every layer passes on (1 − its directional albedo), from MaterialX's
 //   analytic GGX fit with Turquin's multiple-scattering compensation;
 // - diffuse is EON (energy-preserving Oren-Nayar), Lambert at roughness 0;
@@ -40,14 +44,14 @@ struct OpenPbr {
     float alpha_t;        // along the anisotropy direction
     float alpha_b;
     float roughness;      // its perceptual roughness
-    float eta;            // the dielectric's IOR after specular_weight (relative to the coat)
-    float eta_refract;    // what refraction bends by: the base's own (after specular_weight)
+    float eta;            // the dielectric's IOR after specular_weight
+    float eta_refract;    // what refraction bends by: the IOR alone
     float f0_dielectric;
     vec3 comp_dielectric; // multiple-scattering compensation
-    vec3 fg_dielectric;   // directional albedo (compensated, untinted, film blended in)
+    vec3 fg_dielectric;   // directional albedo (compensated, tinted, film blended in)
     vec3 f0_metal;
     vec3 comp_metal;
-    vec3 fg_metal;        // the metal's directional albedo (× specular_weight)
+    vec3 fg_metal;        // the metal's directional albedo
     float film;           // thin-film weight (0 without a film)
     vec3 tint;            // translucent base: thin-walled tint
     float coat_alpha;     // the coat's α (mean of the two below)
@@ -85,7 +89,16 @@ vec3 film_dielectric(Surface s, OpenPbr o, float mu) {
 
 vec3 film_metal(Surface s, OpenPbr o, float mu) {
     return openpbr_thin_film(mu, s.iridescence_ior, s.iridescence_thickness,
-                             o.f0_metal, s.specular_color, false, 1.0);
+                             o.f0_metal, vec3(1.0), false, 1.0);
+}
+
+// glTF's specular color (KHR_materials_specular, what's stored) tints the
+// dielectric's F0 only, clamped: F0' = min(F0 · color, 1), the grazing
+// value staying 1 — applied to the exact Fresnel F (of F0 = f0) by keeping
+// its rise toward 1: F' = F0' + (1 − F0') (F − f0) / (1 − f0).
+vec3 tint_fresnel(vec3 f, float f0, vec3 color) {
+    vec3 f0_t = min(vec3(f0) * color, vec3(1.0));
+    return f0_t + (1.0 - f0_t) * (f - f0) / max(1.0 - f0, 1e-4);
 }
 
 OpenPbr openpbr_setup(Surface s, float NdotV, float coat_NdotV) {
@@ -114,30 +127,29 @@ OpenPbr openpbr_setup(Surface s, float NdotV, float coat_NdotV) {
 #endif
     o.alpha = alpha;
 
-    // The dielectric's IOR relative to what is above it (coat or air), with
-    // the spec's TIR fix, then modulated by specular_weight.
+    // The dielectric's IOR modulated by specular_weight. Its own against
+    // air, coat or not: glTF's clearcoat (what's stored) leaves the base's
+    // reflection as it is — OpenPBR's IOR relative to the coat took it
+    // away (a 1.5 base under a 1.5 coat: none).
     float eta_s = s.ior;
-#ifdef HAS_CLEARCOAT
-    float ratio = s.ior / s.coat_ior;
-    eta_s = mix(s.ior, max(ratio, 1.0 / ratio), s.coat);
-#endif
     float f_s = ior_to_f0(eta_s);
     float xi_f = clamp(s.specular_weight * f_s, 0.0, 0.99999);
     float eps = sign(eta_s - 1.0) * sqrt(xi_f);
     o.eta = (1.0 + eps) / (1.0 - eps);
-    // Light crossing a parallel coat into the base bends as if from air
-    // (Snell's law chains): the base's IOR alone, specular_weight applied.
-    float xi_r = clamp(s.specular_weight * ior_to_f0(s.ior), 0.0, 0.99999);
-    float eps_r = sign(s.ior - 1.0) * sqrt(xi_r);
-    o.eta_refract = (1.0 + eps_r) / (1.0 - eps_r);
+    // Refraction bends by the IOR alone: glTF's specular "has no effect on
+    // the refraction angle" (KHR_materials_specular).
+    o.eta_refract = max(s.ior, 1.0);
     o.f0_dielectric = xi_f;
-    o.comp_dielectric = ggx_energy_compensation(NdotV, alpha, vec3(xi_f), vec3(1.0));
-    o.fg_dielectric = ggx_dir_albedo(NdotV, alpha, vec3(xi_f), vec3(1.0)) * o.comp_dielectric;
+    vec3 f0_tinted = min(vec3(xi_f) * s.specular_color, vec3(1.0));
+    o.comp_dielectric = ggx_energy_compensation(NdotV, alpha, f0_tinted, vec3(1.0));
+    o.fg_dielectric = ggx_dir_albedo(NdotV, alpha, f0_tinted, vec3(1.0)) * o.comp_dielectric;
 
+    // The metal: glTF's specular leaves it alone ("The metal BRDF is not
+    // affected"), so no specular_weight on it and no edge tint from
+    // specular_color (OpenPBR's F82 tint): Schlick to white, as glTF.
     o.f0_metal = s.base_weight * s.base_color;
     o.comp_metal = ggx_energy_compensation(NdotV, alpha, o.f0_metal, vec3(1.0));
-    o.fg_metal = s.specular_weight * ggx_dir_albedo(NdotV, alpha, o.f0_metal, vec3(1.0))
-        * o.comp_metal;
+    o.fg_metal = ggx_dir_albedo(NdotV, alpha, o.f0_metal, vec3(1.0)) * o.comp_metal;
 
     o.film = 0.0;
 #ifdef HAS_IRIDESCENCE
@@ -159,7 +171,7 @@ OpenPbr openpbr_setup(Surface s, float NdotV, float coat_NdotV) {
             vec3 fg_film_m = mix(film_metal(s, o, NdotV),
                                  ggx_dir_albedo(NdotV, alpha, film_metal(s, o, 1.0), vec3(1.0)),
                                  blend);
-            o.fg_metal = mix(o.fg_metal, s.specular_weight * fg_film_m * o.comp_metal, o.film);
+            o.fg_metal = mix(o.fg_metal, fg_film_m * o.comp_metal, o.film);
         }
     }
 #endif
@@ -201,7 +213,7 @@ OpenPbr openpbr_setup(Surface s, float NdotV, float coat_NdotV) {
     float r_b = mix(r_d, s.roughness, s.metallic);
     float k = mix(k_smooth, k_rough, r_b);
     vec3 e_base = mix(s.base_weight * s.base_color * (1.0 - s.transmission),
-                      s.specular_weight * o.f0_metal, s.metallic);
+                      o.f0_metal, s.metallic);
     vec3 delta = (1.0 - k) / (1.0 - e_base * k);
     o.darkening = mix(vec3(1.0), delta, s.coat * s.coat_darkening);
 #endif
@@ -248,7 +260,7 @@ vec3 shade_openpbr(Surface s) {
     vec3 r_dir = reflect(-v, n);
 #endif
     vec3 prefiltered = scene_reflection(r_dir, o.roughness) * spec_ao;
-    vec3 dielectric = prefiltered * s.specular_color * o.fg_dielectric;
+    vec3 dielectric = prefiltered * o.fg_dielectric; // specular_color is in it
     vec3 diffuse_ibl = diffuse_albedo(s.base_color, s.diffuse_roughness, NdotV);
 #ifdef HAS_SUBSURFACE
     // MaterialX: indirect subsurface as plain irradiance × its color.
@@ -307,15 +319,16 @@ vec3 shade_openpbr(Surface s) {
 #else
             float dv = D_GGX(NdotH, o.alpha) * V_GGX(NdotL, NdotV, o.alpha);
 #endif
-            vec3 f_d = vec3(fresnel_dielectric(VdotH, o.eta));
-            vec3 f_m = fresnel_f82(VdotH, o.f0_metal, s.specular_color);
+            vec3 f_d = tint_fresnel(vec3(fresnel_dielectric(VdotH, o.eta)), o.f0_dielectric,
+                                    s.specular_color);
+            vec3 f_m = F_Schlick(o.f0_metal, vec3(1.0), VdotH);
 #ifdef HAS_IRIDESCENCE
             if (o.film > 0.0) {
                 if (s.metallic < 1.0) f_d = mix(f_d, film_dielectric(s, o, VdotH), o.film);
                 if (s.metallic > 0.0) f_m = mix(f_m, film_metal(s, o, VdotH), o.film);
             }
 #endif
-            vec3 spec_d = dv * f_d * s.specular_color * o.comp_dielectric;
+            vec3 spec_d = dv * f_d * o.comp_dielectric;
             vec3 diff = diffuse_weight
                 * diffuse_brdf(s.base_color, s.diffuse_roughness, NdotL, NdotV, dot(l, v));
 #ifdef HAS_DIFFUSE_TRANSMISSION
@@ -324,7 +337,7 @@ vec3 shade_openpbr(Surface s) {
 #ifdef HAS_SUBSURFACE
             diff *= 1.0 - s.subsurface;
 #endif
-            vec3 spec_m = s.specular_weight * dv * f_m * o.comp_metal;
+            vec3 spec_m = dv * f_m * o.comp_metal;
             lit = mix(spec_d + (1.0 - o.fg_dielectric) * diff, spec_m, s.metallic) * NdotL;
         }
 #ifdef HAS_SUBSURFACE

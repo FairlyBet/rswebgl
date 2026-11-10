@@ -840,7 +840,7 @@ pub fn translate(mat: &gltf::Material) -> Material {
         diffuse_roughness: 0.0,
         coat_ior: 1.5,
         coat_color: [1.0; 3],
-        coat_darkening: 1.0,
+        coat_darkening: 0.0, // glTF's clearcoat leaves the base unchanged (Khronos)
         coat_anisotropy: 0.0,
         subsurface_weight: 0.0,
         subsurface_color: [0.8; 3],
