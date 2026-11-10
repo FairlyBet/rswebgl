@@ -86,6 +86,8 @@ pub struct Material {
     // through (thin), and its color.
     pub(crate) diffuse_transmission: f32,
     pub(crate) diffuse_transmission_color: [f32; 3],
+    // OpenPBR's on-surface transmission tint (`transmissionTint`).
+    pub(crate) transmission_tint: [f32; 3],
 }
 
 #[wasm_bindgen]
@@ -289,7 +291,7 @@ const fn prop(name: &'static str, uniform: &'static str, len: usize) -> Property
 }
 
 /// Every numeric property a material group carries, by glTF name.
-pub const PROPERTIES: [Property; 39] = [
+pub const PROPERTIES: [Property; 40] = [
     prop("baseColorFactor", "u_base_color_factor", 4),
     prop("metallicFactor", "u_metallic_factor", 1),
     prop("roughnessFactor", "u_roughness_factor", 1),
@@ -337,11 +339,15 @@ pub const PROPERTIES: [Property; 39] = [
         "u_diffuse_transmission_color",
         3,
     ),
+    // OpenPBR's transmission_color with transmission_depth 0 (no medium): a
+    // tint on the surface. Not glTF's; white unless set through the
+    // OpenPBR names.
+    prop("transmissionTint", "u_transmission_tint", 3),
 ];
 
 impl Material {
     // The storage of each of `PROPERTIES`, in the same order.
-    fn values_mut(&mut self) -> [&mut [f32]; 39] {
+    fn values_mut(&mut self) -> [&mut [f32]; 40] {
         [
             &mut self.base_color_factor,
             std::slice::from_mut(&mut self.metallic),
@@ -382,6 +388,7 @@ impl Material {
             std::slice::from_mut(&mut self.iridescence_thickness_min),
             std::slice::from_mut(&mut self.diffuse_transmission),
             &mut self.diffuse_transmission_color,
+            &mut self.transmission_tint,
         ]
     }
 
@@ -883,6 +890,7 @@ pub fn translate(mat: &gltf::Material) -> Material {
             "diffuseTransmissionColorFactor",
             [1.0; 3],
         ),
+        transmission_tint: [1.0; 3],
     }
 }
 
@@ -953,6 +961,7 @@ pub fn default_material() -> Material {
         iridescence_thickness_min: 100.0,
         diffuse_transmission: 0.0,
         diffuse_transmission_color: [1.0; 3],
+        transmission_tint: [1.0; 3],
     }
 }
 

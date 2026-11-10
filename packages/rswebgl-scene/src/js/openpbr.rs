@@ -10,7 +10,8 @@
 //! | base_metalness | metallicFactor |
 //! | specular_weight, specular_color, specular_roughness, specular_ior | specularFactor, specularColorFactor, roughnessFactor, ior |
 //! | specular_roughness_anisotropy | anisotropyStrength (glTF's meaning: shaded as the Khronos lobe) |
-//! | transmission_weight, transmission_color, transmission_depth | transmissionFactor, attenuationColor, attenuationDistance |
+//! | transmission_weight, transmission_depth | transmissionFactor, attenuationDistance (0: no medium) |
+//! | transmission_color | attenuationColor with a depth (absorbed in the medium), transmissionTint without (a tint on the surface, as OpenPBR) |
 //! | transmission_dispersion_abbe_number | dispersion = 20 / Abbe |
 //! | coat_weight, coat_roughness, coat_ior, coat_color, coat_darkening | clearcoatFactor, clearcoatRoughnessFactor, coatIor, coatColor, coatDarkening |
 //! | coat_roughness_anisotropy | coatAnisotropy |
@@ -66,7 +67,7 @@ pub const NAMES: [&str; 32] = [
 ];
 
 // Names that are one stored property as is.
-const DIRECT: [(&str, &str); 23] = [
+const DIRECT: [(&str, &str); 21] = [
     ("base_weight", "baseWeight"),
     ("base_metalness", "metallicFactor"),
     ("base_diffuse_roughness", "diffuseRoughness"),
@@ -76,8 +77,6 @@ const DIRECT: [(&str, &str); 23] = [
     ("specular_ior", "ior"),
     ("specular_roughness_anisotropy", "anisotropyStrength"),
     ("transmission_weight", "transmissionFactor"),
-    ("transmission_color", "attenuationColor"),
-    ("transmission_depth", "attenuationDistance"),
     ("coat_weight", "clearcoatFactor"),
     ("coat_color", "coatColor"),
     ("coat_roughness", "clearcoatRoughnessFactor"),
@@ -116,6 +115,17 @@ pub fn get(m: &Material, name: &str, fuzz_color: [f32; 3]) -> Option<Vec<f32>> {
     }
     let base = prop(m, "baseColorFactor");
     Some(match name {
+        // transmission_color: absorbed over transmission_depth in a medium
+        // (glTF's attenuationColor), or, depth 0 (no medium), a tint on the
+        // surface (transmissionTint).
+        "transmission_depth" => prop(m, "attenuationDistance"),
+        "transmission_color" => {
+            if prop(m, "attenuationDistance")[0] > 0.0 {
+                prop(m, "attenuationColor")
+            } else {
+                prop(m, "transmissionTint")
+            }
+        }
         "base_color" => base[..3].to_vec(),
         "geometry_opacity" => vec![base[3]],
         "transmission_dispersion_abbe_number" => {
@@ -156,6 +166,41 @@ pub fn set(
     }
     let base = prop(m, "baseColorFactor");
     let result = match name {
+        "transmission_color" => want(3).map(|()| {
+            if prop(m, "attenuationDistance")[0] > 0.0 {
+                vec![("attenuationColor", values.to_vec())]
+            } else {
+                vec![("transmissionTint", values.to_vec())]
+            }
+        }),
+        // The color moves with it: into the medium (absorbed) for a depth,
+        // onto the surface (a tint) for none.
+        "transmission_depth" => want(1).map(|()| {
+            let depth = if values[0].is_finite() {
+                values[0].max(0.0)
+            } else {
+                0.0
+            };
+            let had_depth = prop(m, "attenuationDistance")[0] > 0.0;
+            let color = if had_depth {
+                prop(m, "attenuationColor")
+            } else {
+                prop(m, "transmissionTint")
+            };
+            if depth > 0.0 {
+                vec![
+                    ("attenuationDistance", vec![depth]),
+                    ("attenuationColor", color),
+                    ("transmissionTint", vec![1.0; 3]),
+                ]
+            } else {
+                vec![
+                    ("attenuationDistance", vec![0.0]),
+                    ("attenuationColor", vec![1.0; 3]),
+                    ("transmissionTint", color),
+                ]
+            }
+        }),
         "base_color" => want(3).map(|()| {
             vec![(
                 "baseColorFactor",

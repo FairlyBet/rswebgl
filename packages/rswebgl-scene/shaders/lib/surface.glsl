@@ -21,6 +21,7 @@ struct Surface {
     float specular_weight;  // KHR_materials_specular factor / OpenPBR specular_weight
     vec3 specular_color;
     float transmission;
+    vec3 transmission_tint; // OpenPBR's transmission_color at depth 0: on the surface
     float thickness;        // 0: thin-walled
     vec3 attenuation_color;
     float attenuation_distance; // 0: no absorption

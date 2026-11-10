@@ -971,6 +971,21 @@ async fn openpbr_parameter_names() {
     set(&mut s, "transmission_dispersion_abbe_number", "40").unwrap();
     assert_eq!(get(&s, "dispersion"), [0.5]);
 
+    // Transmission color: a tint on the surface without a depth (OpenPBR's
+    // no medium), absorbed in the medium with one; it moves with the depth.
+    set(&mut s, "transmission_color", "[1, 0, 0]").unwrap();
+    assert_eq!(get(&s, "transmissionTint"), [1.0, 0.0, 0.0]);
+    assert_eq!(get(&s, "transmission_color"), [1.0, 0.0, 0.0]);
+    set(&mut s, "transmission_depth", "2").unwrap();
+    assert_eq!(get(&s, "attenuationDistance"), [2.0]);
+    assert_eq!(get(&s, "attenuationColor"), [1.0, 0.0, 0.0]);
+    assert_eq!(get(&s, "transmissionTint"), [1.0, 1.0, 1.0]);
+    assert_eq!(get(&s, "transmission_color"), [1.0, 0.0, 0.0]);
+    set(&mut s, "transmission_depth", "0").unwrap();
+    assert_eq!(get(&s, "attenuationColor"), [1.0, 1.0, 1.0]);
+    assert_eq!(get(&s, "transmissionTint"), [1.0, 0.0, 0.0]);
+    assert_eq!(get(&s, "transmission_depth"), [0.0]);
+
     // Fuzz: a color set before any weight is remembered, then carried.
     set(&mut s, "fuzz_color", "[1, 0.5, 0]").unwrap();
     assert_eq!(get(&s, "fuzz_weight"), [0.0]);

@@ -46,9 +46,9 @@ fn asset_url() -> String {
     {{ "bufferView": 1, "componentType": 5123, "count": 6, "type": "SCALAR" }}
   ],
   "materials": [
-    {{ "alphaMode": "BLEND", "pbrMetallicRoughness": {{ "baseColorFactor": [1, 0, 0, 1] }},
+    {{ "name": "Behind", "alphaMode": "BLEND", "pbrMetallicRoughness": {{ "baseColorFactor": [1, 0, 0, 1] }},
        "extensions": {{ "KHR_materials_unlit": {{}} }} }},
-    {{ "pbrMetallicRoughness": {{ "baseColorFactor": [1, 1, 1, 1], "metallicFactor": 0, "roughnessFactor": 0 }},
+    {{ "name": "Glass", "pbrMetallicRoughness": {{ "baseColorFactor": [1, 1, 1, 1], "metallicFactor": 0, "roughnessFactor": 0 }},
        "extensions": {{ "KHR_materials_transmission": {{ "transmissionFactor": 1 }} }} }}
   ],
   "meshes": [
@@ -83,7 +83,8 @@ async fn glass_shows_transparent_meshes_behind_it() {
     let mut options = ContextOptions::new();
     options.antialias = false;
     let ctx = Context::from_canvas(&canvas, &options).expect("ctx");
-    ctx.default_framebuffer().set_clear_color(0.0, 0.0, 0.0, 1.0);
+    ctx.default_framebuffer()
+        .set_clear_color(0.0, 0.0, 0.0, 1.0);
     let gl: Gl = canvas
         .get_context("webgl2")
         .unwrap()
@@ -126,4 +127,82 @@ async fn glass_shows_transparent_meshes_behind_it() {
         assert!(px[0] > 150 && px[1] < 60, "layers {layers}: center {px:?}");
     }
     scene.destroy();
+}
+
+// OpenPBR's transmission_color with transmission_depth 0 (no medium) tints
+// the light crossing the surface: white behind clear glass shows green with
+// [0, 1, 0]; glTF ref (glTF has no such tint) keeps it white.
+#[wasm_bindgen_test]
+async fn openpbr_transmission_color_without_depth_tints_the_surface() {
+    let canvas: HtmlCanvasElement = web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .create_element("canvas")
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    canvas.set_width(SIZE as u32);
+    canvas.set_height(SIZE as u32);
+    let mut options = ContextOptions::new();
+    options.antialias = false;
+    let ctx = Context::from_canvas(&canvas, &options).expect("ctx");
+    let gl: Gl = canvas
+        .get_context("webgl2")
+        .unwrap()
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    let mut scene = Scene::new(&ctx).expect("scene");
+    if !scene.is_hdr() {
+        return;
+    }
+    scene.set_tone_mapping("none").unwrap();
+    scene.set_dither(false);
+    scene.set_samples(0);
+    scene.set_environment_intensity(0.0, 0.0, 0.0);
+    let camera = scene.spawn();
+    let cam =
+        js_sys::JSON::parse(r#"{ "type": "orthographic", "ymag": 1, "znear": 0.1, "zfar": 100 }"#)
+            .unwrap();
+    scene.set_camera(camera, cam).unwrap();
+    scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
+    let root = scene.add_model(load_model(&ctx, &asset_url()).await.expect("load"));
+    let json = |v: &str| js_sys::JSON::parse(v).unwrap();
+    let behind = scene.find_material(root, "Behind");
+    scene
+        .set_material_property(behind, "baseColorFactor", json("[1, 1, 1, 1]"))
+        .unwrap();
+    let glass = scene.find_material(root, "Glass");
+    scene
+        .set_material_property(glass, "transmission_color", json("[0, 1, 0]"))
+        .unwrap();
+    scene.set_shading_model("openpbr").unwrap();
+    let tinted = center(&gl, &mut scene, camera).await;
+    assert!(tinted[1] > 150 && tinted[0] < 60, "openpbr: {tinted:?}");
+    scene.set_shading_model("gltf").unwrap();
+    let plain = center(&gl, &mut scene, camera).await;
+    assert!(plain[0] > 150 && plain[1] > 150, "gltf: {plain:?}");
+    scene.destroy();
+}
+
+// The center pixel after two frames.
+async fn center(gl: &Gl, scene: &mut Scene, camera: rswebgl_ecs::Entity) -> [u8; 4] {
+    wasm_bindgen_futures::JsFuture::from(scene.when_ready())
+        .await
+        .unwrap();
+    scene.render_frame(camera);
+    scene.render_frame(camera);
+    let mut px = [0u8; 4];
+    gl.read_pixels_with_opt_u8_array(
+        SIZE / 2,
+        SIZE / 2,
+        1,
+        1,
+        Gl::RGBA,
+        Gl::UNSIGNED_BYTE,
+        Some(&mut px),
+    )
+    .unwrap();
+    px
 }

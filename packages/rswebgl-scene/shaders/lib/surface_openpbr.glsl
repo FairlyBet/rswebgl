@@ -180,7 +180,9 @@ OpenPbr openpbr_setup(Surface s, float NdotV, float coat_NdotV) {
     // (glTF's KHR_materials_transmission; a volume absorbs on top). OpenPBR
     // proper tints by transmission_color alone; glTF-made materials would
     // lose their color under it.
-    o.tint = s.base_color;
+    // × OpenPBR's transmission_color when it has no depth (no medium: a
+    // tint where light crosses the surface, `transmissionTint`).
+    o.tint = s.base_color * s.transmission_tint;
 
     o.coat_alpha = 1.0;
     o.coat_alpha_t = 1.0;

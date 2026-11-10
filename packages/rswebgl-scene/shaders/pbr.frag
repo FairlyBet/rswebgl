@@ -81,6 +81,7 @@ uniform float u_diffuse_roughness;
 #endif
 #ifdef HAS_TRANSMISSION
 uniform float u_transmission;
+uniform vec3 u_transmission_tint;     // OpenPBR's depth-0 transmission_color
 #endif
 #ifdef HAS_VOLUME
 uniform float u_thickness;            // mesh units
@@ -346,9 +347,11 @@ void main() {
 #ifdef HAS_SPECULAR_COLOR_MAP
     s.specular_color *= texture(u_specular_color_tex, SPECULAR_COLOR_UV).rgb;
 #endif
+    s.transmission_tint = vec3(1.0);
     s.transmission = 0.0;
 #ifdef HAS_TRANSMISSION
     s.transmission = u_transmission;
+    s.transmission_tint = u_transmission_tint;
 #ifdef HAS_TRANSMISSION_MAP
     s.transmission *= texture(u_transmission_tex, TRANSMISSION_UV).r;
 #endif

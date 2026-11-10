@@ -227,6 +227,19 @@ its owner.
   (entry), no internal reflections. glTF sheen's IBL uses the GGX map at the
   sheen roughness (no Charlie-prefiltered cube). OpenPBR subsurface is
   MaterialX's real-time approximation; emission is radiance, not nits.
+- OpenPBR model vs glTF data — left as they are (2026-11-10 audit; the
+  ones fixed are in 9975947 and 0fff03a):
+  - sheen roughness: glTF's Charlie takes α = sheenRoughness², OpenPBR's
+    fuzz (Zeltner) α = fuzz_roughness; the stored sheenRoughness goes to
+    the fuzz unsquared (at 0.3: α 0.09 in glTF ref, 0.3 in OpenPBR — a
+    softer, dustier rim; same at 0 and 1). CompareSheen barely shows it;
+    velvet might.
+  - layer order: glTF puts the clearcoat over the sheen, OpenPBR the fuzz
+    over the coat (and the model follows OpenPBR): with both, the fuzz
+    dims the coat's reflection and the coat doesn't cover the fuzz.
+  - lengths are scene units (glTF's metres) where OpenPBR's spec
+    defaults to cm: transmission_depth, subsurface_radius set through the
+    OpenPBR names are taken as is.
 - `setMaterialTexture` doesn't check a texture's color space against the
   map's role; `cloneMaterial` shares the source model's textures.
 - `setMaterialVariant` sets the variant's materials; edits made with
