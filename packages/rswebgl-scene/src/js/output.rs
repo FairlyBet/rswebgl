@@ -53,7 +53,9 @@ impl Scene {
     /// own transforms), their own motion vectors — clipped to each pixel's
     /// neighborhood (ported from Bevy and Godot). Smooths edges, thin
     /// geometry and shading aliasing MSAA leaves; pair it with
-    /// `setSharpening`. Returns whether it is on (needs HDR output).
+    /// `setSharpening`. Opaque meshes only: transmissive and transparent
+    /// ones draw after it, unjittered, and see the antialiased scene behind
+    /// them. Returns whether it is on (needs HDR output).
     #[wasm_bindgen(js_name = setTaa)]
     pub fn set_taa(&mut self, on: bool) -> bool {
         if self.taa != on {

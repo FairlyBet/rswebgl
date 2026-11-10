@@ -28,8 +28,8 @@ vec3 scene_reflection(vec3 r, float roughness) {
 }
 
 // The opaque scene behind transmissive surfaces, copied with mips after the
-// opaque draws (u_output.z = 1 when there is one this frame, u_output.w its
-// last mip). Needs frame.glsl.
+// opaque draws (u_output.z = 1 + the least mip to read when there is one
+// this frame, 0 else; u_output.w its last mip). Needs frame.glsl.
 uniform sampler2D u_scene_color;
 
 // Depth peeling (the frame sets it; u_shading.z the mode, w 1 under
@@ -59,5 +59,5 @@ bool scene_color_available() {
 vec3 scene_color_at(vec3 p, float roughness) {
     vec4 clip = u_view_proj * vec4(p, 1.0);
     vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
-    return textureLod(u_scene_color, uv, roughness * u_output.w).rgb;
+    return textureLod(u_scene_color, uv, max(roughness * u_output.w, u_output.z - 1.0)).rgb;
 }

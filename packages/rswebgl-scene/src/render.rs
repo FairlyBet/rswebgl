@@ -258,6 +258,12 @@ pub struct SceneRenderer {
     // The opaque scene, copied for transmissive meshes (and its last mip),
     // when the frame has one.
     scene_color: Option<(TextureId, u32)>,
+    // The least mip transmissive meshes read it at (`set_scene_color_min_lod`).
+    scene_color_min_lod: f32,
+    // This frame's view and (unjittered) projection: `drop_jitter` rewrites
+    // the frame block from them.
+    frame_view: Mat4,
+    frame_proj: Mat4,
     stats: RenderStats,
 }
 
@@ -382,6 +388,9 @@ impl SceneRenderer {
             display_output: true,
             tone_mapping: ToneMapping::Neutral,
             scene_color: None,
+            scene_color_min_lod: 0.0,
+            frame_view: Mat4::IDENTITY,
+            frame_proj: Mat4::IDENTITY,
             stats: RenderStats::default(),
         };
         renderer.bind_environment(ctx);
@@ -551,6 +560,39 @@ impl SceneRenderer {
         self.mip_bias = mip_bias;
     }
 
+    /// Ends the jitter for the rest of this frame (TAA: what draws after the
+    /// resolve): the frame block's projection and the maps' LOD bias back
+    /// to the unjittered ones, for the passes rendered from now.
+    pub fn drop_jitter(&mut self, ctx: &Context) {
+        if self.jitter == Vec2::ZERO && self.mip_bias == 0.0 {
+            return;
+        }
+        self.jitter = Vec2::ZERO;
+        self.mip_bias = 0.0;
+        let (view, proj) = (self.frame_view, self.frame_proj);
+        ctx.ubo_set_mat(self.frame_ubo, "u_proj", &proj.to_cols_array());
+        ctx.ubo_set_mat(
+            self.frame_ubo,
+            "u_view_proj",
+            &(proj * view).to_cols_array(),
+        );
+        // The cached block too, so the next frame's bias rewrites it.
+        if let Some(i) = self.lighting.len().checked_sub(4) {
+            let env = &mut self.lighting[i];
+            env.w = 0.0;
+            let e = *env;
+            ctx.ubo_set_vec4(self.lighting_ubo, "u_environment", e.x, e.y, e.z, e.w);
+        }
+    }
+
+    /// The least mip transmissive meshes read the scene copy at (0: as
+    /// their roughness says): 1 where the copy is aliased (no MSAA, no TAA),
+    /// so subpixel detail behind glass (a filament) shows as a soft line,
+    /// not dashes.
+    pub fn set_scene_color_min_lod(&mut self, lod: f32) {
+        self.scene_color_min_lod = lod.max(0.0);
+    }
+
     /// The projection's subpixel offset (NDC) set by `set_jitter`.
     pub fn jitter(&self) -> Vec2 {
         self.jitter
@@ -584,12 +626,6 @@ impl SceneRenderer {
             Some(m) if m.any() => m.push_draws(ctx, pass, frame, scene_depth, jitter),
             _ => 0,
         }
-    }
-
-    /// Whether a transparent or transmissive mesh moved in the last
-    /// `render` (with motion vectors on).
-    pub fn late_moved(&self) -> bool {
-        self.motion.as_ref().is_some_and(MotionVectors::late_moved)
     }
 
     /// The motion-vector shaders built so far (`set_motion_vectors`).
@@ -1030,7 +1066,12 @@ impl SceneRenderer {
         data.push(Vec4::new(
             if self.display_output { 1.0 } else { 0.0 },
             self.tone_mapping as u32 as f32,
-            if self.scene_color.is_some() { 1.0 } else { 0.0 },
+            // z: 1 + the least mip when there is a scene copy (0: none).
+            if self.scene_color.is_some() {
+                1.0 + self.scene_color_min_lod
+            } else {
+                0.0
+            },
             self.scene_color.map_or(0.0, |(_, mip)| mip as f32),
         ));
         let reverse = if ctx.reverse_z() { 1.0 } else { 0.0 };
@@ -1094,6 +1135,7 @@ impl SceneRenderer {
             Vec4::new(self.jitter.x, self.jitter.y, 0.0, 1.0),
         );
         let drawn_proj = jitter * proj;
+        (self.frame_view, self.frame_proj) = (view, proj);
         let eye = cam_world.0.w_axis;
         ctx.ubo_set_mat(self.frame_ubo, "u_view", &view.to_cols_array());
         ctx.ubo_set_mat(self.frame_ubo, "u_proj", &drawn_proj.to_cols_array());

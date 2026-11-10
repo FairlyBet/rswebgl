@@ -614,6 +614,11 @@ impl Scene {
             // them to see through; then transmissive and transparent meshes.
             self.renderer
                 .set_scene_color(&self.ctx, self.hdr.as_ref().and_then(|o| o.scene_color()));
+            // An aliased copy (no MSAA, no TAA) is read a mip softer: thin
+            // things behind glass stay lines, not dashes.
+            let aliased = !taa && self.hdr.as_ref().is_some_and(|o| o.samples() <= 1);
+            self.renderer
+                .set_scene_color_min_lod(if aliased { 1.0 } else { 0.0 });
             let mut glass = std::mem::replace(&mut self.glass_pass, Pass::to_default());
             glass.clear_draws();
             let peeling = self.transmission_layers > 0;
@@ -632,13 +637,13 @@ impl Scene {
             if !peeling && let Some(out) = &mut self.hdr {
                 out.release_peel(&self.ctx);
             }
-            // TAA: the opaque scene alone, for the reactive mask.
-            if taa
-                && (glass.draw_count() > 0 || late.draw_count() > 0)
-                && let Some(out) = &mut self.hdr
-            {
-                let _s = tracing::info_span!("scene.copyOpaque").entered();
-                out.keep_opaque_color(&self.ctx);
+            // TAA resolves the opaque scene alone; transmissive and
+            // transparent meshes then draw over it unjittered (and see an
+            // antialiased copy of it).
+            if taa {
+                let _s = tracing::info_span!("scene.taa").entered();
+                self.resolve_taa(camera);
+                self.renderer.drop_jitter(&self.ctx);
             }
             if glass.draw_count() > 0 {
                 let _s = tracing::info_span!("scene.peelGlass").entered();
@@ -655,10 +660,6 @@ impl Scene {
                 late.sort();
                 self.time(&mut late, "late");
                 self.ctx.render(&late);
-            }
-            if taa {
-                let _s = tracing::info_span!("scene.taa").entered();
-                self.resolve_taa(camera);
             }
             if let Some(out) = &mut self.hdr {
                 let _s = tracing::info_span!("scene.present").entered();
@@ -902,7 +903,6 @@ impl Scene {
             self.renderer.jitter(),
             self.renderer.exposure(),
             velocity,
-            self.renderer.late_moved(),
         );
         self.taa_previous = Some((camera, now));
     }

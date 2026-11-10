@@ -317,12 +317,11 @@ async fn taa_moving_detail_follows_motion_vectors() {
     s.scene.destroy();
 }
 
-// A transparent mesh gets no motion vectors (the velocity target holds what
-// is behind it): sliding over a still background, the reactive mask keeps
-// its history from lagging behind — the frame matches the same one
+// A transparent mesh draws after the TAA resolve, unjittered: sliding over
+// a still background it leaves no trail — the frame matches the same one
 // rendered without TAA where it covers the background enough to count.
 #[wasm_bindgen_test]
-async fn taa_reactive_mask_keeps_transparent_meshes_from_lagging() {
+async fn taa_keeps_transparent_meshes_from_lagging() {
     let canvas: HtmlCanvasElement = web_sys::window()
         .unwrap()
         .document()
