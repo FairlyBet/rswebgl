@@ -74,6 +74,29 @@ impl Scene {
         self.taa && self.hdr_wanted
     }
 
+    /// FXAA (fast approximate antialiasing, ported from three.js) on the
+    /// displayed image, with HDR output: one cheap fullscreen pass that
+    /// smooths edges by their contrast — the phone-friendly choice where
+    /// MSAA or TAA cost too much (set `setSamples(0)` with it). Softens fine
+    /// texture detail a little. Combines with MSAA or TAA too. Returns
+    /// whether it is on (needs HDR output).
+    #[wasm_bindgen(js_name = setFxaa)]
+    pub fn set_fxaa(&mut self, on: bool) -> bool {
+        self.fxaa = on;
+        // Compiled now when the target exists, else at the next frame.
+        if let Some(out) = &mut self.hdr
+            && let Err(e) = out.set_fxaa(&self.ctx, on)
+        {
+            self.give_up_fxaa(&e);
+        }
+        self.is_fxaa()
+    }
+
+    #[wasm_bindgen(js_name = isFxaa)]
+    pub fn is_fxaa(&self) -> bool {
+        self.fxaa && self.hdr_wanted
+    }
+
     /// Antialiasing samples per pixel of the HDR target (default 4; 0 or 1
     /// for none; lowered to what the device allows). Set the canvas's own
     /// `antialias: false` with HDR on: it isn't used.
@@ -158,6 +181,11 @@ impl Scene {
                 Err(e) => self.give_up_hdr(&e),
             }
         }
+        if let Some(out) = &mut self.hdr
+            && let Err(e) = out.set_fxaa(&self.ctx, self.fxaa)
+        {
+            self.give_up_fxaa(&e);
+        }
         if let Some(out) = &mut self.hdr {
             out.set_transmission_scale(self.transmission_scale);
             match out.prepare_split(&self.ctx, w, h, pass, false) {
@@ -192,6 +220,14 @@ impl Scene {
         self.taa = false;
         self.taa_previous = None;
         self.renderer.set_motion_vectors(&self.ctx, false);
+    }
+
+    // FXAA off for good (`isFxaa` answers false).
+    fn give_up_fxaa(&mut self, e: &Error) {
+        console::warn(&format!(
+            "[rswebgl-scene] FXAA unavailable ({e}); output without it"
+        ));
+        self.fxaa = false;
     }
 
     fn give_up_hdr(&mut self, e: &Error) {

@@ -389,16 +389,28 @@ slider("exposure", (v) => `${v >= 0 ? "+" : ""}${v.toFixed(1)} EV`, (v) => scene
 $("hdr").addEventListener("change", () => {
   $("hdr").checked = scene.setHdr($("hdr").checked);
 });
-// MSAA samples, or temporal antialiasing instead.
+// MSAA samples, FXAA (one cheap pass, for phones), or temporal
+// antialiasing instead.
 $("samples").addEventListener("change", () => {
   const v = $("samples").value;
   if (v === "taa") {
+    scene.setFxaa(false);
     if (!scene.setTaa(true)) status("TAA needs HDR output", true);
+  } else if (v === "fxaa") {
+    scene.setTaa(false);
+    scene.setSamples(0);
+    if (!scene.setFxaa(true)) status("FXAA needs HDR output", true);
   } else {
     scene.setTaa(false);
+    scene.setFxaa(false);
     scene.setSamples(Number(v));
   }
 });
+// Phones: FXAA (MSAA, even 2×, and TAA cost too much on the Mali test phone).
+if (matchMedia("(pointer: coarse)").matches && scene.isHdr()) {
+  $("samples").value = "fxaa";
+  $("samples").dispatchEvent(new Event("change"));
+}
 $("resolution").addEventListener("change", () => {
   resolution = $("resolution").value;
   resize();
@@ -598,7 +610,7 @@ function frame(/** @type {number} */ now) {
     $("fps").style.color = fpsShown >= 55 ? "var(--good)" : fpsShown >= 30 ? "var(--warn)" : "var(--bad)";
     $("frame").textContent = `frame ${avg.toFixed(1)} ms (worst ${worst.toFixed(0)})  cpu ${cpu.toFixed(2)} ms`;
     $("info").textContent =
-      `\n${canvas.width}×${canvas.height}  ${scene.isHdr() ? (scene.isTaa() ? "HDR TAA" : "HDR") : "direct"}  ${scene.shadingModel()}\n` +
+      `\n${canvas.width}×${canvas.height}  ${scene.isHdr() ? (scene.isTaa() ? "HDR TAA" : scene.isFxaa() ? "HDR FXAA" : "HDR") : "direct"}  ${scene.shadingModel()}\n` +
       `drawn ${scene.drawn()} in ${scene.drawCalls()} calls  culled ${scene.culled()}  pending ${scene.pending()}  moving ${scene.movingMeshes()}\n` +
       `variants ${scene.shaderVariantCount()}  entities ${scene.entityCount()}  file lights ${root ? scene.lights(root).length : 0}
 ` +

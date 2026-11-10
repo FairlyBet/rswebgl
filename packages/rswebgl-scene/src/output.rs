@@ -36,6 +36,7 @@ use crate::shader::chunk;
 
 const PRESENT_FRAG: &str = include_str!("../shaders/present.frag");
 const TAA_FRAG: &str = include_str!("../shaders/taa.frag");
+const FXAA_FRAG: &str = include_str!("../shaders/fxaa.frag");
 /// The velocity target's clear value: no motion vector here (taa.frag
 /// reprojects the depth instead).
 const VELOCITY_NONE: f32 = 1000.0;
@@ -68,6 +69,59 @@ struct Taa {
     // The history the last resolve wrote; whether the next starts over.
     current: usize,
     reset: bool,
+}
+
+/// FXAA (ported from three.js, see fxaa.frag): the display pass draws into
+/// an 8-bit texture the canvas's size, which this pass filters onto the
+/// canvas.
+struct Fxaa {
+    program: ProgramId,
+    layout: ParamLayoutId,
+    group: ParamGroupId,
+    f_texel: ParamField,
+    // The display pass's output (made at the canvas's size on need).
+    ldr: (TextureId, FramebufferId),
+    size: (i32, i32),
+}
+
+impl Fxaa {
+    fn free_target(&mut self, ctx: &Context) {
+        let (t, fb) = std::mem::replace(&mut self.ldr, (TextureId::NULL, FramebufferId::NULL));
+        if !fb.is_null() {
+            ctx.destroy_framebuffer(fb);
+        }
+        if !t.is_null() {
+            ctx.destroy_texture(t);
+        }
+        self.size = (0, 0);
+    }
+
+    // The display pass's target at `w`×`h` (remade when the canvas resized).
+    fn ensure_target(&mut self, ctx: &Context, w: i32, h: i32) -> Result<FramebufferId, Error> {
+        if self.size == (w, h) && !self.ldr.1.is_null() {
+            return Ok(self.ldr.1);
+        }
+        self.free_target(ctx);
+        let t = ctx.create_texture(
+            TextureTarget::Texture2D,
+            TextureMinFilter::Linear,
+            TextureMagFilter::Linear,
+        )?;
+        ctx.texture_storage_2d(t, 1, &TextureFormat::rgba8(), w, h);
+        ctx.texture_set_wrap_s(t, TextureWrap::ClampToEdge);
+        ctx.texture_set_wrap_t(t, TextureWrap::ClampToEdge);
+        let fb = match ctx.create_framebuffer(w, h) {
+            Ok(fb) => fb,
+            Err(e) => {
+                ctx.destroy_texture(t);
+                return Err(e);
+            }
+        };
+        ctx.framebuffer_attach_color_texture_2d(fb, 0, t, 0);
+        self.ldr = (t, fb);
+        self.size = (w, h);
+        Ok(fb)
+    }
 }
 
 /// How linear radiance is squeezed into the display's range.
@@ -132,6 +186,8 @@ pub struct HdrOutput {
     peel: Option<PeelTargets>,
     // Temporal antialiasing, when on (instead of multisampling).
     taa: Option<Taa>,
+    // FXAA after the display pass, when on.
+    fxaa: Option<Fxaa>,
 }
 
 /// Depth peeling (Everitt 2001): the opaque scene's depth, single-sampled,
@@ -255,6 +311,7 @@ impl HdrOutput {
             generation: ctx.generation(),
             peel: None,
             taa,
+            fxaa: None,
         })
     }
 
@@ -287,6 +344,45 @@ impl HdrOutput {
             self.grab_scale = scale;
             self.size = (0, 0); // remade at the next prepare
         }
+    }
+
+    /// Whether FXAA runs after the display pass.
+    pub fn fxaa(&self) -> bool {
+        self.fxaa.is_some()
+    }
+
+    /// FXAA on (its shader compiled now) or off (its program and target
+    /// freed).
+    pub fn set_fxaa(&mut self, ctx: &Context, on: bool) -> Result<(), Error> {
+        if on == self.fxaa.is_some() {
+            return Ok(());
+        }
+        if let Some(mut f) = self.fxaa.take() {
+            f.free_target(ctx);
+            ctx.destroy_param_group(f.group);
+            ctx.destroy_param_layout(f.layout);
+            ctx.destroy_program(f.program);
+            return Ok(());
+        }
+        let prefix = "#version 300 es\n";
+        let vert = ShaderSource::plain("fullscreen.vert", &format!("{prefix}{FULLSCREEN_VERT}"));
+        let frag = ShaderSource::plain("fxaa.frag", &format!("{prefix}{FXAA_FRAG}"));
+        let program = ctx.create_program_from(&vert, &frag)?;
+        let layout = ctx.create_param_layout(
+            &ParamLayoutBuilder::new()
+                .texture("u_ldr")
+                .uniform("u_texel", UniformType::Vec2),
+        )?;
+        let group = ctx.create_param_group(layout)?;
+        self.fxaa = Some(Fxaa {
+            program,
+            layout,
+            group,
+            f_texel: ctx.param_field(layout, "u_texel")?,
+            ldr: (TextureId::NULL, FramebufferId::NULL),
+            size: (0, 0),
+        });
+        Ok(())
     }
 
     /// Starts the TAA history over (a camera cut: nothing to reuse).
@@ -639,9 +735,9 @@ impl HdrOutput {
         self.peel.as_ref().map(|p| (p.glass_fb, p.transparent_fb))
     }
 
-    /// Draws the target to the canvas.
+    /// Draws the target to the canvas (through FXAA when on).
     pub fn present(
-        &self,
+        &mut self,
         ctx: &Context,
         exposure: f32,
         tone_mapping: ToneMapping,
@@ -661,9 +757,26 @@ impl HdrOutput {
         ctx.param_set_i32(self.group, self.f_tone_mapping, tone_mapping as i32);
         ctx.param_set_f32(self.group, self.f_dither, if dither { 1.0 } else { 0.0 });
         ctx.param_set_f32(self.group, self.f_sharpness, sharpness.clamp(0.0, 1.0));
-        let mut pass = Pass::to_default();
         let fb = ctx.default_framebuffer();
-        pass.set_viewport(&Viewport::new(0, 0, fb.width(), fb.height()));
+        let (cw, ch) = (fb.width().max(1), fb.height().max(1));
+        // With FXAA the display pass draws into its texture (it failing to
+        // allocate: straight to the canvas, unfiltered).
+        let ldr = match &mut self.fxaa {
+            Some(f) => match f.ensure_target(ctx, cw, ch) {
+                Ok(fb) => Some(fb),
+                Err(e) => {
+                    rswebgl::console::error_once(&format!("[rswebgl-scene] FXAA target: {e}"));
+                    None
+                }
+            },
+            None => None,
+        };
+        let mut pass = ldr.map_or_else(Pass::to_default, Pass::new);
+        pass.set_viewport(&Viewport::new(0, 0, cw, ch));
+        if ldr.is_some() {
+            // Every pixel is written: nothing to load on tiled GPUs.
+            pass.set_clear(&ClearMask::color());
+        }
         let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
         groups[0] = self.group;
         pass.push_groups_with_key(
@@ -674,8 +787,30 @@ impl HdrOutput {
             groups,
             &DrawCommand::arrays(DrawMode::Triangles, 0, 3),
         );
-        if let Some(p) = profiler {
+        let mut profiler = profiler;
+        if let Some(p) = profiler.as_deref_mut() {
             p.time(&mut pass, "present");
+        }
+        ctx.render(&pass);
+        let (Some(_), Some(f)) = (ldr, &self.fxaa) else {
+            return;
+        };
+        ctx.param_set_texture_by_name(f.group, "u_ldr", f.ldr.0);
+        ctx.param_set_floats(f.group, f.f_texel, &[1.0 / cw as f32, 1.0 / ch as f32]);
+        let mut pass = Pass::to_default();
+        pass.set_viewport(&Viewport::new(0, 0, cw, ch));
+        let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
+        groups[0] = f.group;
+        pass.push_groups_with_key(
+            0,
+            f.program,
+            self.state,
+            VertexArrayId::NULL,
+            groups,
+            &DrawCommand::arrays(DrawMode::Triangles, 0, 3),
+        );
+        if let Some(p) = profiler {
+            p.time(&mut pass, "fxaa");
         }
         ctx.render(&pass);
     }
@@ -889,6 +1024,14 @@ impl HdrOutput {
             ctx.destroy_param_layout(taa.layout);
             if self.generation == ctx.generation() {
                 ctx.destroy_program(taa.program);
+            }
+        }
+        if let Some(mut f) = self.fxaa.take() {
+            ctx.destroy_param_group(f.group);
+            ctx.destroy_param_layout(f.layout);
+            if self.generation == ctx.generation() {
+                f.free_target(ctx);
+                ctx.destroy_program(f.program);
             }
         }
         if self.generation != ctx.generation() {

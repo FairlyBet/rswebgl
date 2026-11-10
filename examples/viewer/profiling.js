@@ -185,6 +185,17 @@ export function createProfiling({ wasm, canvas, $, describe, scene, ctx, viewCam
       await time("no TAA, no MSAA");
       scene.setTaa(true);
     }
+    // FXAA's own cost: without it if on, else with it.
+    if (scene.isFxaa()) {
+      scene.setFxaa(false);
+      await time("no FXAA");
+      scene.setFxaa(true);
+    } else if (scene.isHdr()) {
+      scene.setFxaa(true);
+      await scene.whenReady();
+      await time("+ FXAA");
+      scene.setFxaa(false);
+    }
     if (root) {
       scene.setVisible(root, false);
       await time("model hidden (background only)");

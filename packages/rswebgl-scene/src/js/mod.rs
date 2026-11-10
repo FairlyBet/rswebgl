@@ -111,6 +111,8 @@ pub struct Scene {
     taa: bool,
     taa_frame: u32,
     taa_previous: Option<(Entity, Mat4)>,
+    // FXAA after the display pass (`setFxaa`).
+    fxaa: bool,
     tone_mapping: crate::output::ToneMapping,
     dither: bool,
     // RCAS strength in the display pass (0 off).
@@ -184,6 +186,7 @@ impl Scene {
             taa: false,
             taa_frame: 0,
             taa_previous: None,
+            fxaa: false,
             tone_mapping: crate::output::ToneMapping::Neutral,
             dither: true,
             sharpness: 0.0,
@@ -657,7 +660,7 @@ impl Scene {
                 let _s = tracing::info_span!("scene.taa").entered();
                 self.resolve_taa(camera);
             }
-            if let Some(out) = &self.hdr {
+            if let Some(out) = &mut self.hdr {
                 let _s = tracing::info_span!("scene.present").entered();
                 out.present(
                     &self.ctx,

@@ -8,10 +8,10 @@ A glTF viewer built on `rswebgl-scene`:
 - **Stats.** FPS, frame time with a graph, CPU time of `renderFrame`, and drawn, culled and pending counts, shader variants and entities.
 - **Material inspector.** Tap a part to see its material and edit it with OpenPBR parameters (colors and scalars). "Own copy" detaches the part from the material it shares with other parts.
 - **Compressed models.** Draco, meshopt and KTX2 samples from the list load with the decoders the viewer points at (Google's Draco, three.js' copy of the Basis transcoder).
-- **Antialiasing.** MSAA or TAA, with a Sharpen slider (RCAS).
+- **Antialiasing.** MSAA, FXAA (the default on phones) or TAA, with a Sharpen slider (RCAS).
 - **Variants.** Models with `KHR_materials_variants` (the shoe) list their variants to switch between.
 - **Context loss.** A button simulates losing the WebGL context; the scene restores itself.
-- **Profiling.** Records a trace to download or send to the computer (see below). "Measure what this view costs" times the current view with each feature (thin film, transmission, coat, fuzz, the glass copy's size, the other shading model, TAA) turned off in turn.
+- **Profiling.** Records a trace to download or send to the computer (see below). "Measure what this view costs" times the current view with each feature (thin film, transmission, coat, fuzz, the glass copy's size, the other shading model, TAA, FXAA) turned off in turn (FXAA, when off, is timed turned on).
 
 ## Run
 

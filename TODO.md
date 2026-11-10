@@ -11,15 +11,11 @@ set aside for now).
    resolution, OpenPBR, IridescentDishWithOlives from above) no AA runs
    at 60 fps, TAA at ~40 (~8 ms: the opaque copy, the motion pass, a
    resolve of ~25 RGBA16F taps per pixel, history + RG16F motion writes,
-   RCAS). In order:
-   - try MSAA 4× there first (tile GPUs resolve in tile memory, but our
-     resolve is a separate `blitFramebuffer` and may not be cheap through
-     ANGLE): measure with the viewer's "Measure what this view costs";
-   - **FXAA** as a third mode next to MSAA and TAA: one post pass, ~1 ms,
-     no history (no ghosting, no glass jitter), worse on specular shimmer.
-     Port FXAA 3.11 (three.js `FXAAShader`, NVIDIA's, public domain);
-     run it on the tone-mapped image (in `present` or a pass after it);
-     the viewer picks it on touch devices;
+   RCAS). MSAA, even 2×, costs too much there (the user tried it).
+   - done: **FXAA** (`setFxaa`, three.js r180 `FXAAShader`): the display
+     pass draws into an RGBA8 texture, FXAA filters it onto the canvas;
+     the viewer picks it on touch devices. Still to measure on the phone
+     (the view-cost probe has a "no FXAA" / "+ FXAA" row);
    - a lighter TAA (`setTaaQuality("low")`): history by 5-tap Catmull-Rom
      (Jimenez 2016 / Unreal) instead of Godot's 9, a 5-tap cross
      neighbourhood instead of 3×3 (Karis), 3 depth taps — about half the
