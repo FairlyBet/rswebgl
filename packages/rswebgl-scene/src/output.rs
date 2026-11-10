@@ -46,6 +46,7 @@ void main() {
 }
 ";
 const FXAA_FRAG: &str = include_str!("../shaders/fxaa.frag");
+const EXPOSURE_FRAG: &str = include_str!("../shaders/exposure.frag");
 const GRAB_DOWN_FRAG: &str = include_str!("../shaders/grab_down.frag");
 /// The velocity target's clear value: no motion vector here (taa.frag
 /// reprojects the depth instead).
@@ -62,6 +63,7 @@ struct Taa {
     f_reproject: ParamField,
     f_taa: ParamField,
     f_jitter: ParamField,
+    f_auto_grey: ParamField,
     // The history → target copy (its color, the target's coverage kept).
     copy: (ProgramId, ParamLayoutId, ParamGroupId),
     copy_state: StateId,
@@ -82,6 +84,189 @@ struct Taa {
 /// FXAA (ported from three.js, see fxaa.frag): the display pass draws into
 /// an 8-bit texture the canvas's size, which this pass filters onto the
 /// canvas.
+/// Auto exposure (ported from Godot 3's GLES3 renderer, see exposure.frag):
+/// the frame's brightness shrunk to 1×1 on the GPU, eased toward from last
+/// frame's, read by the display (and TAA's weights) as `grey / it`.
+struct AutoExposure {
+    // (program, layout, group) for the first step, the 3×3 shrinks, the last.
+    begin: (ProgramId, ParamLayoutId, ParamGroupId),
+    shrink: (ProgramId, ParamLayoutId, ParamGroupId),
+    end: (ProgramId, ParamLayoutId, ParamGroupId),
+    f_source_size: ParamField,
+    f_target_size: ParamField,
+    f_adjust: ParamField,
+    f_min: ParamField,
+    f_max: ParamField,
+    f_force: ParamField,
+    // 243², 81², 27², 9², 3² (Godot's exposure_shrink but the last).
+    chain: Vec<(TextureId, FramebufferId, i32)>,
+    // The 1×1 result, this frame's and last's (swapped each frame).
+    result: [(TextureId, FramebufferId); 2],
+    current: usize,
+    // When it last ran (ms; 0: never: the next one sets, not eases).
+    last_ms: f64,
+    grey: f32,
+    min_luminance: f32,
+    max_luminance: f32,
+    speed: f32,
+}
+
+impl AutoExposure {
+    const SIZE: i32 = 243;
+
+    fn new(ctx: &Context, vert: &ShaderSource) -> Result<Self, Error> {
+        let program = |define: &str, name: &str, layout: ParamLayoutBuilder| -> Result<_, Error> {
+            let frag =
+                ShaderSource::plain(name, &format!("#version 300 es\n{define}{EXPOSURE_FRAG}"));
+            let p = ctx.create_program_from(vert, &frag)?;
+            let l = ctx.create_param_layout(&layout)?;
+            Ok((p, l, ctx.create_param_group(l)?))
+        };
+        let begin = program(
+            "#define EXPOSURE_BEGIN\n",
+            "exposure.frag (begin)",
+            ParamLayoutBuilder::new()
+                .texture("u_source")
+                .uniform("u_source_size", UniformType::IVec2)
+                .uniform("u_target_size", UniformType::IVec2),
+        )?;
+        let shrink = program(
+            "",
+            "exposure.frag",
+            ParamLayoutBuilder::new().texture("u_source"),
+        )?;
+        let end = program(
+            "#define EXPOSURE_END\n",
+            "exposure.frag (end)",
+            ParamLayoutBuilder::new()
+                .texture("u_source")
+                .texture("u_prev")
+                .uniform("u_adjust", UniformType::F32)
+                .uniform("u_min_luminance", UniformType::F32)
+                .uniform("u_max_luminance", UniformType::F32)
+                .uniform("u_force", UniformType::F32),
+        )?;
+        let target = |size: i32| -> Result<(TextureId, FramebufferId), Error> {
+            let t = ctx.create_texture(
+                TextureTarget::Texture2D,
+                TextureMinFilter::Nearest,
+                TextureMagFilter::Nearest,
+            )?;
+            ctx.texture_storage_2d(t, 1, &TextureFormat::rgba16f(), size, size);
+            let fb = ctx.create_framebuffer(size, size)?;
+            ctx.framebuffer_attach_color_texture_2d(fb, 0, t, 0);
+            Ok((t, fb))
+        };
+        let mut chain = Vec::new();
+        let mut size = Self::SIZE;
+        while size > 1 {
+            let (t, fb) = target(size)?;
+            chain.push((t, fb, size));
+            size /= 3;
+        }
+        let result = [target(1)?, target(1)?];
+        Ok(Self {
+            f_source_size: ctx.param_field(begin.1, "u_source_size")?,
+            f_target_size: ctx.param_field(begin.1, "u_target_size")?,
+            f_adjust: ctx.param_field(end.1, "u_adjust")?,
+            f_min: ctx.param_field(end.1, "u_min_luminance")?,
+            f_max: ctx.param_field(end.1, "u_max_luminance")?,
+            f_force: ctx.param_field(end.1, "u_force")?,
+            begin,
+            shrink,
+            end,
+            chain,
+            result,
+            current: 0,
+            last_ms: 0.0,
+            // Godot's defaults, but the ceiling: physically lit scenes
+            // (hundreds of lux) average far above its 8.
+            grey: 0.4,
+            min_luminance: 0.05,
+            max_luminance: 10_000.0,
+            speed: 0.5,
+        })
+    }
+
+    // Shrinks `source` (`w`×`h`) to 1×1 and eases the result (`now_ms`).
+    fn meter(
+        &mut self,
+        ctx: &Context,
+        state: StateId,
+        source: TextureId,
+        w: i32,
+        h: i32,
+        now_ms: f64,
+    ) {
+        let fullscreen = DrawCommand::arrays(DrawMode::Triangles, 0, 3);
+        let draw = |fb: FramebufferId, size: i32, program: ProgramId, group: ParamGroupId| {
+            let mut pass = Pass::new(fb);
+            pass.set_viewport(&Viewport::new(0, 0, size, size));
+            let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
+            groups[0] = group;
+            pass.push_groups_with_key(0, program, state, VertexArrayId::NULL, groups, &fullscreen);
+            ctx.render(&pass);
+        };
+        // First step: the image into the luminance buffer.
+        let (p, _, g) = self.begin;
+        let (t0, fb0, s0) = self.chain[0];
+        ctx.param_set_texture_by_name(g, "u_source", source);
+        ctx.param_set_ints(g, self.f_source_size, &[w, h]);
+        ctx.param_set_ints(g, self.f_target_size, &[s0, s0]);
+        draw(fb0, s0, p, g);
+        // Second: shrink down to 3×3.
+        let (p, _, g) = self.shrink;
+        let mut from = t0;
+        for &(t, fb, size) in &self.chain[1..] {
+            ctx.param_set_texture_by_name(g, "u_source", from);
+            draw(fb, size, p, g);
+            from = t;
+        }
+        // Last: to 1×1, eased from the previous.
+        let dt = if self.last_ms > 0.0 {
+            now_ms - self.last_ms
+        } else {
+            0.0
+        };
+        self.last_ms = now_ms;
+        let force = !(dt > 0.0 && dt <= 1000.0);
+        let next = 1 - self.current;
+        let (p, _, g) = self.end;
+        ctx.param_set_texture_by_name(g, "u_source", from);
+        ctx.param_set_texture_by_name(g, "u_prev", self.result[self.current].0);
+        ctx.param_set_f32(g, self.f_adjust, self.speed * (dt as f32 / 1000.0));
+        ctx.param_set_f32(g, self.f_min, self.min_luminance);
+        ctx.param_set_f32(g, self.f_max, self.max_luminance);
+        ctx.param_set_f32(g, self.f_force, if force { 1.0 } else { 0.0 });
+        draw(self.result[next].1, 1, p, g);
+        self.current = next;
+    }
+
+    fn texture(&self) -> TextureId {
+        self.result[self.current].0
+    }
+
+    fn destroy(self, ctx: &Context, live: bool) {
+        for (p, l, g) in [self.begin, self.shrink, self.end] {
+            ctx.destroy_param_group(g);
+            ctx.destroy_param_layout(l);
+            if live {
+                ctx.destroy_program(p);
+            }
+        }
+        if live {
+            for (t, fb, _) in self.chain {
+                ctx.destroy_framebuffer(fb);
+                ctx.destroy_texture(t);
+            }
+            for (t, fb) in self.result {
+                ctx.destroy_framebuffer(fb);
+                ctx.destroy_texture(t);
+            }
+        }
+    }
+}
+
 struct Fxaa {
     program: ProgramId,
     layout: ParamLayoutId,
@@ -193,6 +378,7 @@ pub struct HdrOutput {
     f_tone_mapping: ParamField,
     f_dither: ParamField,
     f_sharpness: ParamField,
+    f_auto_grey: ParamField,
     // The scene copy's first mip: program, its layout and group.
     grab_down: (ProgramId, ParamLayoutId, ParamGroupId),
     state: StateId,
@@ -203,6 +389,8 @@ pub struct HdrOutput {
     taa: Option<Taa>,
     // FXAA after the display pass, when on.
     fxaa: Option<Fxaa>,
+    // Auto exposure, when on.
+    auto: Option<AutoExposure>,
 }
 
 /// Depth peeling (Everitt 2001): the opaque scene's depth, single-sampled,
@@ -260,7 +448,9 @@ impl HdrOutput {
                 .uniform("u_exposure", UniformType::F32)
                 .uniform("u_tone_mapping", UniformType::I32)
                 .uniform("u_dither", UniformType::F32)
-                .uniform("u_sharpness", UniformType::F32),
+                .uniform("u_sharpness", UniformType::F32)
+                .texture("u_auto_exposure")
+                .uniform("u_auto_grey", UniformType::F32),
         )?;
         let group = ctx.create_param_group(layout)?;
         let taa = if taa {
@@ -275,7 +465,9 @@ impl HdrOutput {
                     .texture("u_velocity")
                     .uniform("u_reproject", UniformType::Mat4)
                     .uniform("u_taa", UniformType::Vec4)
-                    .uniform("u_jitter", UniformType::Vec2),
+                    .uniform("u_jitter", UniformType::Vec2)
+                    .texture("u_auto_exposure")
+                    .uniform("u_auto_grey", UniformType::F32),
             )?;
             let copy_frag =
                 ShaderSource::plain("taa_copy.frag", &format!("{prefix}{TAA_COPY_FRAG}"));
@@ -293,6 +485,7 @@ impl HdrOutput {
                 f_reproject: ctx.param_field(layout, "u_reproject")?,
                 f_taa: ctx.param_field(layout, "u_taa")?,
                 f_jitter: ctx.param_field(layout, "u_jitter")?,
+                f_auto_grey: ctx.param_field(layout, "u_auto_grey")?,
                 copy: (
                     copy_program,
                     copy_layout,
@@ -339,12 +532,14 @@ impl HdrOutput {
             f_tone_mapping: ctx.param_field(layout, "u_tone_mapping")?,
             f_dither: ctx.param_field(layout, "u_dither")?,
             f_sharpness: ctx.param_field(layout, "u_sharpness")?,
+            f_auto_grey: ctx.param_field(layout, "u_auto_grey")?,
             grab_down,
             state: ctx.render_state(&state),
             generation: ctx.generation(),
             peel: None,
             taa,
             fxaa: None,
+            auto: None,
         })
     }
 
@@ -377,6 +572,55 @@ impl HdrOutput {
             self.grab_scale = scale;
             self.size = (0, 0); // remade at the next prepare
         }
+    }
+
+    /// Auto exposure on (made now) or off (freed).
+    pub fn set_auto_exposure(&mut self, ctx: &Context, on: bool) -> Result<(), Error> {
+        if on == self.auto.is_some() {
+            return Ok(());
+        }
+        if let Some(a) = self.auto.take() {
+            a.destroy(ctx, true);
+            return Ok(());
+        }
+        let vert = ShaderSource::plain(
+            "fullscreen.vert",
+            &format!("#version 300 es\n{FULLSCREEN_VERT}"),
+        );
+        self.auto = Some(AutoExposure::new(ctx, &vert)?);
+        Ok(())
+    }
+
+    /// Auto exposure's target (`grey`: the frame's brightest-channel
+    /// average shows as that), the luminance range it adapts within, and
+    /// its speed (per second).
+    pub fn set_auto_exposure_options(&mut self, grey: f32, min: f32, max: f32, speed: f32) {
+        if let Some(a) = &mut self.auto {
+            a.grey = grey.max(1e-4);
+            a.min_luminance = min.max(1e-6);
+            a.max_luminance = max.max(a.min_luminance);
+            a.speed = speed.max(0.0);
+        }
+    }
+
+    /// Meters this frame for auto exposure (after the last scene pass,
+    /// before `present`); `now_ms` a clock in milliseconds.
+    pub fn meter_exposure(&mut self, ctx: &Context, now_ms: f64) {
+        let (w, h) = self.size;
+        let (state, color) = (self.state, self.color);
+        if let Some(a) = &mut self.auto
+            && !color.is_null()
+        {
+            a.meter(ctx, state, color, w, h, now_ms);
+        }
+    }
+
+    // Auto exposure's 1×1 result and grey for shaders (when off: any
+    // texture, a sampler needs one, and grey 0).
+    fn auto_exposure(&self) -> (TextureId, f32) {
+        self.auto
+            .as_ref()
+            .map_or((self.color, 0.0), |a| (a.texture(), a.grey))
     }
 
     /// Whether FXAA runs after the display pass.
@@ -469,6 +713,7 @@ impl HdrOutput {
         let reverse = self.reverse_z;
         let color = self.color;
         let resolve_fb = self.resolve_fb;
+        let (auto_tex, auto_grey) = self.auto_exposure();
         let Some(taa) = &mut self.taa else {
             return;
         };
@@ -488,6 +733,8 @@ impl HdrOutput {
         ];
         ctx.param_set_floats(taa.group, taa.f_taa, &flags);
         ctx.param_set_floats(taa.group, taa.f_jitter, &[jitter.x, jitter.y]);
+        ctx.param_set_texture_by_name(taa.group, "u_auto_exposure", auto_tex);
+        ctx.param_set_f32(taa.group, taa.f_auto_grey, auto_grey);
         let viewport = Viewport::new(0, 0, w, h);
         let fullscreen = DrawCommand::arrays(DrawMode::Triangles, 0, 3);
         let mut pass = Pass::new(out_fb);
@@ -771,6 +1018,9 @@ impl HdrOutput {
         ctx.param_set_texture_by_name(self.group, "u_hdr", self.color);
         ctx.param_set_texture_by_name(self.group, "u_coverage", self.color);
         ctx.param_set_f32(self.group, self.f_exposure, exposure);
+        let (auto_tex, auto_grey) = self.auto_exposure();
+        ctx.param_set_texture_by_name(self.group, "u_auto_exposure", auto_tex);
+        ctx.param_set_f32(self.group, self.f_auto_grey, auto_grey);
         ctx.param_set_i32(self.group, self.f_tone_mapping, tone_mapping as i32);
         ctx.param_set_f32(self.group, self.f_dither, if dither { 1.0 } else { 0.0 });
         ctx.param_set_f32(self.group, self.f_sharpness, sharpness.clamp(0.0, 1.0));
@@ -1048,6 +1298,9 @@ impl HdrOutput {
 
     /// Frees it (after a context loss only the CPU-side group is left).
     pub fn destroy(mut self, ctx: &Context) {
+        if let Some(a) = self.auto.take() {
+            a.destroy(ctx, self.generation == ctx.generation());
+        }
         ctx.destroy_param_group(self.group);
         ctx.destroy_param_layout(self.layout);
         ctx.destroy_param_group(self.grab_down.2);

@@ -192,6 +192,11 @@ its owner.
 
 ### Rendering
 
+- Auto exposure (`setAutoExposure`, Godot 3's GLES3 port): meters the
+  brightest channel's average (Godot's measure, not luminance or a
+  log-average / histogram as Bevy's), the whole frame (no center weight),
+  with HDR output only. A compensation curve or metering mask would be
+  next if scenes need them.
 - Lights are capped at 8 per frame (all reach every draw, a file's lights
   included); spot lights untested by pixels; no shadows.
 - Transparent draws sort per object (bounds center): intersecting or concave

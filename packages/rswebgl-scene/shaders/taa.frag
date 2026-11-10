@@ -43,6 +43,8 @@ uniform mat4 u_reproject;     // clip now (unjittered) → clip last frame
 uniform vec4 u_taa;           // x 1: reset, y 1: reverse-Z, z 1: u_velocity
                               // drawn this frame, w exposure
 uniform vec2 u_jitter;        // this frame's projection offset (NDC)
+uniform sampler2D u_auto_exposure; // auto exposure: last frame's brightness,
+uniform float u_auto_grey;         // and its grey (0: off; see present.frag)
 
 // Lower = more history: chosen empirically by Bevy.
 const float DEFAULT_HISTORY_BLEND_RATE = 0.1;
@@ -55,8 +57,13 @@ const float DISOCCLUSION_SCALE = 0.01;
 
 float max3(vec3 c) { return max(c.r, max(c.g, c.b)); }
 // Karis' reversible tonemap, of the exposed color.
-vec3 tonemap(vec3 c) { c *= u_taa.w; return c / (max3(c) + 1.0); }
-vec3 reverse_tonemap(vec3 c) { return c / max(1.0 - max3(c), 1e-4) / u_taa.w; }
+// The display's exposure, auto exposure included.
+float exposure() {
+    if (u_auto_grey <= 0.0) return u_taa.w;
+    return u_taa.w / (texelFetch(u_auto_exposure, ivec2(0), 0).r / u_auto_grey);
+}
+vec3 tonemap(vec3 c) { c *= exposure(); return c / (max3(c) + 1.0); }
+vec3 reverse_tonemap(vec3 c) { return c / max(1.0 - max3(c), 1e-4) / exposure(); }
 
 vec3 rgb_to_ycocg(vec3 c) {
     return vec3(c.r / 4.0 + c.g / 2.0 + c.b / 4.0,

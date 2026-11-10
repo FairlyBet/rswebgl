@@ -386,6 +386,10 @@ setShading("openpbr");
 
 $("tone").addEventListener("change", () => scene.setToneMapping($("tone").value));
 slider("exposure", (v) => `${v >= 0 ? "+" : ""}${v.toFixed(1)} EV`, (v) => scene.setExposure(2 ** v));
+// Auto exposure (scenes lit in real units); the slider then compensates.
+$("auto-exposure").addEventListener("change", () => {
+  $("auto-exposure").checked = scene.setAutoExposure($("auto-exposure").checked);
+});
 $("hdr").addEventListener("change", () => {
   $("hdr").checked = scene.setHdr($("hdr").checked);
 });

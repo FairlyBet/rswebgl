@@ -14,11 +14,20 @@ in vec2 v_ndc;
 out vec4 frag_color;
 
 uniform sampler2D u_hdr;
-uniform sampler2D u_coverage; // the frame's coverage (u_hdr is TAA's history then)
+uniform sampler2D u_coverage; // the frame's coverage
 uniform float u_exposure;
 uniform int u_tone_mapping;
 uniform float u_dither; // 0 off, 1 on
 uniform float u_sharpness; // RCAS strength 0…1 (FSR1's 2^-stops), 0 off
+// Auto exposure (exposure.frag): its 1×1 brightness, and the grey it maps
+// to (0: off) — Godot's full_exposure = exposure / (brightness / grey).
+uniform sampler2D u_auto_exposure;
+uniform float u_auto_grey;
+
+float full_exposure() {
+    if (u_auto_grey <= 0.0) return u_exposure;
+    return u_exposure / (texelFetch(u_auto_exposure, ivec2(0), 0).r / u_auto_grey);
+}
 
 // Interleaved gradient noise (Jimenez 2014): a per-pixel value in [0, 1).
 float ign(vec2 p) {
@@ -30,7 +39,7 @@ vec3 display(ivec2 p) {
     p = clamp(p, ivec2(0), textureSize(u_hdr, 0) - 1);
     float a = texelFetch(u_coverage, p, 0).a;
     vec3 c = a > 0.0 ? texelFetch(u_hdr, p, 0).rgb / a : vec3(0.0);
-    return tone_map(c * u_exposure, u_tone_mapping);
+    return tone_map(c * full_exposure(), u_tone_mapping);
 }
 
 // Robust contrast-adaptive sharpening — ported from AMD FidelityFX FSR 1

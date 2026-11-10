@@ -113,6 +113,9 @@ pub struct Scene {
     taa_previous: Option<(Entity, Mat4)>,
     // FXAA after the display pass (`setFxaa`).
     fxaa: bool,
+    // Auto exposure (`setAutoExposure`) and its grey, min, max, speed.
+    auto_exposure: bool,
+    auto_exposure_options: [f32; 4],
     tone_mapping: crate::output::ToneMapping,
     dither: bool,
     // RCAS strength in the display pass (0 off).
@@ -187,6 +190,8 @@ impl Scene {
             taa_frame: 0,
             taa_previous: None,
             fxaa: false,
+            auto_exposure: false,
+            auto_exposure_options: [0.4, 0.05, 10_000.0, 0.5],
             tone_mapping: crate::output::ToneMapping::Neutral,
             dither: true,
             sharpness: 0.0,
@@ -660,6 +665,10 @@ impl Scene {
                 late.sort();
                 self.time(&mut late, "late");
                 self.ctx.render(&late);
+            }
+            if let Some(out) = &mut self.hdr {
+                let _s = tracing::info_span!("scene.exposure").entered();
+                out.meter_exposure(&self.ctx, js_sys::Date::now());
             }
             if let Some(out) = &mut self.hdr {
                 let _s = tracing::info_span!("scene.present").entered();

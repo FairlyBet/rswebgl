@@ -100,6 +100,44 @@ impl Scene {
         self.fxaa && self.hdr_wanted
     }
 
+    /// Auto exposure (with HDR output; ported from Godot 3): each frame's
+    /// brightness (its brightest channel, averaged) is measured on the GPU
+    /// and the exposure eases toward showing it as `grey` — for scenes lit
+    /// in real units (hundreds of lux, a lamp's candela) or that change
+    /// from dark to bright. `setExposure` stays on top of it as
+    /// compensation. Returns whether it is on.
+    #[wasm_bindgen(js_name = setAutoExposure)]
+    pub fn set_auto_exposure(&mut self, on: bool) -> bool {
+        self.auto_exposure = on;
+        if let Some(out) = &mut self.hdr
+            && let Err(e) = out.set_auto_exposure(&self.ctx, on)
+        {
+            self.give_up_auto_exposure(&e);
+        }
+        self.is_auto_exposure()
+    }
+
+    #[wasm_bindgen(js_name = isAutoExposure)]
+    pub fn is_auto_exposure(&self) -> bool {
+        self.auto_exposure && self.hdr_wanted
+    }
+
+    /// Auto exposure's settings: `grey` the brightness the frame's average
+    /// is shown as (default 0.4), the average's range `min`…`max` it adapts
+    /// within (0.05…10000), and `speed`, the share of the way it moves per
+    /// second (0.5). Godot's defaults but the ceiling (its 8 can't reach
+    /// physically lit scenes).
+    #[wasm_bindgen(js_name = setAutoExposureOptions)]
+    pub fn set_auto_exposure_options(&mut self, grey: f32, min: f32, max: f32, speed: f32) {
+        let ok = |v: f32, d: f32| if v.is_finite() { v } else { d };
+        self.auto_exposure_options = [
+            ok(grey, 0.4),
+            ok(min, 0.05),
+            ok(max, 10_000.0),
+            ok(speed, 0.5),
+        ];
+    }
+
     /// Antialiasing samples per pixel of the HDR target (default 4; 0 or 1
     /// for none; lowered to what the device allows). Set the canvas's own
     /// `antialias: false` with HDR on: it isn't used.
@@ -190,6 +228,15 @@ impl Scene {
             self.give_up_fxaa(&e);
         }
         if let Some(out) = &mut self.hdr {
+            match out.set_auto_exposure(&self.ctx, self.auto_exposure) {
+                Ok(()) => {
+                    let [grey, min, max, speed] = self.auto_exposure_options;
+                    out.set_auto_exposure_options(grey, min, max, speed);
+                }
+                Err(e) => self.give_up_auto_exposure(&e),
+            }
+        }
+        if let Some(out) = &mut self.hdr {
             out.set_transmission_scale(self.transmission_scale);
             match out.prepare_split(&self.ctx, w, h, pass, false) {
                 Ok(()) => {
@@ -226,6 +273,13 @@ impl Scene {
     }
 
     // FXAA off for good (`isFxaa` answers false).
+    fn give_up_auto_exposure(&mut self, e: &Error) {
+        console::warn(&format!(
+            "[rswebgl-scene] auto exposure unavailable ({e}); the set exposure only"
+        ));
+        self.auto_exposure = false;
+    }
+
     fn give_up_fxaa(&mut self, e: &Error) {
         console::warn(&format!(
             "[rswebgl-scene] FXAA unavailable ({e}); output without it"
