@@ -65,8 +65,9 @@ const float DISOCCLUSION_SCALE = 0.01;
 const float REACTIVE_SCALE = 1.0;
 const float REACTIVE_THRESHOLD = 0.2;
 const float REACTIVE_BINARY = 0.5;
-// How much wider the clip box is through glass while still (see below).
-const float GLASS_STILL_BOX = 3.0;
+// How much wider the clip box is through glass while still (see below):
+// 3 left ~2200 pixels flickering on DragonDispersion at rest, 8 ~850.
+const float GLASS_STILL_BOX = 8.0;
 
 float max3(vec3 c) { return max(c.r, max(c.g, c.b)); }
 // Karis' reversible tonemap, of the exposed color.
@@ -210,8 +211,10 @@ void main() {
     // Through glass and still, a wider box: what refracts there jumps
     // with the jitter (the normal under each subpixel sample turns the
     // ray), and a box that tight would drag the history with it, flicker.
-    // The history is right there: it averages the jumps out.
-    if (still && u_reactive.y < 0.5) sd *= mix(1.0, GLASS_STILL_BOX, through);
+    // The history is right there: it averages the jumps out. Only while no
+    // mesh moves (u_velocity unused this frame): what moves behind still
+    // glass would trail through a box that wide.
+    if (still && u_reactive.y < 0.5 && u_taa.z < 0.5) sd *= mix(1.0, GLASS_STILL_BOX, through);
     history = ycocg_to_rgb(clip_towards_aabb_center(rgb_to_ycocg(history), mean - sd, mean + sd));
 
     // Confidence grows while the pixel holds still, resets when it moves.
