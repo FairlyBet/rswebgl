@@ -689,12 +689,15 @@ impl SceneRenderer {
         camera: Entity,
         pass: &mut Pass,
     ) -> RenderStats {
-        self.render_split(world, ctx, camera, pass, None, None)
+        self.render_split(world, ctx, camera, pass, None, None, None)
     }
 
     /// `render`, with transmissive and transparent meshes into `late`: drawn
     /// after `opaque` has been rendered (and copied for them to see
-    /// through, `set_scene_color`).
+    /// through, `set_scene_color`). With `see_through`, the transparent
+    /// (not transmissive) ones also into it: drawn into that copy too, so
+    /// glass shows them (as Khronos' renderer does).
+    #[allow(clippy::too_many_arguments)]
     pub fn render_split(
         &mut self,
         world: &World,
@@ -703,6 +706,7 @@ impl SceneRenderer {
         opaque: &mut Pass,
         mut late: Option<&mut Pass>,
         mut glass: Option<&mut Pass>,
+        mut see_through: Option<&mut Pass>,
     ) -> RenderStats {
         let _span = tracing::info_span!("scene.collect", meshes = tracing::field::Empty).entered();
         self.stats = RenderStats::default();
@@ -819,6 +823,19 @@ impl SceneRenderer {
                 // like the float).
                 let distance = (-view.transform_point3(center).z).max(0.0);
                 let key = KEY_LAST | u64::from(u32::MAX - distance.to_bits());
+                if dest == Dest::Late
+                    && !mesh.transmissive
+                    && let Some(copy) = see_through.as_deref_mut()
+                {
+                    copy.push_groups_with_key(
+                        key,
+                        mesh.program,
+                        mesh.state,
+                        mesh.vao,
+                        groups,
+                        &mesh.command,
+                    );
+                }
                 pass.push_groups_with_key(
                     key,
                     mesh.program,

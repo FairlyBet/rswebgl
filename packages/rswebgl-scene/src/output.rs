@@ -364,6 +364,8 @@ pub struct HdrOutput {
     grab_fb: FramebufferId,
     // Its level 1 (drawn by `grab_down`, firefly-suppressed).
     grab_fb1: FramebufferId,
+    // Its depth (the opaque scene's, for transparent meshes drawn into it).
+    grab_depth: RenderbufferId,
     grab: TextureId,
     grab_size: (i32, i32),
     // The copy's share of the target's size (`set_transmission_scale`).
@@ -519,6 +521,7 @@ impl HdrOutput {
             grab_fb: FramebufferId::NULL,
             grab: TextureId::NULL,
             grab_fb1: FramebufferId::NULL,
+            grab_depth: RenderbufferId::NULL,
             grab_size: (0, 0),
             grab_scale: 1.0,
             color: TextureId::NULL,
@@ -843,8 +846,12 @@ impl HdrOutput {
     }
 
     /// Copies what the target holds (the resolved opaque scene) into the
-    /// mipmapped texture transmissive surfaces see through.
-    pub fn grab(&self, ctx: &Context) {
+    /// mipmapped texture transmissive surfaces see through; with
+    /// `see_through` (transparent meshes), draws them into the copy too,
+    /// tested against the opaque scene's depth — as Khronos' renderer puts
+    /// its transparent drawables into its transmission framebuffer, so glass
+    /// shows the alpha-blended things behind it.
+    pub fn grab(&mut self, ctx: &Context, see_through: Option<&mut Pass>) {
         let (w, h) = self.size;
         let (gw, gh) = self.grab_size;
         ctx.blit_framebuffer(
@@ -855,6 +862,18 @@ impl HdrOutput {
             &ClearMask::color(),
             TextureMagFilter::Linear,
         );
+        if let Some(pass) = see_through
+            && pass.draw_count() > 0
+            && self.depth_into_grab(ctx)
+        {
+            pass.sort();
+            pass.set_target(self.grab_fb);
+            pass.set_viewport(&Viewport::new(0, 0, gw, gh));
+            pass.set_clear(&ClearMask::none());
+            pass.clear_resolve();
+            pass.set_invalidate(&InvalidateMask::none());
+            ctx.render(pass);
+        }
         let levels = mip_levels(gw, gh) as i32;
         if levels < 2 || self.grab_fb1.is_null() {
             ctx.texture_generate_mipmaps(self.grab);
@@ -885,6 +904,48 @@ impl HdrOutput {
         ctx.texture_set_max_level(self.grab, levels - 1);
         ctx.texture_generate_mipmaps(self.grab);
         ctx.texture_set_base_level(self.grab, 0);
+    }
+
+    // The opaque scene's depth into the copy's target (its own renderbuffer,
+    // made on first need), for meshes drawn into the copy. False where it
+    // can't be: a multisampled target only blits to the same size.
+    fn depth_into_grab(&mut self, ctx: &Context) -> bool {
+        let (w, h) = self.size;
+        let (gw, gh) = self.grab_size;
+        if self.fb != self.resolve_fb && (gw, gh) != (w, h) {
+            return false;
+        }
+        if self.grab_depth.is_null() {
+            let format = if self.reverse_z {
+                RenderbufferFormat::Depth32f
+            } else {
+                RenderbufferFormat::Depth24
+            };
+            match ctx.create_renderbuffer(format, gw, gh) {
+                Ok(rb) => {
+                    ctx.framebuffer_attach_depth_renderbuffer(self.grab_fb, rb);
+                    if !ctx.is_framebuffer_complete(self.grab_fb) {
+                        return false;
+                    }
+                    self.grab_depth = rb;
+                }
+                Err(e) => {
+                    rswebgl::console::error_once(&format!(
+                        "[rswebgl-scene] transparent meshes behind glass: {e}"
+                    ));
+                    return false;
+                }
+            }
+        }
+        ctx.blit_framebuffer(
+            self.fb,
+            &Viewport::new(0, 0, w, h),
+            self.grab_fb,
+            &Viewport::new(0, 0, gw, gh),
+            &ClearMask::depth(),
+            TextureMagFilter::Nearest,
+        );
+        true
     }
 
     // The depth format of the target (what depth blits copy between).
@@ -1276,6 +1337,10 @@ impl HdrOutput {
             ctx.destroy_framebuffer(self.grab_fb1);
         }
         self.grab_fb1 = FramebufferId::NULL;
+        if !self.grab_depth.is_null() {
+            ctx.destroy_renderbuffer(self.grab_depth);
+        }
+        self.grab_depth = RenderbufferId::NULL;
         if !self.grab.is_null() {
             ctx.destroy_texture(self.grab);
         }

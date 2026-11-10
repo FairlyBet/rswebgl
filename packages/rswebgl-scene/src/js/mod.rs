@@ -128,6 +128,8 @@ pub struct Scene {
     late_pass: Pass,
     // Transmissive meshes when depth-peeled (`setTransmissionLayers`).
     glass_pass: Pass,
+    // The transparent meshes again, drawn into the scene copy (`grab`).
+    see_through_pass: Pass,
     transmission_layers: usize,
     stats: RenderStats,
     // PBR variant switches waiting for the new program to link: the mesh
@@ -199,6 +201,7 @@ impl Scene {
             frame_pass,
             late_pass: Pass::to_default(),
             glass_pass: Pass::to_default(),
+            see_through_pass: Pass::to_default(),
             transmission_layers: 0,
             stats: RenderStats::default(),
             pending_variants: Vec::new(),
@@ -626,12 +629,16 @@ impl Scene {
                 .set_scene_color_min_lod(if aliased { 1.0 } else { 0.0 });
             let mut glass = std::mem::replace(&mut self.glass_pass, Pass::to_default());
             glass.clear_draws();
+            // The transparent meshes again, for the copy glass sees through.
+            let mut see_through = std::mem::replace(&mut self.see_through_pass, Pass::to_default());
+            see_through.clear_draws();
             let peeling = self.transmission_layers > 0;
             let drawn = self.render_passes(
                 camera,
                 &mut pass,
                 Some(&mut late),
                 peeling.then_some(&mut glass),
+                Some(&mut see_through),
             );
             {
                 let _s = tracing::info_span!("scene.opaque").entered();
@@ -652,14 +659,15 @@ impl Scene {
             }
             if glass.draw_count() > 0 {
                 let _s = tracing::info_span!("scene.peelGlass").entered();
-                self.peel_glass(&mut glass, &mut late);
+                self.peel_glass(&mut glass, &mut late, &mut see_through);
             } else if self.stats.transmissive > 0
-                && let Some(out) = &self.hdr
+                && let Some(out) = &mut self.hdr
             {
                 let _s = tracing::info_span!("scene.grab").entered();
-                out.grab(&self.ctx);
+                out.grab(&self.ctx, Some(&mut see_through));
             }
             self.glass_pass = glass;
+            self.see_through_pass = see_through;
             {
                 let _s = tracing::info_span!("scene.late").entered();
                 late.sort();
@@ -707,7 +715,7 @@ impl Scene {
         // linear output), and nothing transmissive sees a scene copy.
         self.renderer.set_output(true, self.tone_mapping);
         self.renderer.set_scene_color(&self.ctx, None);
-        self.render_passes(camera, pass, None, None)
+        self.render_passes(camera, pass, None, None, None)
     }
 
     /// Reverse-Z on or off (`EXT_clip_control`): depth precision spread
@@ -832,7 +840,7 @@ impl Scene {
     // layers back to front into the resolved scene — each refracting a copy
     // of everything behind it — and point `late` (transparent meshes) at
     // the result with the nearest layer's depth.
-    fn peel_glass(&mut self, glass: &mut Pass, late: &mut Pass) {
+    fn peel_glass(&mut self, glass: &mut Pass, late: &mut Pass, see_through: &mut Pass) {
         let layers = self.transmission_layers;
         let Some(out) = self.hdr.as_mut() else {
             return;
@@ -848,7 +856,7 @@ impl Scene {
         glass.set_invalidate(&rswebgl::framebuffer::InvalidateMask::none());
         // The depth peels aren't timed (only the shading passes are).
         glass.clear_timer();
-        let out = self.hdr.as_ref().expect("checked");
+        let out = self.hdr.as_mut().expect("checked");
         // Front to back: layer k is the nearest surface beyond layer k − 1.
         for k in 0..layers {
             let Some((fb, previous)) = out.peel_layer(&self.ctx, k) else {
@@ -864,7 +872,10 @@ impl Scene {
             return;
         };
         for k in (0..layers).rev() {
-            out.grab(&self.ctx);
+            // The copy (with the transparent meshes, which peel nothing).
+            self.renderer
+                .set_peel(&self.ctx, 0, rswebgl::ids::TextureId::NULL);
+            out.grab(&self.ctx, Some(&mut *see_through));
             self.renderer.set_peel(&self.ctx, 2, out.layer_depth(k));
             glass.set_target(glass_fb);
             if let Some(p) = &mut self.profiler {
@@ -1066,6 +1077,7 @@ impl Scene {
         pass: &mut Pass,
         late: Option<&mut Pass>,
         glass: Option<&mut Pass>,
+        see_through: Option<&mut Pass>,
     ) -> usize {
         if !self.sync_context() {
             return 0; // lost: nothing to draw with
@@ -1080,9 +1092,15 @@ impl Scene {
             let _s = tracing::info_span!("scene.transforms").entered();
             self.transforms.update(&mut self.world);
         }
-        self.stats = self
-            .renderer
-            .render_split(&self.world, &self.ctx, camera, pass, late, glass);
+        self.stats = self.renderer.render_split(
+            &self.world,
+            &self.ctx,
+            camera,
+            pass,
+            late,
+            glass,
+            see_through,
+        );
         self.world.clear_trackers();
         self.stats.drawn
     }

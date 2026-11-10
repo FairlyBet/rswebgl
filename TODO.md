@@ -192,6 +192,11 @@ its owner.
 
 ### Rendering
 
+- Transparent (blended) meshes are drawn into the scene copy glass sees
+  through (as Khronos' renderer does), tested against the opaque depth:
+  not with MSAA and a glass copy smaller than the frame (a multisampled
+  depth blits to the same size only), and in peeled glass they sit over
+  every deeper layer (no depth against the layers).
 - Auto exposure (`setAutoExposure`, Godot 3's GLES3 port): meters the
   brightest channel's average (Godot's measure, not luminance or a
   log-average / histogram as Bevy's), the whole frame (no center weight),
