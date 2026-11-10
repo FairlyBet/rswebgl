@@ -145,3 +145,58 @@ async fn fxaa_smooths_edges() {
     );
     scene.destroy();
 }
+
+// With TAA, FXAA covers only what draws after the resolve (transmissive,
+// transparent): an opaque-only scene comes out exactly as with TAA alone.
+#[wasm_bindgen_test]
+async fn fxaa_with_taa_leaves_the_opaque_scene_alone() {
+    async fn frames(fxaa: bool) -> Option<Vec<u8>> {
+        let canvas: HtmlCanvasElement = web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .create_element("canvas")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        canvas.set_width(SIZE as u32);
+        canvas.set_height(SIZE as u32);
+        let mut options = ContextOptions::new();
+        options.antialias = false;
+        let ctx = Context::from_canvas(&canvas, &options).expect("ctx");
+        let gl: Gl = canvas
+            .get_context("webgl2")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        let mut scene = Scene::new(&ctx).expect("scene");
+        if !scene.is_hdr() {
+            return None;
+        }
+        scene.set_tone_mapping("none").unwrap();
+        scene.set_dither(false);
+        scene.set_samples(0);
+        scene.set_taa(true);
+        scene.set_fxaa(fxaa);
+        let camera = scene.spawn();
+        let cam = js_sys::JSON::parse(
+            r#"{ "type": "orthographic", "ymag": 1, "znear": 0.1, "zfar": 100 }"#,
+        )
+        .unwrap();
+        scene.set_camera(camera, cam).unwrap();
+        scene.look_at(camera, &[0.0, 0.0, 5.0], &[0.0, 0.0, 0.0]);
+        scene.add_model(load_model(&ctx, &asset_url()).await.expect("load"));
+        for _ in 0..7 {
+            frame(&gl, &mut scene, camera).await;
+        }
+        let last = frame(&gl, &mut scene, camera).await;
+        scene.destroy();
+        Some(last)
+    }
+    let Some(taa) = frames(false).await else {
+        return; // TAA needs the HDR target
+    };
+    let both = frames(true).await.unwrap();
+    assert_eq!(taa, both);
+}

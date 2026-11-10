@@ -8,7 +8,8 @@
 // table filled element by element (Mali rejects array constructors without
 // a default precision: S0032); uv from gl_FragCoord; the tunables as
 // constants; the corner taps read only past the skip test (as FXAA 3.11
-// does; the same result, fewer reads where there is no edge).
+// does; the same result, fewer reads where there is no edge); with TAA, a
+// mask to what TAA leaves out (late_near).
 
 precision highp float;
 precision highp int;
@@ -19,6 +20,12 @@ out vec4 frag_color;
 
 uniform sampler2D u_ldr; // the display pass's output, bilinear, clamped
 uniform vec2 u_texel;    // 1 / its size
+// With TAA (u_masked 1): FXAA only for what drew after the resolve
+// (transmissive, transparent: u_final differs from u_opaque_only there, or
+// next to it); the rest is TAA's already.
+uniform sampler2D u_opaque_only; // the TAA resolve (linear HDR)
+uniform sampler2D u_final;       // the target after the late meshes
+uniform float u_masked;
 
 #define EDGE_STEP_COUNT 6
 #define EDGE_GUESS 8.0
@@ -215,7 +222,28 @@ vec4 ApplyFXAA(sampler2D tex2D, vec2 texSize, vec2 uv) {
     return Sample(tex2D, uv);
 }
 
+// Whether a late mesh drew at p or a neighbor (the edge FXAA blends across).
+bool late_near(ivec2 p) {
+    ivec2 last = textureSize(u_final, 0) - 1;
+    ivec2 taps[5];
+    taps[0] = p;
+    taps[1] = p + ivec2(1, 0);
+    taps[2] = p + ivec2(-1, 0);
+    taps[3] = p + ivec2(0, 1);
+    taps[4] = p + ivec2(0, -1);
+    for (int i = 0; i < 5; i++) {
+        ivec2 q = clamp(taps[i], ivec2(0), last);
+        vec3 d = abs(texelFetch(u_final, q, 0).rgb - texelFetch(u_opaque_only, q, 0).rgb);
+        if (max(d.r, max(d.g, d.b)) > 0.0) return true;
+    }
+    return false;
+}
+
 void main() {
+    if (u_masked > 0.5 && !late_near(ivec2(gl_FragCoord.xy))) {
+        frag_color = texture(u_ldr, gl_FragCoord.xy * u_texel);
+        return;
+    }
     // EDGE_STEPS 1.0, 1.5, 2.0, 2.0, 2.0, 4.0
     edgeSteps[0] = 1.0;
     edgeSteps[1] = 1.5;

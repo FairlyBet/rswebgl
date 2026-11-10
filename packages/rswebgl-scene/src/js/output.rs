@@ -80,7 +80,8 @@ impl Scene {
     /// displayed image, with HDR output: one cheap fullscreen pass that
     /// smooths edges by their contrast — the phone-friendly choice where
     /// MSAA or TAA cost too much (set `setSamples(0)` with it). Softens fine
-    /// texture detail a little. Combines with MSAA or TAA too. Returns
+    /// texture detail a little. Combines with MSAA; with TAA it covers only
+    /// what TAA leaves out (transmissive and transparent meshes). Returns
     /// whether it is on (needs HDR output).
     #[wasm_bindgen(js_name = setFxaa)]
     pub fn set_fxaa(&mut self, on: bool) -> bool {

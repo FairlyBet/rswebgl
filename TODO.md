@@ -176,7 +176,9 @@ its owner.
   Godot's velocity disocclusion, FSR1 RCAS sharpening.
 - TAA resolves the opaque scene only; transmissive and transparent meshes
   draw after it, unjittered, over the resolve copied back into the target
-  (and see an antialiased copy of it). Their edges get no antialiasing.
+  (and see an antialiased copy of it). `setFxaa` with TAA smooths just
+  them (where the target differs from the resolve; the viewer turns both
+  on for "TAA").
   Before (until 2026-11-10) they went through the resolve with FSR2's
   reactive mask and a wider still-glass box; refraction turned the jitter
   into jumps of pixels and glass flickered or smeared (DragonDispersion,

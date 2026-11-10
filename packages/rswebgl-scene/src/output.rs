@@ -87,6 +87,9 @@ struct Fxaa {
     layout: ParamLayoutId,
     group: ParamGroupId,
     f_texel: ParamField,
+    // With TAA: 1, FXAA only where late meshes drew (the target differs
+    // from the resolve there); else 0, everywhere.
+    f_masked: ParamField,
     // The display pass's output (made at the canvas's size on need).
     ldr: (TextureId, FramebufferId),
     size: (i32, i32),
@@ -401,7 +404,10 @@ impl HdrOutput {
         let layout = ctx.create_param_layout(
             &ParamLayoutBuilder::new()
                 .texture("u_ldr")
-                .uniform("u_texel", UniformType::Vec2),
+                .texture("u_opaque_only")
+                .texture("u_final")
+                .uniform("u_texel", UniformType::Vec2)
+                .uniform("u_masked", UniformType::F32),
         )?;
         let group = ctx.create_param_group(layout)?;
         self.fxaa = Some(Fxaa {
@@ -409,6 +415,7 @@ impl HdrOutput {
             layout,
             group,
             f_texel: ctx.param_field(layout, "u_texel")?,
+            f_masked: ctx.param_field(layout, "u_masked")?,
             ldr: (TextureId::NULL, FramebufferId::NULL),
             size: (0, 0),
         });
@@ -807,6 +814,19 @@ impl HdrOutput {
         };
         ctx.param_set_texture_by_name(f.group, "u_ldr", f.ldr.0);
         ctx.param_set_floats(f.group, f.f_texel, &[1.0 / cw as f32, 1.0 / ch as f32]);
+        // With TAA, FXAA for what TAA leaves out (transmissive, transparent):
+        // where the target differs from the resolve.
+        let resolved = match &self.taa {
+            Some(taa) if !taa.history[taa.current].0.is_null() => Some(taa.history[taa.current].0),
+            _ => None,
+        };
+        ctx.param_set_texture_by_name(f.group, "u_opaque_only", resolved.unwrap_or(self.color));
+        ctx.param_set_texture_by_name(f.group, "u_final", self.color);
+        ctx.param_set_f32(
+            f.group,
+            f.f_masked,
+            if resolved.is_some() { 1.0 } else { 0.0 },
+        );
         let mut pass = Pass::to_default();
         pass.set_viewport(&Viewport::new(0, 0, cw, ch));
         let mut groups = [ParamGroupId::NULL; GROUP_SLOTS];
