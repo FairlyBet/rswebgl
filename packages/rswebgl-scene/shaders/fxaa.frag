@@ -7,7 +7,8 @@
 // Changes from the original: GLSL ES 3.00 (texture / out); the edge step
 // table filled element by element (Mali rejects array constructors without
 // a default precision: S0032); uv from gl_FragCoord; the tunables as
-// constants.
+// constants; the corner taps read only past the skip test (as FXAA 3.11
+// does; the same result, fewer reads where there is no edge).
 
 precision highp float;
 precision highp int;
@@ -55,15 +56,21 @@ LuminanceData SampleLuminanceNeighborhood(sampler2D tex2D, vec2 texSize, vec2 uv
     l.s = SampleLuminance(tex2D, texSize, uv, 0.0, -1.0);
     l.w = SampleLuminance(tex2D, texSize, uv, -1.0, 0.0);
 
-    l.ne = SampleLuminance(tex2D, texSize, uv, 1.0, 1.0);
-    l.nw = SampleLuminance(tex2D, texSize, uv, -1.0, 1.0);
-    l.se = SampleLuminance(tex2D, texSize, uv, 1.0, -1.0);
-    l.sw = SampleLuminance(tex2D, texSize, uv, -1.0, -1.0);
+    // The corners are sampled once past ShouldSkipPixel (SampleCorners),
+    // which reads only the cross: most pixels skip after 5 taps, not 9.
 
     l.highest = max(max(max(max(l.n, l.e), l.s), l.w), l.m);
     l.lowest = min(min(min(min(l.n, l.e), l.s), l.w), l.m);
     l.contrast = l.highest - l.lowest;
     return l;
+}
+
+// Moved out of SampleLuminanceNeighborhood (see there); same taps.
+void SampleCorners(sampler2D tex2D, vec2 texSize, vec2 uv, inout LuminanceData l) {
+    l.ne = SampleLuminance(tex2D, texSize, uv, 1.0, 1.0);
+    l.nw = SampleLuminance(tex2D, texSize, uv, -1.0, 1.0);
+    l.se = SampleLuminance(tex2D, texSize, uv, 1.0, -1.0);
+    l.sw = SampleLuminance(tex2D, texSize, uv, -1.0, -1.0);
 }
 
 bool ShouldSkipPixel(LuminanceData l) {
@@ -192,6 +199,7 @@ vec4 ApplyFXAA(sampler2D tex2D, vec2 texSize, vec2 uv) {
     if (ShouldSkipPixel(luminance)) {
         return Sample(tex2D, uv);
     }
+    SampleCorners(tex2D, texSize, uv, luminance);
 
     float pixelBlend = DeterminePixelBlendFactor(luminance);
     EdgeData edge = DetermineEdge(texSize, luminance);
